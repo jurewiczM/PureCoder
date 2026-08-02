@@ -19,6 +19,7 @@ import os
 from .client import strip_fences
 from .contract import render_contract
 from .execute import generate_validated_python
+from .languages import PYTHON
 from .validate import generate_validated
 
 
@@ -30,9 +31,10 @@ def _write(outdir: str, filename: str, content: str) -> str:
 
 
 def scaffold_project(pc, name, description, outdir="build",
-                     entry="main.py", max_retries=5, verbose=True,
-                     use_contract=True):
+                     entry=None, max_retries=5, verbose=True,
+                     use_contract=True, spec=PYTHON):
     os.makedirs(outdir, exist_ok=True)
+    entry = entry or spec.project.entry
     report = {}
 
     def log(msg):
@@ -44,7 +46,7 @@ def scaffold_project(pc, name, description, outdir="build",
     code_res = generate_validated_python(
         pc,
         f"{description}\n\nThis is the main module `{entry}`.",
-        use_contract=use_contract,
+        use_contract=use_contract, spec=spec,
         max_retries=max_retries, verbose=verbose,
     )
     code = code_res["text"]
@@ -62,10 +64,11 @@ def scaffold_project(pc, name, description, outdir="build",
     log("\n=== Makefile (parse + semantic validated) ===")
     mk_res = generate_validated(
         pc, "makefile",
-        f"Makefile for a Python project '{name}'. Entry point is {entry}. "
-        f"Targets: install (pip install -r requirements.txt), "
-        f"run (python {entry}), test (pytest), and a simple clean target that "
-        f"removes __pycache__ and *.pyc. Keep each recipe to one or two commands.",
+        f"Makefile for a {spec.name} project '{name}'. Entry point is "
+        f"{entry}. Targets: install ({spec.project.install}), "
+        f"run ({spec.project.run}), test ({spec.project.test}), and clean "
+        f"({spec.project.clean}). Use exactly those commands. Keep each recipe "
+        f"to one or two commands.",
         max_retries=max_retries, verbose=verbose,
     )
     _write(outdir, "Makefile", mk_res["text"])

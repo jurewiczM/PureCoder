@@ -2,7 +2,7 @@
 
 import pytest
 
-from purecoder.cli import resolve_contract
+from purecoder.cli import resolve_contract, resolve_language
 
 
 class Args:
@@ -42,3 +42,56 @@ def test_explicit_flag_beats_the_env_var(monkeypatch):
 def test_explicit_flag_beats_the_default():
     assert resolve_contract(Args(contract=True), default=False) is True
     assert resolve_contract(Args(contract=False), default=True) is False
+
+
+# ---- language resolution -------------------------------------------------
+
+class LangArgs:
+    def __init__(self, lang="python", spec=""):
+        self.lang, self.spec, self.contract = lang, spec, None
+
+
+def test_a_known_available_language_resolves():
+    assert resolve_language(LangArgs("python")).name == "python"
+
+
+def test_an_alias_resolves():
+    assert resolve_language(LangArgs("py")).name == "python"
+
+
+def test_an_unknown_language_is_refused(capsys):
+    assert resolve_language(LangArgs("cobol")) is None
+    out = capsys.readouterr().out
+    assert "unknown language" in out
+    assert not out.startswith('"'), "KeyError repr quotes leaked into the message"
+
+
+def test_a_permanently_unvalidatable_language_is_refused(capsys):
+    assert resolve_language(LangArgs("powerquery")) is None
+    out = capsys.readouterr().out
+    assert "Power BI" in out or "Excel" in out
+    assert "Available right now" in out
+
+
+def test_a_declared_but_unwired_language_is_refused(capsys):
+    assert resolve_language(LangArgs("go")) is None
+    assert "not implemented" in capsys.readouterr().out
+
+
+def test_a_spec_contradicting_the_flag_is_refused(capsys):
+    """`--lang python` plus "a C++ Dijkstra" is how the pipeline used to
+    silently emit `import heapq`."""
+    args = LangArgs("python", "a C++ implementation of Dijkstra")
+    assert resolve_language(args) is None
+    assert "asks for c++" in capsys.readouterr().out
+
+
+def test_a_spec_naming_its_own_language_is_not_a_contradiction():
+    args = LangArgs("c++", "a C++ implementation of Dijkstra")
+    assert resolve_language(args).name == "c++"
+
+
+def test_an_alias_in_the_spec_is_not_a_contradiction():
+    """--lang c++ with a spec that says 'cpp' means the same thing."""
+    args = LangArgs("cpp", "a cpp quicksort")
+    assert resolve_language(args).name == "c++"
