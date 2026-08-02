@@ -10,6 +10,7 @@ import shutil
 import pytest
 
 from purecoder import languages as L
+from purecoder.execute import lint_tests, run_candidate
 from purecoder.languages import PYTHON, LanguageSpec
 
 # ---- resolution ----------------------------------------------------------
@@ -129,3 +130,118 @@ def test_assemble_skips_empty_sections():
 
 def test_assemble_always_ends_with_a_newline():
     assert PYTHON.assemble("a = 1", "assert a").endswith("\n")
+
+
+# ---- real execution, skipped when the toolchain is absent ----------------
+
+CASES = {
+    "c++": (
+        "int add(int a,int b){return a+b;}",
+        "int add(int a,int b){return a-b;}",
+        "int add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); }",
+        "void pc_tests(){ }",
+    ),
+    "javascript": (
+        "function add(a,b){return a+b;}",
+        "function add(a,b){return a-b;}",
+        "PC_CHECK(add(1,2)===3,'add');",
+        "",
+    ),
+    "rust": (
+        "fn add(a:i32,b:i32)->i32{a+b}",
+        "fn add(a:i32,b:i32)->i32{a-b}",
+        "fn pc_tests(){ pc_check!(add(1,2)==3); }",
+        "fn pc_tests(){ }",
+    ),
+}
+
+
+def _skip_unless(name):
+    ok, why = L.get(name).available()
+    if not ok:
+        pytest.skip(why)
+    return L.get(name)
+
+
+@pytest.mark.parametrize("name", list(CASES))
+def test_a_correct_implementation_passes(name):
+    spec = _skip_unless(name)
+    good, _, tests, _ = CASES[name]
+    ok, err = run_candidate(spec, good, tests, timeout=60, require_checks=1)
+    assert ok, err
+
+
+@pytest.mark.parametrize("name", list(CASES))
+def test_a_wrong_implementation_fails(name):
+    """The guarantee that matters. This session found five false greens in the
+    Python path that a passing suite never revealed."""
+    spec = _skip_unless(name)
+    _, bad, tests, _ = CASES[name]
+    ok, err = run_candidate(spec, bad, tests, timeout=60, require_checks=1)
+    assert not ok
+    assert "CHECK FAILED" in err
+
+
+@pytest.mark.parametrize("name", list(CASES))
+def test_a_suite_where_no_check_runs_fails(name):
+    """Exit code 0 is not evidence, in any language."""
+    spec = _skip_unless(name)
+    good, _, _, empty = CASES[name]
+    ok, err = run_candidate(spec, good, empty, timeout=60, require_checks=1)
+    assert not ok
+    assert "no checks ran" in err
+
+
+def test_a_compile_error_is_reported_not_swallowed():
+    """A compile failure is ordinary fix-loop feedback -- exactly what the
+    writer needs to see."""
+    spec = _skip_unless("c++")
+    ok, err = run_candidate(spec, "int add(int a,int b){return a+",
+                            "void pc_tests(){ PC_CHECK(1==1); }", timeout=60)
+    assert not ok
+    assert "error" in err.lower()
+
+
+def test_a_runaway_is_killed_by_the_timeout():
+    spec = _skip_unless("c++")
+    ok, err = run_candidate(spec, "void spin(){ while(true){} }",
+                            "void spin();\nvoid pc_tests(){ spin(); }", timeout=5)
+    assert not ok
+    assert "timed out" in err
+
+
+# ---- the gate, for languages we do not parse ----------------------------
+
+def test_the_textual_gate_counts_helper_calls():
+    tests = "void pc_tests(){ PC_CHECK(a==1); PC_CHECK(b==2); PC_CHECK(c==3); }"
+    ok, err = lint_tests(tests, min_assertions=3, spec=L.get("c++"))
+    assert ok, err
+
+
+def test_the_textual_gate_rejects_too_few_checks():
+    ok, err = lint_tests("void pc_tests(){ PC_CHECK(a==1); }",
+                         min_assertions=3, spec=L.get("c++"))
+    assert not ok
+    assert "PC_CHECK" in err
+
+
+def test_the_textual_gate_rejects_a_spiral():
+    tests = "void pc_tests(){\n" + "  PC_CHECK(a==1);\n" * 20 + "}"
+    ok, err = lint_tests(tests, min_assertions=3, spec=L.get("c++"))
+    assert not ok
+    assert "degenerate" in err
+
+
+def test_the_textual_gate_wants_the_target_mentioned():
+    tests = "void pc_tests(){ PC_CHECK(1==1); PC_CHECK(2==2); PC_CHECK(3==3); }"
+    ok, err = lint_tests(tests, targets=["add"], min_assertions=3,
+                         spec=L.get("c++"))
+    assert not ok
+    assert "never mention" in err
+
+
+def test_python_still_uses_the_ast_gate():
+    """Routing must not quietly downgrade Python to the textual path."""
+    ok, err = lint_tests("assert add(1, 2 == 3\n", spec=PYTHON)
+    assert not ok
+    assert "do not parse" in err

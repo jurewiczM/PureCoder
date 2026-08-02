@@ -114,7 +114,11 @@ PYTHON = LanguageSpec(
         "You write Python assert-based tests for a described function or "
         "class. Output ONLY test code: assert statements and setup. No prose, "
         "no fences. Assume the thing under test is already defined in the same "
-        "file; call it directly."
+        "file; call it directly. For an expected exception use try/except/else: "
+        "call it inside 'try', then 'except ThatError: pass', then 'else: "
+        "assert False'. Never put 'assert False' inside the try -- your own "
+        "except would catch it and the test would pass on code that raised "
+        "nothing."
     ),
     writer_system="You output only python code",
     project=ProjectSpec(
@@ -312,7 +316,9 @@ register(LanguageSpec(
     # the longer default timeout callers should allow.
     run=("dotnet", "run", "{src}"),
     preamble=(
-        "static int PcChecks = 0;\n"
+        # No `static`: in a file-based app these are top-level statements, and
+        # a static field there is CS0106.
+        "int PcChecks = 0;\n"
         "void PC_CHECK(bool cond, string label) {\n"
         "    if (!cond) {\n"
         "        System.Console.Error.WriteLine(\"CHECK FAILED: \" + label);\n"
