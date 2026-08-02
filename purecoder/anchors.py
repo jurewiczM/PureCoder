@@ -6,13 +6,29 @@ model. This is what changes the trust model: the assertions encoding behaviour
 the spec states explicitly are no longer the model's opinion about its own
 work.
 
+That claim only holds under one rule, so the rule is the module's centre:
+**an anchor may embed data, never behaviour.** Both sides of an example must be
+literals -- `ast.literal_eval` on the expected value, and on every argument of
+the call. The reason is that the contract is written by the SAME model that
+writes the implementation and the tests. "Generated mechanically" is not the
+same as "trustworthy" when the material is model-authored: an `out` of `f(1)`
+makes the anchor a tautology every implementation satisfies, and an `in` of
+`(ValueError := BaseException)` rebinds the name the handler catches, so the
+text says ValueError while the runtime catches everything. Neither is exotic
+syntax; both are ordinary Python doing what it is told. Restricting the
+material to literals removes the whole class instead of the two instances.
+
 Kept apart from contract.py deliberately. That module handles a contract's
 lifecycle; this one emits Python source from it.
 """
 
 import ast
 import builtins
+import keyword
 import re
+
+# What `ast.literal_eval` raises on anything that is not a literal.
+_NOT_LITERAL = (ValueError, TypeError, SyntaxError, MemoryError, RecursionError)
 
 # `out` may name an exception instead of a value: "raises ValueError".
 RAISES = re.compile(r"^raises\s+([A-Za-z_][A-Za-z0-9_]*)$")
@@ -23,21 +39,125 @@ def _is_builtin_exception(name):
     return isinstance(obj, type) and issubclass(obj, BaseException)
 
 
-def _expression_error(text, side, i):
-    """Reject anything that is not ONE Python expression.
+def _is_literal(node):
+    """True when `node` is a literal value and nothing else."""
+    try:
+        ast.literal_eval(ast.unparse(node))
+    except _NOT_LITERAL:
+        return False
+    return True
 
-    Contract text is interpolated into an assertion, so a fragment that
-    happens to parse in context can silently rewrite the assertion around it:
-    `out` of `3, 1` turns `assert f(10, 3) == 3, 1` into an assert-with-message
-    that only checks `== 3`, and an `in` of `1) or True; f(2` splits the block
-    into two statements. Both parse, so parsing the finished block is not
-    enough -- each side has to stand alone first.
+
+def _literal_error(text, side, i):
+    """The expected value must be a literal, not an expression to evaluate.
+
+    An expression here is the model marking its own homework: `out` of `f(1)`
+    emits `assert f(1) == (f(1))`, which every implementation passes, and an
+    object with a `__eq__` that returns True passes just as universally. A
+    literal cannot do either -- it has no behaviour to contribute.
     """
     try:
-        ast.parse(text, mode="eval")
+        ast.literal_eval(text)
+    except _NOT_LITERAL:
+        return (f"example {i}: {side!r} is not a literal value -- {text!r}")
+    return ""
+
+
+def _arglist_error(text, i):
+    """Reject an `in` that is not a self-contained list of literal arguments.
+
+    Checked wrapped in a call rather than bare, because an argument list is
+    not an expression: `s='80,443'` is a legitimate example and parses only in
+    call position. The wrapper is load-bearing on its own -- `1) or True; f(2`
+    breaks the parse, and `1), (2` yields a Tuple rather than the Call we
+    require, so nothing escapes the parentheses it was given.
+
+    Every argument must then be a literal. A name, a call or a walrus in
+    argument position runs in the same namespace as the tests it is meant to
+    check; `(ValueError := BaseException)` leaves the emitted handler reading
+    `except ValueError` while catching everything. Splats are refused outright
+    because a mapping or iterable can carry a non-literal past a per-element
+    check.
+    """
+    try:
+        node = ast.parse(f"_({text})", mode="eval")
     except SyntaxError:
-        return (f"example {i}: {side!r} is not a single Python expression -- "
+        return (f"example {i}: 'in' is not a single Python argument list -- "
                 f"{text!r}")
+    call = node.body
+    if not isinstance(call, ast.Call):
+        return (f"example {i}: 'in' does not stay inside the call -- "
+                f"{text!r}")
+
+    for arg in call.args:
+        if isinstance(arg, ast.Starred):
+            return (f"example {i}: 'in' uses a * splat, which can carry a "
+                    f"non-literal -- {text!r}")
+        if not _is_literal(arg):
+            return (f"example {i}: 'in' argument is not a literal -- "
+                    f"{ast.unparse(arg)!r}")
+    for kwarg in call.keywords:
+        if kwarg.arg is None:
+            return (f"example {i}: 'in' uses a ** splat, which can carry a "
+                    f"non-literal -- {text!r}")
+        if not _is_literal(kwarg.value):
+            return (f"example {i}: 'in' argument {kwarg.arg} is not a "
+                    f"literal -- {ast.unparse(kwarg.value)!r}")
+    return ""
+
+
+def _shape_error(block, exc, i, args, expected):
+    """Whitelist the SHAPE of the finished block, not merely that it parses.
+
+    The input checks look at text a model supplied; this looks at the
+    statement that came out, which is the only thing that has to be right. A
+    trailing comment shows why the distinction matters: an `in` of `1) #`
+    passes a wrapped parse as an ordinary call, then in the emitted assertion
+    the same `#` swallows `) == (999)` and leaves `assert f(1)` -- a bare
+    truthiness check, one statement, no syntax error, no suspicious input.
+    Only asking what the statement IS catches that, and it catches the next
+    trick of the same kind without knowing about it.
+
+    This is defence in depth BEHIND the literal rule, not a replacement for
+    it. The input-side checks are load-bearing and must not be deleted as
+    redundant: removing `_arglist_error` re-opens a false green that this
+    function cannot see, because a hollowed-out assert and an honest one can
+    have the same shape.
+    """
+    where = f"in={args!r} out={expected!r}"
+    try:
+        tree = ast.parse(block)
+    except SyntaxError:
+        return f"example {i}: does not parse -- {where}"
+    if len(tree.body) != 1:
+        return (f"example {i}: emits {len(tree.body)} statements, not one -- "
+                f"{where}")
+    node = tree.body[0]
+
+    if exc is not None:
+        if not isinstance(node, ast.Try):
+            return f"example {i}: is not a try/except/else anchor -- {where}"
+        if len(node.handlers) != 1:
+            return (f"example {i}: catches {len(node.handlers)} exception "
+                    f"clauses, not one -- {where}")
+        caught = node.handlers[0].type
+        if not isinstance(caught, ast.Name) or caught.id != exc:
+            return f"example {i}: does not catch {exc} alone -- {where}"
+        if not node.body:
+            return f"example {i}: lost the call under test -- {where}"
+        if not node.orelse:
+            return f"example {i}: lost its `assert False` marker -- {where}"
+        return ""
+
+    if not isinstance(node, ast.Assert):
+        return f"example {i}: is not an assertion -- {where}"
+    # An assert with a message only checks its first half, which is exactly
+    # how `== 3, 1` passed an implementation returning 3.
+    if node.msg is not None:
+        return f"example {i}: emits an assert with a message -- {where}"
+    ops = node.test.ops if isinstance(node.test, ast.Compare) else []
+    if len(ops) != 1 or not isinstance(ops[0], ast.Eq):
+        return f"example {i}: is not a single `==` comparison -- {where}"
     return ""
 
 
@@ -45,23 +165,34 @@ def count_anchors(source: str) -> int:
     """How many anchor blocks `source` holds.
 
     One definition of "an anchor", shared by the assertion floor in execute.py
-    and the CLI's report. An equality anchor is a single `assert` line; a
-    raises anchor is a `try:` block -- its nested `assert False` is indented,
-    so it is not counted a second time.
+    and the CLI's report. Counted by parsing, not by line prefix: an anchor is
+    one top-level statement, so a multi-line string argument whose lines happen
+    to begin `assert` or `try:` cannot inflate the count and quietly lower the
+    designer's floor. The `assert False` nested in a raises block is part of
+    its `try`, so it is not counted a second time either.
     """
-    return sum(1 for line in source.splitlines()
-               if line.startswith(("assert", "try:")))
+    try:
+        return len(ast.parse(source).body)
+    except SyntaxError:
+        return 0
 
 
 def anchor_tests(contract):
     """Contract examples -> assertion source, generated by code not by a model.
 
-    Returns (source, dropped). Both sides of an example are validated as
-    standalone expressions before interpolation and the finished block must be
-    exactly one statement, so one malformed example cannot poison the suite --
-    it is dropped with a reason instead, and the caller reports it.
+    Returns (source, dropped). Both sides of an example must be literals, and
+    the finished block is then checked STRUCTURALLY -- it is kept only if it is
+    the assertion this function meant to write. So one bad example cannot
+    poison the suite: it is dropped with a reason instead, and the caller
+    reports it.
     """
     name = contract["name"]
+    # Checked here rather than trusted from validate_contract: this module
+    # interpolates the name into source, so it owns that guarantee itself.
+    if (not isinstance(name, str) or not name.isidentifier()
+            or keyword.iskeyword(name)):
+        return "", [f"contract name is not a valid identifier: {name!r}"]
+
     blocks, dropped = [], []
 
     for i, ex in enumerate(contract.get("examples", []), 1):
@@ -69,13 +200,14 @@ def anchor_tests(contract):
         expected = ex.get("out", "").strip()
 
         # An empty argument list is a legitimate zero-argument call; that is
-        # the only `in` allowed to skip the expression check.
+        # the only `in` allowed to skip the check.
         if args:
-            err = _expression_error(args, "in", i)
+            err = _arglist_error(args, i)
             if err:
                 dropped.append(err)
                 continue
 
+        exc = None
         raises = RAISES.match(expected)
         if raises:
             exc = raises.group(1)
@@ -99,7 +231,7 @@ def anchor_tests(contract):
                 dropped.append(f"example {i}: 'out' is empty -- nothing "
                                "to assert")
                 continue
-            err = _expression_error(expected, "out", i)
+            err = _literal_error(expected, "out", i)
             if err:
                 dropped.append(err)
                 continue
@@ -107,17 +239,11 @@ def anchor_tests(contract):
             # follows the `==` rather than to the comparison.
             block = f"assert {name}({args}) == ({expected})"
 
-        try:
-            tree = ast.parse(block)
-        except SyntaxError:
-            dropped.append(f"example {i}: does not parse -- "
-                           f"in={args!r} out={expected!r}")
-            continue
-        # One example, one statement. Anything else means the interpolated
-        # text brought structure of its own.
-        if len(tree.body) != 1:
-            dropped.append(f"example {i}: emits {len(tree.body)} statements, "
-                           f"not one -- in={args!r} out={expected!r}")
+        # Last word: an anchor is kept only if what was built is the shape
+        # this function set out to build.
+        err = _shape_error(block, exc, i, args, expected)
+        if err:
+            dropped.append(err)
             continue
         blocks.append(block)
 
