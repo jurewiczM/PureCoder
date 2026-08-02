@@ -4,7 +4,12 @@ import shutil
 
 import pytest
 
-from purecoder.validate import validate_env, validate_makefile, validate_python
+from purecoder.validate import (
+    MAX_ENV_LINE,
+    validate_env,
+    validate_makefile,
+    validate_python,
+)
 
 # ---- .env ----------------------------------------------------------------
 
@@ -82,3 +87,43 @@ def test_makefile_allows_real_special_targets():
 def test_makefile_rejects_unparseable():
     ok, err = validate_makefile("target\n\techo orphan recipe\n")
     assert not ok
+
+
+def test_env_rejects_a_rambling_comment():
+    """The live failure: one 2000-char comment, truncated mid-sentence.
+    Structurally a valid comment, so the shape check passed it."""
+    rambling = "# " + ("this is prose not configuration " * 80)
+    ok, err = validate_env(rambling + "\n")
+    assert not ok
+    assert "not prose" in err
+
+
+def test_env_rejects_an_overlong_value_line():
+    ok, err = validate_env("KEY=" + "x" * 300 + "\n")
+    assert not ok
+    assert "not prose" in err
+
+
+def test_env_still_accepts_a_normal_commented_example():
+    ok, err = validate_env("# Example: PORTS=8080,443\n# PORTS=\n")
+    assert ok, err
+
+
+def test_env_accepts_a_comment_at_the_length_limit():
+    ok, err = validate_env("#" + "a" * (MAX_ENV_LINE - 1) + "\n")
+    assert ok, err
+
+
+def test_env_rejects_a_repeated_block():
+    """The grammar bounds line LENGTH; the model then satisfied it by looping
+    a short block eight times instead. Shape cannot constrain repetition."""
+    block = ("# Note: keep secrets out of source control.\n"
+             "# Always use environment variables.\n")
+    ok, err = validate_env(block * 8)
+    assert not ok
+    assert "degenerate" in err
+
+
+def test_env_allows_a_line_repeated_a_few_times():
+    ok, err = validate_env("# a note\n# a note\nKEY=1\n")
+    assert ok, err
