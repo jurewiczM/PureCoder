@@ -51,6 +51,32 @@ The honest summary: this trades a small amount of *mechanical* verification for
 uniformity across languages and the removal of the pipeline's highest-risk
 component.
 
+**The ledger that decided it.** Anchors bought exactly one guarantee nothing
+else provides: an anchor cannot mis-transcribe the contract. Across nine live
+runs that guarantee never once mattered — no run produced a designed test that
+contradicted its contract. Against that, anchors cost five Critical false
+greens, contributed zero to two assertions per run that mostly duplicated
+broader designed tests, and in the single run where an anchor was decisive it
+was decisively *wrong*: the `parse_ports` contract gave an unsorted example for
+a spec that said sorted, and the anchor compiled it faithfully into a test that
+failed correct code.
+
+What was doing the real work throughout was the contract *display* — reading
+`example : display_graph() -> Graph displayed successfully.` reveals a stub
+before any code runs, for free and with no code generation.
+
+**Deferred alternative, if the guarantee is ever wanted back.** Check rather
+than generate: parse the designed tests and flag any that *contradict* a
+contract example, instead of compiling examples into code. That is read-only
+AST analysis, so it carries none of the risk that produced all five Criticals,
+and it would have surfaced the `parse_ports` disagreement rather than silently
+trusting the contract. Not built now.
+
+**Measurement.** Whether removing anchors helps or hurts is an open question,
+not a settled one. The comparison to run once there is a task set: pass rate
+and attempts-to-converge, with anchors and without, on the same specs. Until
+that exists this is a judgement call made on nine runs.
+
 ## Architecture
 
 One new module, `purecoder/languages.py`, holds a registry of language specs.
