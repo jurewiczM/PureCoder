@@ -169,7 +169,7 @@ def test_contract_is_derived_and_its_anchors_reach_the_executor():
                                     verbose=False)
     assert res["ok"]
     assert res["contract"]["name"] == "add"
-    assert "assert add(1, 2) == 3" in res["anchors"]
+    assert "assert add(1, 2) == (3)" in res["anchors"]
     assert res["anchors"] in res["tests"]
 
 
@@ -189,6 +189,30 @@ def test_supplied_contract_skips_derivation():
                                     use_contract=True, verbose=False)
     assert res["ok"]
     assert res["contract"] is CONTRACT
+
+
+def test_a_supplied_contract_is_validated_like_a_derived_one():
+    """Passing `contract=` skips derivation; it must not skip validation.
+
+    A malformed dict used to raise KeyError out of anchor_tests. Graceful
+    degradation is the invariant, so it falls back to the plain path.
+    """
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers",
+                                    contract={"name": "add"},   # missing keys
+                                    verbose=False)
+    assert res["ok"]
+    assert res["contract"] is None
+    assert res["anchors"] == ""
+
+
+def test_positional_arguments_still_bind_to_max_retries():
+    """`contract`/`use_contract` are keyword-only, so the fourth positional
+    argument is max_retries as it always was."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(pc, "add two numbers", GOOD_TESTS, 2,
+                                    verbose=False)
+    assert not res["ok"] and res["attempts"] == 2
 
 
 def test_failed_derivation_falls_back_to_the_plain_path():

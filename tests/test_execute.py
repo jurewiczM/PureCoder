@@ -1,6 +1,12 @@
 """The executor and the test-quality gate -- both model-independent."""
 
-from purecoder.execute import lint_tests, public_names, run_python
+from purecoder.execute import (
+    MIN_ASSERTIONS,
+    _designer_floor,
+    lint_tests,
+    public_names,
+    run_python,
+)
 
 CODE = "def add(a, b):\n    return a + b\n"
 
@@ -139,3 +145,23 @@ def test_gate_accepts_a_lower_assertion_floor():
     ok, err = lint_tests("assert add(1, 2) == 3\n", targets=["add"],
                          min_assertions=1)
     assert ok, err
+
+
+# ---- the assertion floor -------------------------------------------------
+
+def test_designer_floor_shrinks_by_the_anchor_count():
+    """Anchors count toward the total, so enabling contracts cannot lower it.
+
+    Two anchors leave the designer owing one; the total is still
+    MIN_ASSERTIONS. With no anchors the designer owes the whole floor.
+    """
+    two = "assert add(1, 2) == (3)\nassert add(0, 0) == (0)\n"
+    assert _designer_floor(two) == MIN_ASSERTIONS - 2
+    assert _designer_floor(two) + 2 == MIN_ASSERTIONS
+    assert _designer_floor("") == MIN_ASSERTIONS
+
+
+def test_designer_floor_never_reaches_zero():
+    """However many anchors there are, the designer still owes one test."""
+    many = "\n".join(f"assert add({i}, 0) == ({i})" for i in range(10))
+    assert _designer_floor(many) == 1

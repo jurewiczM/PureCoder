@@ -18,9 +18,9 @@ import sys
 import tempfile
 from collections import Counter
 
-from .anchors import anchor_tests
+from .anchors import anchor_tests, count_anchors
 from .client import strip_fences
-from .contract import derive_contract, render_contract
+from .contract import derive_contract, render_contract, validate_contract
 
 # a test file with fewer than this many assertions isn't a test suite,
 # it's a smoke check -- regenerate rather than trust it.
@@ -186,9 +186,21 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 # ---- the execution fix loop ---------------------------------------------
 
-def generate_validated_python(pc, description, tests=None, contract=None,
-                              use_contract=False, max_retries=3,
-                              timeout=10, verbose=True, **kw):
+def _designer_floor(anchors: str) -> int:
+    """How many assertions the test designer still owes.
+
+    Anchors count toward the total, so the designer is asked for the
+    remainder instead of MIN_ASSERTIONS more on top. The floor never drops
+    below 1: a contract must not buy a designer out of writing anything.
+    """
+    if not anchors:
+        return MIN_ASSERTIONS
+    return max(1, MIN_ASSERTIONS - count_anchors(anchors))
+
+
+def generate_validated_python(pc, description, tests=None, max_retries=3,
+                              timeout=10, verbose=True, *, contract=None,
+                              use_contract=False, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -203,6 +215,16 @@ def generate_validated_python(pc, description, tests=None, contract=None,
                                          verbose=verbose)
         if contract is None and verbose:
             print(f"[contract] {cerr} -> continuing without one")
+    elif contract is not None:
+        # A caller-supplied contract skipped derivation and therefore skipped
+        # validation. Degrade the same way a failed derivation does rather
+        # than let a malformed dict raise out of anchor_tests.
+        ok, cerr = validate_contract(contract)
+        if not ok:
+            if verbose:
+                print(f"[contract] supplied contract rejected: {cerr} "
+                      f"-> continuing without one")
+            contract = None
 
     anchors = ""
     if contract is not None:
@@ -220,9 +242,10 @@ def generate_validated_python(pc, description, tests=None, contract=None,
     if tests is None:
         # Anchors already assert everything the contract states, so the
         # designer is asked for what they do NOT cover, and judged on that
-        # alone. Counting free anchors toward the floor would let a lazy
-        # tester through on tests it did not write.
-        floor = 1 if anchors else MIN_ASSERTIONS
+        # alone -- the gate never counts free anchors toward the designed
+        # portion. The floor shrinks by the anchor count so the TOTAL still
+        # reaches MIN_ASSERTIONS: a contract may not lower coverage.
+        floor = _designer_floor(anchors)
         ask = spec
         if anchors:
             ask = (f"{spec}\n\nThese cases are already covered and must NOT be "
@@ -256,7 +279,7 @@ def generate_validated_python(pc, description, tests=None, contract=None,
             regated = True
             targets = public_names(code)
             if targets:
-                floor = 1 if anchors else MIN_ASSERTIONS
+                floor = _designer_floor(anchors)
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
                                                   min_assertions=floor)
                 if not gate_ok:
