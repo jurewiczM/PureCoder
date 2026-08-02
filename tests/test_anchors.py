@@ -57,6 +57,21 @@ def test_anchors_drop_a_custom_exception():
     assert "MyOwnError" in dropped[0]
 
 
+def test_anchors_do_not_swallow_their_own_marker():
+    """`raises AssertionError` must not be satisfied by our own assert False."""
+    contract = {**GOOD, "name": "check",
+                "examples": [{"in": "1", "out": "raises AssertionError"}]}
+    src, dropped = anchor_tests(contract)
+    assert dropped == []
+    ns = {"check": lambda x: None}          # raises nothing -- must FAIL
+    try:
+        exec(src, ns)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("anchor passed a function that never raised")
+
+
 def test_anchors_accept_any_builtin_exception():
     contract = {**GOOD, "examples": [{"in": "None", "out": "raises TypeError"}]}
     src, dropped = anchor_tests(contract)

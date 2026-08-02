@@ -46,11 +46,15 @@ def anchor_tests(contract):
             if not _is_builtin_exception(exc):
                 dropped.append(f"example {i}: {exc} is not a built-in exception")
                 continue
+            # try/except/else, never `assert False` inside the try: when exc
+            # is AssertionError the except would catch our own marker and the
+            # anchor would pass on a function that raised nothing.
             block = (f"try:\n"
                      f"    {name}({args})\n"
-                     f"    assert False\n"
                      f"except {exc}:\n"
-                     f"    pass")
+                     f"    pass\n"
+                     f"else:\n"
+                     f"    assert False")
         else:
             block = f"assert {name}({args}) == {expected}"
 
