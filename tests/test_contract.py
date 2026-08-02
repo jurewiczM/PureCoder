@@ -191,3 +191,12 @@ def test_derive_survives_a_dead_server():
     contract, err = derive_contract(DeadModel(), "parse ports", verbose=False)
     assert contract is None
     assert "connection refused" in err
+
+
+def test_contract_helpers_are_exported_from_the_package():
+    import purecoder
+
+    for name in ("derive_contract", "anchor_tests", "render_contract",
+                 "validate_contract"):
+        assert name in purecoder.__all__
+        assert hasattr(purecoder, name)

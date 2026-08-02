@@ -29,6 +29,9 @@ layer assumes the model can be wrong and catches it:
   (the tester never sees the implementation, so it can't rubber-stamp bugs).
 - **A test-quality gate** rejects bad tests before they judge code —
   "who tests the tester."
+- **Spec contracts** turn prose into a structured contract the writer and
+  tester both read, and compile its examples into assertions **no model
+  wrote** — so a misread spec is visible instead of silently agreed on.
 - **Retrieval** injects a library's real docs only when relevant, keeping
   token use low on a tight context budget.
 
@@ -87,20 +90,26 @@ ingest once, reuse across runs.
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
 | `status`           | live system status |
 
+`project` derives a spec contract by default; `code` does not. Add
+`--contract` to opt in, `--no-contract` to opt out, or set
+`PURECODER_CONTRACT=1` to change the default for both.
+
 ## Layout
 
 ```
 purecoder/
   client.py      grammar-constrained generation (llama-server /completion)
+  contract.py    prose → grammar-constrained spec contract
+  anchors.py     contract examples → assertions no model wrote
   validate.py    config validators + write→validate→fix loop
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
   rag.py         code/doc-aware chunking + retrieval
   status.py      live system probe
   cli.py         one entry point over all of it
-  grammars/      GBNF: env.gbnf, makefile.gbnf
+  grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           66 model-independent tests (no GPU, no server)
+tests/           123 model-independent tests (no GPU, no server)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
