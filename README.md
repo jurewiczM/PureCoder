@@ -16,6 +16,32 @@ small projects and grounds generation in a library's own docs via retrieval.
 The bet: a small model, boxed in from several directions, can produce
 trustworthy code — no frontier API, no cloud, nothing leaving your machine.
 
+## How it works
+
+Every arrow out of the model leads into something that can say **no**:
+
+```mermaid
+flowchart LR
+    S([prose spec]) --> C[contract<br/><i>grammar-constrained</i>]
+    C --> W[writer]
+    C --> T[test designer<br/><i>code-blind</i>]
+    T --> G{quality<br/>gate}
+    G -- rejected --> T
+    G -- accepted --> X
+    W --> X[[execute<br/><i>sandboxed</i>]]
+    X -- traceback --> W
+    X -- passes --> OK([validated code])
+
+    style S fill:#e8f0fe,stroke:#4285f4,color:#111
+    style OK fill:#e6f4ea,stroke:#34a853,color:#111
+    style G fill:#fef7e0,stroke:#f9ab00,color:#111
+    style X fill:#fce8e6,stroke:#ea4335,color:#111
+```
+
+The test designer never sees the implementation, so it cannot rubber-stamp a
+bug. The gate judges the tests before they judge the code. The executor is the
+only thing allowed to declare success, and only by running.
+
 ## Why it's interesting
 
 Most "LLM writes code" demos trust the model. PureCoder verifies it. Every
@@ -34,6 +60,39 @@ layer assumes the model can be wrong and catches it:
   wrote** — so a misread spec is visible instead of silently agreed on.
 - **Retrieval** injects a library's real docs only when relevant, keeping
   token use low on a tight context budget.
+
+### What each layer catches
+
+```mermaid
+flowchart TB
+    subgraph shape["shape — made impossible"]
+        direction LR
+        G1[GBNF grammar<br/><i>.env, Makefile, contract</i>]
+    end
+    subgraph sense["sense — made checkable"]
+        direction LR
+        V1[semantic guards<br/><i>degeneration, prose, spirals</i>]
+        V2[make -n / compile]
+    end
+    subgraph truth["truth — made provable"]
+        direction LR
+        E1[run it]
+        E2[prove a check<br/>actually executed]
+    end
+
+    shape --> sense --> truth
+    truth --> R{{"a claim you can check"}}
+
+    style shape fill:#e8f0fe,stroke:#4285f4,color:#111
+    style sense fill:#fef7e0,stroke:#f9ab00,color:#111
+    style truth fill:#e6f4ea,stroke:#34a853,color:#111
+    style R fill:#f1f3f4,stroke:#5f6368,color:#111
+```
+
+A grammar guarantees *shape* and nothing more — a 2500-character comment is a
+structurally valid comment. Validators add *sense*. Only execution gives
+*truth*, and even then exit code 0 is not evidence: the tests are instrumented
+so a suite that never ran an assertion fails instead of passing.
 
 ## Install
 
@@ -124,6 +183,49 @@ ruff check purecoder tests examples
 The suite runs without llama-server or a GPU: the validators, executor, test
 gate and chunkers are model-independent by design, and the loops are driven by
 a scripted fake model. That is also what CI runs, on Python 3.10–3.12.
+
+## Roadmap: beyond Python
+
+> **Designed, not built.** Today PureCoder generates and validates **Python
+> only**, and refuses a spec that asks for anything else rather than silently
+> handing back Python. The design below is specified in
+> [docs/superpowers/specs/2026-08-02-multi-language-design.md](docs/superpowers/specs/2026-08-02-multi-language-design.md).
+
+A language registry makes adding a language *data* rather than code — one
+entry declares how to build, run, and assert, and the executor, CLI and
+scaffolder need no changes:
+
+```mermaid
+flowchart LR
+    SPEC([spec + --lang]) --> REG{{language<br/>registry}}
+
+    REG --> PY["<b>python</b><br/>python file.py"]
+    REG --> CPP["<b>c++</b><br/>g++ → ./bin"]
+    REG --> JS["<b>javascript</b><br/>node file.js"]
+    REG --> RS["<b>rust</b><br/>rustc → ./bin"]
+    REG --> CS["<b>c#</b><br/>dotnet run"]
+    REG --> GO["<b>go, java, swift</b><br/><i>awaiting toolchain</i>"]
+    REG --> PQ["<b>power query</b><br/><i>no local runner</i>"]
+
+    PY --> RUN[[compile + run<br/>real assertions]]
+    CPP --> RUN
+    JS --> RUN
+    RS --> RUN
+    CS --> RUN
+    GO --> NO[refuse<br/><i>naming what to install</i>]
+    PQ --> NO
+
+    style SPEC fill:#e8f0fe,stroke:#4285f4,color:#111
+    style REG fill:#f1f3f4,stroke:#5f6368,color:#111
+    style RUN fill:#e6f4ea,stroke:#34a853,color:#111
+    style NO fill:#fce8e6,stroke:#ea4335,color:#111
+```
+
+The governing rule: **if it cannot be executed, it is not emitted.** A missing
+toolchain is refused with the binary named, not papered over with unvalidated
+output. Power Query M runs only inside Excel and Power BI, so no local
+execution is possible at any effort level — it is refused permanently, and the
+README says so rather than pretending otherwise.
 
 ## Architecture
 
