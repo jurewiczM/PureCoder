@@ -20,7 +20,6 @@ import argparse
 import os
 import sys
 
-from .anchors import count_anchors
 from .client import PureCoder
 from .execute import generate_validated_python, unsupported_language
 from .validate import generate_validated
@@ -63,8 +62,6 @@ def _print_result(res, show_tests=False):
     if contract:
         from .contract import render_contract
         print(render_contract(contract))
-        n = count_anchors(res.get("anchors", ""))
-        print(f"[{n} anchor assertion(s) generated mechanically]")
     print("-" * 60)
     print(res["text"])
     print("-" * 60)

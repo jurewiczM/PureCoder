@@ -3,8 +3,6 @@
 import time
 
 from purecoder.execute import (
-    MIN_ASSERTIONS,
-    _designer_floor,
     lint_implementation,
     lint_tests,
     missing_dependency,
@@ -144,31 +142,11 @@ def test_gate_counts_method_calls_as_reaching_the_target():
     assert ok, err
 
 
-def test_gate_accepts_a_lower_assertion_floor():
-    """With anchors carrying the spec, the designed portion can be smaller."""
+def test_gate_accepts_a_caller_supplied_floor():
+    """The floor is tunable; a caller may accept a smaller designed suite."""
     ok, err = lint_tests("assert add(1, 2) == 3\n", targets=["add"],
                          min_assertions=1)
     assert ok, err
-
-
-# ---- the assertion floor -------------------------------------------------
-
-def test_designer_floor_shrinks_by_the_anchor_count():
-    """Anchors count toward the total, so enabling contracts cannot lower it.
-
-    Two anchors leave the designer owing one; the total is still
-    MIN_ASSERTIONS. With no anchors the designer owes the whole floor.
-    """
-    two = "assert add(1, 2) == (3)\nassert add(0, 0) == (0)\n"
-    assert _designer_floor(two) == MIN_ASSERTIONS - 2
-    assert _designer_floor(two) + 2 == MIN_ASSERTIONS
-    assert _designer_floor("") == MIN_ASSERTIONS
-
-
-def test_designer_floor_never_reaches_zero():
-    """However many anchors there are, the designer still owes one test."""
-    many = "\n".join(f"assert add({i}, 0) == ({i})" for i in range(10))
-    assert _designer_floor(many) == 1
 
 
 # ---- proof that checks actually ran --------------------------------------

@@ -196,7 +196,7 @@ def test_derive_survives_a_dead_server():
 def test_contract_helpers_are_exported_from_the_package():
     import purecoder
 
-    for name in ("derive_contract", "anchor_tests", "render_contract",
+    for name in ("derive_contract", "render_contract",
                  "validate_contract"):
         assert name in purecoder.__all__
         assert hasattr(purecoder, name)
@@ -205,7 +205,7 @@ def test_contract_helpers_are_exported_from_the_package():
 # ---- example quality ------------------------------------------------------
 
 def test_validate_rejects_duplicate_examples():
-    """Duplicates yield duplicate anchors and signal the model ran dry."""
+    """A repeated example signals the model ran dry on the spec."""
     dup = {"in": "'80'", "out": "[80]"}
     ok, err = validate_contract({**GOOD, "examples": [dup, dict(dup)]})
     assert not ok
@@ -223,7 +223,7 @@ def test_validate_ignores_whitespace_when_comparing_examples():
 
 def test_validate_rejects_a_contract_where_every_example_raises():
     """Observed live: a 'display a graph' spec produced only `raises` examples,
-    so the anchors demanded that correct code throw."""
+    so the contract said nothing about the success path."""
     ok, err = validate_contract({**GOOD, "examples": [
         {"in": "'abc'", "out": "raises ValueError"},
         {"in": "'99999'", "out": "raises TypeError"},
