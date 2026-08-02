@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "purecoder"
+version = "0.1.0"
+description = "A constrained, code-only agentic coder that runs on a 6 GB laptop GPU"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Maksymilian Jurewicz", email = "maksymilian.jurewicz@gmail.com" }]
+keywords = ["llm", "code-generation", "llama.cpp", "gbnf", "rag", "local-ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Code Generators",
+]
+dependencies = [
+    "requests>=2.28",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+rag = ["sentence-transformers>=2.2"]
+dev = ["pytest>=7.0", "ruff>=0.1"]
+
+[project.urls]
+Homepage = "https://github.com/jurewiczM/PureCoder"
+Architecture = "https://github.com/jurewiczM/PureCoder/blob/main/docs/ARCHITECTURE.md"
+
+[project.scripts]
+purecoder = "purecoder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["purecoder*"]
+
+[tool.setuptools.package-data]
+purecoder = ["grammars/*.gbnf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear.
+# Deliberately not enabling BLE/S/PLW here: the broad `except Exception` in
+# status.py and the unchecked subprocess calls in the validators are the
+# design -- a probe must degrade gracefully, and a non-zero exit IS the signal.
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]

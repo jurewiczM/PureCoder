@@ -1,0 +1,32 @@
+# llama.cpp is a build dependency, not part of this project.
+# Clone and build it separately -- see README.md.
+llama.cpp/
+
+# RAG index artifacts (rebuild with `purecoder ingest`)
+*.npy
+docstore.json
+mylib_docs.json
+
+# scaffolder output
+build/
+portcheck-out/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# tooling / session state
+.remember/
+.claude/
+*.deb
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store

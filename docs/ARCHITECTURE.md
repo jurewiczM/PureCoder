@@ -1,0 +1,108 @@
+# PureCoder — Architecture
+
+## The core idea
+
+A small code model on a 6 GB card can't be *trusted* to be right, but it can be
+*constrained and verified* into being reliable. Every layer of PureCoder assumes
+the model may be wrong and catches it with something external — a grammar, a
+compiler, a test run — rather than the model's own judgment.
+
+The unit of the whole system is one loop:
+
+```
+generate → validate with a real tool → on failure, feed the error back → retry (capped)
+```
+
+Applied per artifact type, that loop is the entire design.
+
+## Layers
+
+### 1. Constrained generation (`purecoder/client.py`)
+Talks to `llama-server`'s native `/completion` endpoint (the only one that
+accepts a raw GBNF `grammar`), applying Qwen's ChatML template by hand.
+`repeat_penalty` is baked in to stop the model degenerating into endless
+near-identical lines. Per-artifact helpers (`env_file`, `makefile`, `code`)
+select the right grammar automatically.
+
+**Design line:** grammars are for *config shape*, not code. A full language
+grammar is huge and pointless — the model already emits valid Python. Grammars
+guarantee `.env` and Makefile structure; code correctness is the validator's job.
+
+### 2. Config validation (`purecoder/validate.py`)
+`.env` → structural (KEY=VALUE, no dupes). Makefile → three guards: a
+degeneration check (a command repeated >15× is a spiral, not a target), a
+malformed-target check, then `make -n` to confirm it parses. The loop feeds
+real error text back on failure.
+
+**Lesson that shaped it:** `make -n` alone *passed obvious garbage* (50 `rm`
+lines, `.rm:` malformed targets) because make is lenient. A validator that
+rubber-stamps garbage is worse than no validator — hence the semantic guards.
+
+### 3. Execution validation (`purecoder/execute.py`)
+The real jump: `compile()` only proves code *parses*. This layer *runs* it
+against tests in a sandboxed subprocess with a timeout, and feeds tracebacks
+back. Tests are **code-blind** (written from the spec, never shown the
+implementation) so they can't "agree" with a bug. A **test-quality gate**
+(`lint_tests`) rejects tests that don't parse, don't call the target, are too
+few, degenerate, or assert exact exception messages — regenerating if so.
+
+The gate runs in two stages, because one of its five checks needs a name the
+designer must not see. Four are purely structural and run at design time. The
+fifth — *do these tests call the thing under test at all?* — runs once after
+the first implementation exists, comparing the tests against the code's public
+names. Only the **gate** ever sees those names; the designer stays code-blind.
+
+**Lesson:** the writer is stronger than the tester. On the same model, the same
+spec produced correct code but wrong tests, repeatedly. Almost every failure in
+development traced to **spec ambiguity** or **test quality**, never the writer.
+The gate catches *structural* bad tests; it cannot catch a plausible-but-wrong
+expected value — that's spec clarity's job, and the code says so honestly.
+
+### 4. Project scaffolding (`purecoder/scaffold.py`)
+Composes the per-artifact loops into a whole project, generated in dependency
+order (code first, then Makefile/.env see the code for coherence, README last).
+One focused low-token call per artifact — "one agent per task."
+
+**Lesson:** context is double-edged. Feeding full code into the Makefile prompt
+triggered degeneration on the tight card. Fix: give each artifact only the slice
+it needs (the Makefile needs the filename, not the whole module). *Low context
+per task*, not just low tokens.
+
+### 5. Retrieval (`purecoder/rag.py`)
+Code-aware chunking (AST: functions/classes/methods as units) for `.py`,
+markdown chunking for docs. A small embedding model (bge-small → EmbeddingGemma)
+on GPU, brute-force cosine over a persisted index. A **retrieve-when-needed
+gate**: if nothing clears the similarity threshold, inject nothing — saving
+tokens and avoiding misleading context.
+
+**Boundary:** retrieval only visibly helps where the model is *ignorant* — new
+or obscure APIs, a project's own functions. It can't improve an answer the model
+already generates fluently.
+
+## Hardware reality
+
+Built on an RTX 4050 Laptop (6 GB, not the 12 GB originally assumed). That
+constraint shaped everything: Q4 quant, small context, KV-cache quantization,
+low-context-per-task, embed-once-persist, and a strong argument for the eventual
+specialization track (pruning to buy back context room).
+
+## What's proven vs assumed
+
+Every module is covered by `tests/` — the executor against known good/bad
+cases, the fix loops for convergence (driven by a scripted fake model), the
+validators against real degenerate output, the test gate against every failure
+mode seen, the chunkers on real Python ASTs, and the retrieval gate through an
+injected fake embedder. The suite needs neither a GPU nor a running server,
+which is why CI can run it.
+
+Two seams stay unproven by that suite and are honest about it: the live
+`/completion` call to llama-server, and the live embedding call (standard
+`sentence-transformers` usage, but nothing verifies the real vectors here).
+Both are exercised by hand; neither is exercised by CI.
+
+## Next
+
+- Wire RAG into the scaffolder (doc-grounded whole projects)
+- Harden the test designer further (few-shot anchors, per-test isolation)
+- tree-sitter chunking for non-Python code
+- Model specialization: prune + vocab-trim to reclaim context on 6 GB

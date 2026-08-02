@@ -1,0 +1,7 @@
+root       ::= item*
+item       ::= comment | assignment | rule | "\n"
+comment    ::= "#" [^\n]* "\n"
+assignment ::= name " "* ("=" | ":=" | "?=" | "+=") [^\n]* "\n"
+rule    ::= name ":" [^\n]* "\n" recipe{0,20}
+recipe  ::= "\t" [^\n]* "\n"
+name       ::= [A-Za-z_.] [A-Za-z0-9_./-]*
