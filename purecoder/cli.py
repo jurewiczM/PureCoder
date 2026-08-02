@@ -17,13 +17,32 @@ Usage:
 """
 
 import argparse
+import os
 
 from .client import PureCoder
 from .execute import generate_validated_python
 from .validate import generate_validated
 
 
+def resolve_contract(args, default):
+    """Most specific wins: explicit flag, then PURECODER_CONTRACT, then the
+    per-command default."""
+    if args.contract is not None:
+        return args.contract
+    env = os.environ.get("PURECODER_CONTRACT")
+    if env is not None:
+        return env.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
 def _print_result(res, show_tests=False):
+    contract = res.get("contract")
+    if contract:
+        from .contract import render_contract
+        print(render_contract(contract))
+        n = len([ln for ln in res.get("anchors", "").splitlines()
+                 if ln.startswith(("assert", "try:"))])
+        print(f"[{n} anchor assertion(s) generated mechanically]")
     print("-" * 60)
     print(res["text"])
     print("-" * 60)
@@ -36,9 +55,10 @@ def _print_result(res, show_tests=False):
 
 
 def cmd_code(pc, args):
-    _print_result(generate_validated_python(pc, args.spec,
-                                            max_retries=args.retries),
-                  show_tests=args.show_tests)
+    _print_result(generate_validated_python(
+        pc, args.spec, max_retries=args.retries,
+        use_contract=resolve_contract(args, default=False)),
+        show_tests=args.show_tests)
 
 
 def cmd_env(pc, args):
@@ -55,7 +75,8 @@ def cmd_project(pc, args):
     from .scaffold import scaffold_project
     r = scaffold_project(pc, args.name, args.spec,
                          outdir=args.outdir or args.name,
-                         max_retries=args.retries)
+                         max_retries=args.retries,
+                         use_contract=resolve_contract(args, default=True))
     print(f"\nscaffold {'complete' if r['ok'] else 'incomplete'} -> {r['outdir']}/")
 
 
@@ -77,8 +98,10 @@ def cmd_ask(pc, args):
         print("[rag] no relevant docs above threshold -- generating without context")
     # doc-grounded, still execution-validated
     task = f"{ctx}\n\n{args.spec}" if ctx else args.spec
-    _print_result(generate_validated_python(pc, task, max_retries=args.retries),
-                  show_tests=args.show_tests)
+    _print_result(generate_validated_python(
+        pc, task, max_retries=args.retries,
+        use_contract=resolve_contract(args, default=False)),
+        show_tests=args.show_tests)
 
 
 def cmd_status(pc, args):
@@ -95,6 +118,11 @@ def main():
     p.add_argument("--device", default="cuda", help="embedding device (cuda/cpu)")
     p.add_argument("--store", default="docstore", help="RAG index path")
     p.add_argument("--show-tests", action="store_true")
+    p.add_argument("--contract", dest="contract", action="store_true",
+                   default=None,
+                   help="derive a spec contract first (default: on for project)")
+    p.add_argument("--no-contract", dest="contract", action="store_false",
+                   help="skip contract derivation")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     for name in ("code", "env", "make", "ask"):
