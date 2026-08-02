@@ -602,8 +602,9 @@ def test_derive_survives_a_dead_server():
 ```
 
 Add `import json` at the top of the file and extend the import to
-`from purecoder.contract import (anchor_tests, derive_contract,
-render_contract, validate_contract)`.
+`from purecoder.contract import derive_contract, render_contract, validate_contract`.
+(`anchor_tests` lives in `purecoder/anchors.py` and has its own test file —
+do not import it here.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
