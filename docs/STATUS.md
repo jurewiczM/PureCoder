@@ -15,11 +15,11 @@ _Snapshot of what's built, tested, and what's next._
 | 3 | `validate.py` (config validators + loop) | ✅ tested | catches degeneration & malformed targets |
 | 3 | `execute.py` (execution validation) | ✅ tested | executor cases + convergence via a scripted fake model |
 | 3 | test-quality gate (`lint_tests`) | ✅ tested | one test per observed bad-test mode, all 5 |
+| 4 | `rag.py` chunking + retrieval + gate | ✅ tested | search/gate/persistence proven w/ fake embedder |
+| 4 | code-aware AST chunker | ✅ tested | function/class/method/preamble boundaries verified |
 | 5 | `contract.gbnf` + `validate_contract` | ✅ tested | schema guards past the grammar |
 | 5 | `anchors.py` (mechanical assertions) | ✅ tested | both shapes, malformed and custom-exception drops |
 | 5 | `derive_contract` + fallback | ✅ tested | retries, feeds errors back, degrades on a dead server |
-| 4 | `rag.py` chunking + retrieval + gate | ✅ tested | search/gate/persistence proven w/ fake embedder |
-| 4 | code-aware AST chunker | ✅ tested | function/class/method/preamble boundaries verified |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
