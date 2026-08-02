@@ -200,3 +200,67 @@ def test_contract_helpers_are_exported_from_the_package():
                  "validate_contract"):
         assert name in purecoder.__all__
         assert hasattr(purecoder, name)
+
+
+# ---- example quality ------------------------------------------------------
+
+def test_validate_rejects_duplicate_examples():
+    """Duplicates yield duplicate anchors and signal the model ran dry."""
+    dup = {"in": "'80'", "out": "[80]"}
+    ok, err = validate_contract({**GOOD, "examples": [dup, dict(dup)]})
+    assert not ok
+    assert "repeats an earlier example" in err
+
+
+def test_validate_ignores_whitespace_when_comparing_examples():
+    ok, err = validate_contract({**GOOD, "examples": [
+        {"in": "'80'", "out": "[80]"},
+        {"in": " '80' ", "out": " [80] "},
+    ]})
+    assert not ok
+    assert "repeats" in err
+
+
+def test_validate_rejects_a_contract_where_every_example_raises():
+    """Observed live: a 'display a graph' spec produced only `raises` examples,
+    so the anchors demanded that correct code throw."""
+    ok, err = validate_contract({**GOOD, "examples": [
+        {"in": "'abc'", "out": "raises ValueError"},
+        {"in": "'99999'", "out": "raises TypeError"},
+    ]})
+    assert not ok
+    assert "every example raises" in err
+
+
+def test_validate_accepts_a_mix_of_success_and_raises():
+    ok, err = validate_contract({**GOOD, "examples": [
+        {"in": "'80,443'", "out": "[80, 443]"},
+        {"in": "'99999'", "out": "raises ValueError"},
+    ]})
+    assert ok, err
+
+
+def test_a_rejected_contract_is_retried_with_the_reason_fed_back():
+    all_raise = {**GOOD, "examples": [
+        {"in": "'a'", "out": "raises ValueError"},
+        {"in": "'b'", "out": "raises TypeError"},
+    ]}
+    pc = FakeContractModel([json.dumps(all_raise), json.dumps(GOOD)])
+    contract, err = derive_contract(pc, "parse ports", verbose=False)
+    assert contract is not None and err == ""
+    assert "every example raises" in pc.prompts[1]
+
+
+def test_validate_rejects_a_returns_field_describing_an_exception():
+    """Observed live: `returns` read 'raises ValueError if unable to
+    generate', leaving the contract silent about the success value."""
+    ok, err = validate_contract(
+        {**GOOD, "returns": "raises ValueError if the input is bad"})
+    assert not ok
+    assert "returns describes an exception" in err
+
+
+def test_validate_still_accepts_a_returns_field_merely_mentioning_errors():
+    ok, err = validate_contract(
+        {**GOOD, "returns": "a sorted list, or an empty list on no input"})
+    assert ok, err
