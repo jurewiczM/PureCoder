@@ -18,11 +18,33 @@ Usage:
 
 import argparse
 import os
+import sys
 
 from .anchors import count_anchors
 from .client import PureCoder
-from .execute import generate_validated_python
+from .execute import generate_validated_python, unsupported_language
 from .validate import generate_validated
+
+
+def refuse_foreign_language(spec):
+    """Stop before generating Python for a spec that asked for another
+    language. Returns True if the run should not proceed.
+
+    The pipeline is Python-only end to end -- the writer prompt is hardcoded
+    and the executor runs the file with the Python interpreter. Producing
+    Python anyway is a silent scope violation, which is exactly what this
+    project exists not to do.
+    """
+    lang = unsupported_language(spec)
+    if not lang:
+        return False
+    print(f"This spec asks for {lang}, and purecoder only generates and "
+          f"validates Python.\n"
+          f"Generating Python anyway would hand you a confidently wrong "
+          f"artifact, so it stops here.\n"
+          f"If the spec really is Python and {lang!r} is incidental, say so "
+          f"in the spec (mention Python) and rerun.")
+    return True
 
 
 def resolve_contract(args, default):
@@ -55,6 +77,8 @@ def _print_result(res, show_tests=False):
 
 
 def cmd_code(pc, args):
+    if refuse_foreign_language(args.spec):
+        return 1
     _print_result(generate_validated_python(
         pc, args.spec, max_retries=args.retries,
         use_contract=resolve_contract(args, default=False)),
@@ -72,6 +96,8 @@ def cmd_make(pc, args):
 
 
 def cmd_project(pc, args):
+    if refuse_foreign_language(args.spec):
+        return 1
     from .scaffold import scaffold_project
     r = scaffold_project(pc, args.name, args.spec,
                          outdir=args.outdir or args.name,
@@ -137,7 +163,7 @@ def main():
     args = p.parse_args()
     pc = PureCoder(base_url=args.url)
 
-    {
+    return {
         "code": cmd_code, "env": cmd_env, "make": cmd_make,
         "project": cmd_project, "ingest": cmd_ingest, "ask": cmd_ask,
         "status": cmd_status,
@@ -145,4 +171,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
