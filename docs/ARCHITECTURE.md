@@ -61,6 +61,14 @@ longer the model's opinion.
 confidently wrong contract yields confidently wrong anchors. It makes the
 wrongness *visible*, which is a weaker and more honest claim.
 
+**Second boundary:** not every example becomes an anchor. An example whose
+expression won't parse, or that names an exception the interpreter doesn't
+already know, is *dropped* — an anchor is written before the implementation
+exists, so it can't reference a class that code has yet to define. Dropped
+examples are reported, not hidden, but the mechanical coverage is of the
+examples that survived, not of the contract as a whole. The designed tests
+carry the rest.
+
 **Design line:** the gate judges only the tests the designer wrote, never the
 anchors. Free assertions must not satisfy the floor on a lazy tester's behalf —
 the same reasoning that put semantic guards on top of `make -n`.
