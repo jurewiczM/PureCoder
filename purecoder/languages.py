@@ -34,6 +34,11 @@ class ProjectSpec:
     run: str                    # the `make run` recipe
     test: str                   # the `make test` recipe
     clean: str = "rm -rf build"
+    # A compiled language needs an entry point to link. The harness supplies
+    # one inside the sandbox, but the file written to disk has none -- so a
+    # scaffolded C++ project compiled clean in validation and then failed
+    # `make test` with "undefined reference to `main`". Observed live.
+    entry_stub: str = ""
 
 
 @dataclass(frozen=True)
@@ -176,8 +181,20 @@ register(LanguageSpec(
     build=("g++", "-std=c++17", "-O0", "-w", "{src}", "-o", "{bin}"),
     run=("{bin}",),
     preamble=(
+        # The tests are a function body and cannot add includes of their own,
+        # so the harness carries what a test plausibly reaches for. Observed
+        # live: the tester wrote INT_MAX and the run died on a missing
+        # <climits> that it had no way to include.
         "#include <cstdio>\n"
         "#include <cstdlib>\n"
+        "#include <climits>\n"
+        "#include <cmath>\n"
+        "#include <cstring>\n"
+        "#include <string>\n"
+        "#include <vector>\n"
+        "#include <map>\n"
+        "#include <set>\n"
+        "#include <algorithm>\n"
         "static int pc_checks = 0;\n"
         "#define PC_CHECK(x) do { \\\n"
         "    if (!(x)) { std::fprintf(stderr, \"CHECK FAILED: %s (line %d)\\n\", \\\n"
@@ -210,6 +227,10 @@ register(LanguageSpec(
         run="g++ -std=c++17 main.cpp -o main && ./main",
         test="g++ -std=c++17 main.cpp -o main && ./main",
         clean="rm -f main",
+        entry_stub=("\n\nint main() {\n"
+                    "    // entry point for the built binary\n"
+                    "    return 0;\n"
+                    "}\n"),
     ),
     check_call="PC_CHECK",
     aliases=("cpp", "cxx"),
@@ -302,6 +323,9 @@ register(LanguageSpec(
         run="rustc -o main main.rs && ./main",
         test="rustc -o main main.rs && ./main",
         clean="rm -f main",
+        entry_stub=("\n\nfn main() {\n"
+                    "    // entry point for the built binary\n"
+                    "}\n"),
     ),
     check_call="pc_check!",
     aliases=("rs",),
