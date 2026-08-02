@@ -21,6 +21,7 @@ from collections import Counter
 
 from .client import strip_fences
 from .contract import derive_contract, render_contract, validate_contract
+from .languages import PYTHON
 
 # a test file with fewer than this many assertions isn't a test suite,
 # it's a smoke check -- regenerate rather than trust it.
@@ -108,55 +109,92 @@ def _kill_group(proc):
 
 # ---- the executor (model-independent, fully testable) -------------------
 
-def run_python(code: str, tests: str, timeout: int = 10, require_checks: int = 0):
-    """Concatenate code + tests, run in a subprocess, return (ok, error).
+def _spawn(argv, cwd, timeout):
+    """Run argv in its own process group and reap the group afterwards.
 
-    Safe-ish sandbox: separate process, temp dir as cwd, hard timeout so an
-    infinite loop can't hang the pipeline. Returns the traceback on failure
-    so the loop can feed it back to the model.
+    start_new_session is what makes the timeout total rather than partial.
+    Without it subprocess kills only the direct child: a generated server's
+    worker threads or forks survive, hold their port, and the NEXT attempt
+    fails with "Address already in use" -- which then gets fed back to the
+    model as though its code were at fault. Observed live.
 
-    With require_checks > 0 the tests are instrumented so the run fails unless
-    that many checks actually executed. Exit code 0 alone is not evidence.
+    Returns (returncode, stdout, stderr) or (None, "", "") on timeout.
     """
-    if require_checks > 0:
-        tests = instrument_tests(tests, require=require_checks)
-    script = code.rstrip() + "\n\n# ---- tests ----\n" + tests.rstrip() + "\n"
-    with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "candidate.py")
-        with open(path, "w") as f:
-            f.write(script)
-        # start_new_session puts the candidate in its own process group so a
-        # timeout can kill everything it spawned. Without it, subprocess only
-        # kills the direct child: a generated web server's worker threads or
-        # forks survive, hold their port, and the NEXT attempt fails with
-        # "Address already in use" -- which then gets fed back to the model as
-        # though its code were at fault. Observed live.
-        proc = subprocess.Popen(
-            [sys.executable, path],
-            cwd=d, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_group(proc)
-            proc.communicate()
-            return False, (f"execution timed out after {timeout}s "
-                           f"(possible infinite loop, or a server that never "
-                           f"returns)")
-        # Even on a clean exit the candidate may have left children running.
+    proc = subprocess.Popen(
+        argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
         _kill_group(proc)
+        proc.communicate()
+        return None, "", ""
+    # Even on a clean exit the candidate may have left children running.
+    _kill_group(proc)
+    return proc.returncode, stdout, stderr
 
-    if proc.returncode == 0:
+
+def run_candidate(spec, code: str, tests: str, timeout: int = 10,
+                  require_checks: int = 0):
+    """Build (if the language needs it) and run one candidate. -> (ok, error).
+
+    Safe-ish sandbox: separate process group, temp dir as cwd, hard timeout so
+    an infinite loop cannot hang the pipeline. Returns the compiler or runtime
+    error on failure so the loop can feed it back to the model.
+
+    require_checks > 0 demands evidence that a check actually executed. Python
+    gets that by rewriting its test AST; every other language gets it from the
+    harness helper its spec already injects, so there is nothing to do here.
+    """
+    if require_checks > 0 and spec.name == "python":
+        tests = instrument_tests(tests, require=require_checks)
+
+    script = spec.assemble(code, tests)
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, f"candidate{spec.extension}")
+        binary = os.path.join(d, "candidate.bin")
+        with open(src, "w") as f:
+            f.write(script)
+
+        subs = {"src": src, "bin": binary, "python": sys.executable}
+        fill = lambda argv: [a.format(**subs) for a in argv]  # noqa: E731
+
+        if spec.build:
+            rc, _, berr = _spawn(fill(spec.build), d, timeout)
+            if rc is None:
+                return False, f"compilation timed out after {timeout}s"
+            if rc != 0:
+                # A compile error is an ordinary fix-loop failure, not an
+                # abort: it is exactly the feedback the writer needs.
+                return False, _trim(berr.strip() or f"compiler exited {rc}")
+
+        rc, stdout, stderr = _spawn(fill(spec.run), d, timeout)
+
+    if rc is None:
+        return False, (f"execution timed out after {timeout}s "
+                       f"(possible infinite loop, or a server that never "
+                       f"returns)")
+    if rc == 0:
         return True, ""
     # non-zero exit: an assert failed or an exception was raised.
     # Prefer stderr (the traceback); trim to the last few lines so the
     # feedback prompt stays small on a tight context budget.
-    err = stderr.strip() or stdout.strip() or f"exited {proc.returncode}"
+    return False, _trim(stderr.strip() or stdout.strip() or f"exited {rc}")
+
+
+def _trim(err: str) -> str:
+    """Keep feedback small on a tight context budget -- the last dozen lines
+    of a traceback carry the signal, the rest is frame noise."""
     lines = err.splitlines()
-    if len(lines) > 12:
-        err = "\n".join(lines[-12:])
-    return False, err
+    return "\n".join(lines[-12:]) if len(lines) > 12 else err
+
+
+def run_python(code: str, tests: str, timeout: int = 10, require_checks: int = 0):
+    """Python-specific wrapper kept so existing callers and tests are
+    unchanged. New code should call run_candidate with an explicit spec."""
+    return run_candidate(PYTHON, code, tests, timeout=timeout,
+                         require_checks=require_checks)
 
 
 # Languages the pipeline cannot produce or validate. The writer prompt is
@@ -241,7 +279,37 @@ def public_names(code: str):
             and not n.name.startswith("_")]
 
 
-def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS):
+def _lint_tests_textual(tests, targets, min_assertions, spec):
+    """The gate for languages we do not parse.
+
+    Every non-Python harness injects its own check helper and the tester prompt
+    names it, so counting calls to that helper is a faithful assertion count
+    without needing a parser per language. The compiler catches malformed
+    tests, which is what mode 1 does for Python -- so this checks the two
+    things a compiler will not: that enough checks exist, and that they are
+    aimed at the thing under test.
+    """
+    count = tests.count(spec.check_call)
+    if count < min_assertions:
+        return False, (f"only {count} check(s); need at least {min_assertions} "
+                       f"-- assert with {spec.check_call}")
+
+    lines = [ln.strip() for ln in tests.splitlines()
+             if spec.check_call in ln]
+    if lines:
+        top, repeats = Counter(lines).most_common(1)[0]
+        if repeats > MAX_REPEATED_ASSERT:
+            return False, (f"degenerate tests: identical check repeated "
+                           f"{repeats} times -- likely a generation spiral")
+
+    if targets and not any(t in tests for t in targets):
+        return False, (f"tests never mention any of {sorted(targets)} -- "
+                       f"they are not testing the target")
+    return True, ""
+
+
+def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
+               spec=PYTHON):
     """Reject structurally bad tests BEFORE they get to judge code.
 
     Returns (ok, reason). Catches the five failure modes seen in development:
@@ -254,6 +322,9 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS):
     """
     if not tests.strip():
         return False, "empty test output"
+
+    if spec.name != "python":
+        return _lint_tests_textual(tests, targets, min_assertions, spec)
 
     # mode 1: doesn't parse -- a test file that can't run proves nothing.
     try:
@@ -297,6 +368,19 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS):
 
 # ---- test designer (code-blind) -----------------------------------------
 
+# Rules that hold whatever the language is. The per-language idiom (how to
+# assert, what to output) lives on the LanguageSpec; these are about
+# discipline, and every one of them was added because a live run broke it.
+TEST_RULES = (
+    "STRICT RULES: Only test behaviour the description explicitly states. Do "
+    "not invent requirements. Do not test unspecified inputs. Never assert on "
+    "exact exception or error message text -- assert the TYPE or the fact of "
+    "the failure, never its wording. Respect every word of the spec (if it "
+    "says 'sorted', the expected output must be sorted). Do not redefine the "
+    "thing under test; it already exists in the same file."
+)
+
+
 TEST_SYSTEM = (
     "You write Python assert-based tests for a described function or class. "
     "Output ONLY test code: assert statements and setup. No prose, no fences. "
@@ -311,14 +395,18 @@ TEST_SYSTEM = (
     "(if it says 'sorted', expected output must be sorted)."
 )
 
-def generate_tests(pc, description: str, n_predict: int = 512) -> str:
-    res = pc.complete(system=TEST_SYSTEM, user=description,
+def generate_tests(pc, description: str, n_predict: int = 512,
+                   spec=PYTHON) -> str:
+    """The tester prompt is the language's own idiom plus the rules that apply
+    everywhere -- the spec supplies the former, TEST_RULES the latter."""
+    system = f"{spec.test_system} {TEST_RULES}" if spec.test_system else TEST_SYSTEM
+    res = pc.complete(system=system, user=description,
                       grammar=None, n_predict=n_predict)
     return strip_fences(res["text"])
 
 
 def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
-                 n_predict=512, min_assertions=MIN_ASSERTIONS):
+                 n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON):
     """Generate tests and put them through the quality gate, regenerating with
     the reason fed back on rejection. Returns (tests, ok, reason).
 
@@ -327,9 +415,9 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
     """
     task, tests, reason = description, "", ""
     for attempt in range(1, max_retries + 1):
-        tests = generate_tests(pc, task, n_predict=n_predict)
+        tests = generate_tests(pc, task, n_predict=n_predict, spec=spec)
         ok, reason = lint_tests(tests, targets=targets,
-                                min_assertions=min_assertions)
+                                min_assertions=min_assertions, spec=spec)
         if ok:
             if verbose:
                 print(f"[tests] accepted on attempt {attempt} "
@@ -347,7 +435,7 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
-                              use_contract=False, **kw):
+                              use_contract=False, spec=PYTHON, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -374,14 +462,14 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
     # Everything downstream reads the contract, never the implementation --
     # the test designer stays code-blind.
-    spec = description
+    grounded = description
     if contract is not None:
-        spec = f"{description}\n\n{render_contract(contract)}"
+        grounded = f"{description}\n\n{render_contract(contract)}"
 
     if tests is None:
         designed, gate_ok, gate_reason = design_tests(
-            pc, spec, max_retries=max_retries, verbose=verbose,
-            min_assertions=MIN_ASSERTIONS)
+            pc, grounded, max_retries=max_retries, verbose=verbose,
+            min_assertions=MIN_ASSERTIONS, spec=spec)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
@@ -393,7 +481,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     else:
         designed = tests
 
-    task = spec
+    task = grounded
     code, error = "", ""
     regated = False          # the target-name check runs once, after code exists
     asked_stdlib = False     # the stdlib-only nudge is offered at most once
@@ -405,12 +493,12 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     constraints = ""
 
     for attempt in range(1, max_retries + 1):
-        res = pc.code(task, language="python", **kw)
+        res = pc.code(task, language=spec.name, **kw)
         code = res["text"]
 
         if res["truncated"]:
             error = "output was cut off (hit n_predict)"
-            task = (f"{spec}{constraints}\n\n"
+            task = (f"{grounded}{constraints}\n\n"
                     f"Previous output was cut off. Be complete but concise.")
             if verbose:
                 print(f"[attempt {attempt}] truncated -> retrying")
@@ -423,13 +511,15 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             targets = public_names(code)
             if targets:
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
-                                                  min_assertions=MIN_ASSERTIONS)
+                                                  min_assertions=MIN_ASSERTIONS,
+                                                  spec=spec)
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
                     designed, redo_ok, redo_reason = design_tests(
-                        pc, spec, targets=targets, max_retries=max_retries,
-                        verbose=verbose, min_assertions=MIN_ASSERTIONS)
+                        pc, grounded, targets=targets, max_retries=max_retries,
+                        verbose=verbose, min_assertions=MIN_ASSERTIONS,
+                        spec=spec)
                     if not redo_ok:
                         if verbose:
                             print(f"[tests] gate never satisfied: {redo_reason} "
@@ -442,18 +532,23 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         # Reject an implementation carrying its own tests before running it --
         # they would execute alongside the real ones and pollute the artifact.
-        impl_ok, impl_reason = lint_implementation(code)
+        # lint_implementation parses Python. For other languages the harness
+        # owns main()/pc_tests(), so a stray test block is a compile error the
+        # executor already reports clearly.
+        impl_ok, impl_reason = (lint_implementation(code)
+                                if spec.name == "python" else (True, ""))
         if not impl_ok:
             if verbose:
                 print(f"[attempt {attempt}] {impl_reason} -> retrying")
             error = impl_reason
-            task = (f"{spec}{constraints}\n\n"
+            task = (f"{grounded}{constraints}\n\n"
                     f"Your previous output was rejected: {impl_reason}\n"
                     f"Output only the implementation, nothing else.")
             continue
 
         full = designed
-        ok, error = run_python(code, full, timeout=timeout, require_checks=1)
+        ok, error = run_candidate(spec, code, full, timeout=timeout,
+                                  require_checks=1)
 
         dep = missing_dependency(error)
         if dep:
@@ -467,11 +562,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     print(f"[attempt {attempt}] missing dependency {dep!r} -- "
                           f"retrying with a standard-library-only constraint")
                 constraints = (
-                    f"\n\nHARD CONSTRAINT: use ONLY the Python standard "
+                    f"\n\nHARD CONSTRAINT: use ONLY the {spec.name} standard "
                     f"library. {dep!r} is not installed and cannot be validated "
                     f"here. No third-party imports at all, in any later "
                     f"attempt.")
-                task = f"{spec}{constraints}"
+                task = f"{grounded}{constraints}"
                 continue
             if verbose:
                 print(f"[attempt {attempt}] still missing {dep!r} -- "
@@ -511,7 +606,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run
         # separately.
-        task = (f"{spec}{constraints}\n\n"
+        task = (f"{grounded}{constraints}\n\n"
                 f"Your previous implementation failed these tests, which are "
                 f"run separately and must NOT appear in your output:\n{full}\n\n"
                 f"With this error:\n{error}\n\n"
