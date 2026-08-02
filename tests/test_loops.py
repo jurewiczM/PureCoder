@@ -5,6 +5,8 @@ real error back, stops on success, and gives up at max_retries -- without
 needing llama-server running.
 """
 
+import json
+
 from purecoder.execute import generate_validated_python
 from purecoder.scaffold import scaffold_project
 from purecoder.validate import generate_validated
@@ -143,3 +145,82 @@ def test_scaffold_reports_failure_when_an_artifact_never_validates(tmp_path):
                            max_retries=2, verbose=False)
     assert not res["ok"]
     assert res["report"][".env"] is False
+
+
+# ---- contracts -----------------------------------------------------------
+
+CONTRACT = {
+    "name": "add",
+    "summary": "add two numbers",
+    "params": [{"name": "a", "type": "int"}, {"name": "b", "type": "int"}],
+    "returns": "int",
+    "raises": [],
+    "examples": [
+        {"in": "1, 2", "out": "3"},
+        {"in": "0, 0", "out": "0"},
+    ],
+}
+
+
+def test_contract_is_derived_and_its_anchors_reach_the_executor():
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(CONTRACT), GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", use_contract=True,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["contract"]["name"] == "add"
+    assert "assert add(1, 2) == 3" in res["anchors"]
+    assert res["anchors"] in res["tests"]
+
+
+def test_contract_reaches_the_prompts_alongside_the_prose():
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(CONTRACT), GOOD_TESTS])
+    generate_validated_python(pc, "add two numbers", use_contract=True,
+                              verbose=False)
+    grounded = [p for p in pc.prompts if "Contract for" in p]
+    assert grounded, "no prompt carried the rendered contract"
+    assert all("add two numbers" in p for p in grounded)
+
+
+def test_supplied_contract_skips_derivation():
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", contract=CONTRACT,
+                                    use_contract=True, verbose=False)
+    assert res["ok"]
+    assert res["contract"] is CONTRACT
+
+
+def test_failed_derivation_falls_back_to_the_plain_path():
+    """A dead or unhelpful contract call must never make the tool worse."""
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=["{not json", GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", use_contract=True,
+                                    max_retries=1, verbose=False)
+    assert res["ok"]
+    assert res["contract"] is None
+    assert res["anchors"] == ""
+
+
+def test_contract_off_by_default_changes_nothing():
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False)
+    assert res["ok"]
+    assert res["contract"] is None
+    assert res["anchors"] == ""
+    assert not any("Contract for" in p for p in pc.prompts)
+
+
+def test_gate_sees_only_the_designed_portion():
+    """Free anchors must not satisfy the gate on a lazy tester's behalf.
+
+    The contract yields two anchors. If the gate counted the combined source
+    it would see 2 assertions and pass a designer that wrote none. Counting
+    the designed portion alone sees 0 and rejects.
+    """
+    lazy = "x = 1\n"                          # no assertions at all
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(CONTRACT), lazy, GOOD_TESTS])
+    generate_validated_python(pc, "add two numbers", use_contract=True,
+                              verbose=False)
+    assert any("rejected" in p for p in pc.prompts)
