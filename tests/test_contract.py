@@ -1,9 +1,15 @@
 """The contract layer: schema guards, rendering, derivation."""
 
+import json
+
 import pytest
 
 from purecoder.client import GRAMMARS_DIR, PureCoder
-from purecoder.contract import validate_contract
+from purecoder.contract import (
+    derive_contract,
+    render_contract,
+    validate_contract,
+)
 
 GOOD = {
     "name": "parse_ports",
@@ -95,3 +101,93 @@ def test_validate_accepts_empty_params_and_raises():
     """A zero-argument function that raises nothing is a legitimate contract."""
     ok, err = validate_contract({**GOOD, "params": [], "raises": []})
     assert ok, err
+
+
+# ---- rendering -----------------------------------------------------------
+
+
+def test_render_contains_the_fields_a_reader_needs():
+    text = render_contract(GOOD)
+    assert "parse_ports" in text
+    assert "sorted list of unique int" in text
+    assert "ValueError" in text
+    assert "port outside 1-65535" in text
+    assert "'80,443'" in text
+
+
+def test_render_handles_empty_params_and_raises():
+    text = render_contract({**GOOD, "params": [], "raises": []})
+    assert "parse_ports" in text
+    assert isinstance(text, str) and text.strip()
+
+
+# ---- derivation ----------------------------------------------------------
+
+
+class FakeContractModel:
+    """Returns queued completions in order; records the prompts it saw."""
+
+    def __init__(self, completions):
+        self.completions = list(completions)
+        self.prompts = []
+
+    def complete(self, system, user, grammar=None, **kw):
+        self.prompts.append(user)
+        text = (self.completions.pop(0) if len(self.completions) > 1
+                else self.completions[0])
+        return {"text": text, "truncated": False, "tokens": 1, "raw": {}}
+
+
+def test_derive_returns_a_validated_contract():
+    pc = FakeContractModel([json.dumps(GOOD)])
+    contract, err = derive_contract(pc, "parse ports", verbose=False)
+    assert err == ""
+    assert contract["name"] == "parse_ports"
+
+
+def test_derive_requests_the_contract_grammar():
+    pc = FakeContractModel([json.dumps(GOOD)])
+
+    seen = {}
+    original = pc.complete
+
+    def spy(system, user, grammar=None, **kw):
+        seen["grammar"] = grammar
+        return original(system, user, grammar=grammar, **kw)
+
+    pc.complete = spy
+    derive_contract(pc, "parse ports", verbose=False)
+    assert seen["grammar"] == "contract"
+
+
+def test_derive_retries_on_invalid_json_and_feeds_the_error_back():
+    pc = FakeContractModel(["{not json", json.dumps(GOOD)])
+    contract, err = derive_contract(pc, "parse ports", verbose=False)
+    assert contract is not None and err == ""
+    assert "JSON" in pc.prompts[1]
+
+
+def test_derive_retries_when_the_validator_rejects():
+    bad = json.dumps({**GOOD, "name": "not an identifier"})
+    pc = FakeContractModel([bad, json.dumps(GOOD)])
+    contract, err = derive_contract(pc, "parse ports", verbose=False)
+    assert contract is not None and err == ""
+    assert "identifier" in pc.prompts[1]
+
+
+def test_derive_gives_up_and_reports_the_error():
+    pc = FakeContractModel(["{not json"])
+    contract, err = derive_contract(pc, "parse ports", max_retries=2,
+                                    verbose=False)
+    assert contract is None
+    assert err
+
+
+def test_derive_survives_a_dead_server():
+    class DeadModel:
+        def complete(self, *a, **kw):
+            raise RuntimeError("llama-server request failed: connection refused")
+
+    contract, err = derive_contract(DeadModel(), "parse ports", verbose=False)
+    assert contract is None
+    assert "connection refused" in err
