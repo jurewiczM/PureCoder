@@ -3,6 +3,7 @@
 import time
 
 from purecoder.execute import (
+    _trim,
     lint_implementation,
     lint_tests,
     missing_dependency,
@@ -294,3 +295,31 @@ def test_the_timeout_message_names_the_server_case():
     assert not ok
     assert "timed out" in err
     assert "never returns" in err
+
+
+# ---- feedback quality ----------------------------------------------------
+
+def test_trim_keeps_the_first_diagnostics_of_a_compiler_error():
+    """A compiler puts its signal FIRST and then draws carets under the
+    source. Tailing a g++ error yields "|  ^" and nothing else -- observed
+    live, where the loop failed three identical times because that was the
+    whole message the model received."""
+    err = "\n".join(
+        [f"cand.cpp:{i}:1: error: 'X' was not declared in this scope" for i in range(3)]
+        + ["   21 |     PC_CHECK(add(INT_MAX, 1));", "      |              ^~~~~~~"] * 8
+    )
+    out = _trim(err)
+    assert "was not declared" in out
+    assert out.splitlines()[0].endswith("in this scope")
+
+
+def test_trim_keeps_the_last_lines_of_a_python_traceback():
+    """Python's signal is at the END -- the exception, not the frames."""
+    err = "\n".join([f'  File "x.py", line {i}, in f' for i in range(30)]
+                    + ["AssertionError: the actual failure"])
+    out = _trim(err)
+    assert out.splitlines()[-1] == "AssertionError: the actual failure"
+
+
+def test_trim_leaves_short_errors_alone():
+    assert _trim("one\ntwo") == "one\ntwo"
