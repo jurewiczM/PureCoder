@@ -71,7 +71,12 @@ carry the rest.
 
 **Design line:** the gate judges only the tests the designer wrote, never the
 anchors. Free assertions must not satisfy the floor on a lazy tester's behalf —
-the same reasoning that put semantic guards on top of `make -n`.
+the same reasoning that put semantic guards on top of `make -n`. The floor
+itself is *reduced by the number of anchors* (never below 1), so the total
+assertion count is held at `MIN_ASSERTIONS` rather than the designer being
+asked for three more on top of them. That is the tradeoff, stated plainly:
+anchors buy the designer fewer tests to write, not the suite fewer assertions —
+and a dropped example, being no anchor, gives the budget straight back.
 
 Anchors run in the same sandboxed subprocess that already executes
 model-written code, so this adds no new trust boundary.
