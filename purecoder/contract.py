@@ -15,6 +15,7 @@ It does not make the contract correct. It makes it visible. Those are
 different claims and the docs keep them apart.
 """
 
+import json
 import keyword
 
 REQUIRED_KEYS = ("name", "summary", "params", "returns", "raises", "examples")
@@ -76,3 +77,80 @@ def validate_contract(obj):
                 return False, f"example {i}: missing string {side!r}"
 
     return True, ""
+
+
+CONTRACT_SYSTEM = (
+    "You output only a JSON contract describing the function the user asks "
+    "for. No prose, no explanation, no code fences. Capture ONLY what the "
+    "description states -- do not invent requirements. Every error case the "
+    "description mentions must appear in 'raises'. Give at least two "
+    "'examples': 'in' is the argument list as Python source (empty string for "
+    "no arguments), 'out' is either a Python expression for the expected "
+    "return value or the exact form 'raises ExceptionName'."
+)
+
+
+def render_contract(contract):
+    """The 'what I assumed' block. This is the whole point of the layer: a
+    wrong interpretation is worth far more when it is visible than when it is
+    buried in generated tests."""
+    lines = [f"Contract for `{contract['name']}`: {contract['summary']}"]
+
+    params = contract.get("params") or []
+    if params:
+        joined = ", ".join(f"{p['name']}: {p['type']}" for p in params)
+        lines.append(f"  params  : {joined}")
+    else:
+        lines.append("  params  : (none)")
+
+    lines.append(f"  returns : {contract['returns']}")
+
+    raises = contract.get("raises") or []
+    if raises:
+        for item in raises:
+            lines.append(f"  raises  : {item['exc']} when {item['when']}")
+    else:
+        lines.append("  raises  : (nothing)")
+
+    for ex in contract.get("examples") or []:
+        lines.append(f"  example : {contract['name']}({ex['in']}) -> {ex['out']}")
+
+    return "\n".join(lines)
+
+
+def derive_contract(pc, description, max_retries=3, verbose=True):
+    """Prose -> validated contract. Returns (contract, error); contract is
+    None on failure so the caller can fall back rather than abort.
+
+    Same write -> validate -> fix shape as the config loop, with JSON decoding
+    counted as a validation failure: a truncated object is invalid JSON, so
+    truncation is retried by the same path.
+    """
+    task, error = description, ""
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = pc.complete(system=CONTRACT_SYSTEM, user=task,
+                              grammar="contract", n_predict=512)
+        except RuntimeError as e:
+            # A dead server must not kill the run -- the caller falls back.
+            return None, str(e)
+
+        try:
+            obj = json.loads(res["text"])
+            ok, error = validate_contract(obj)
+        except json.JSONDecodeError as e:
+            ok, error = False, f"not valid JSON: {e}"
+
+        if ok:
+            if verbose:
+                print(f"[contract] derived on attempt {attempt}")
+            return obj, ""
+
+        if verbose:
+            print(f"[contract] attempt {attempt} rejected: {error} -> retrying")
+        task = (f"{description}\n\n"
+                f"Your previous contract was rejected: {error}\n"
+                f"Output only the corrected JSON contract, nothing else.")
+
+    return None, error
