@@ -17,8 +17,15 @@ different claims and the docs keep them apart.
 
 import json
 import keyword
+import re
 
 REQUIRED_KEYS = ("name", "summary", "params", "returns", "raises", "examples")
+
+# an example whose `out` names an exception rather than a value.
+_RAISES_EXAMPLE = re.compile(r"^raises\s+[A-Za-z_][A-Za-z0-9_]*$")
+
+# a `returns` field that talks about raising instead of returning.
+_RAISES_ANYWHERE = re.compile(r"^raises\b", re.IGNORECASE)
 
 
 def _identifier_error(value, what):
@@ -67,14 +74,37 @@ def validate_contract(obj):
         if err:
             return False, err
 
+    # `returns` describes the success value. Observed live: the model filled it
+    # with "raises ValueError if unable to generate", leaving the contract
+    # silent about what the function actually produces.
+    if _RAISES_ANYWHERE.match(str(obj["returns"]).strip()):
+        return False, ("returns describes an exception -- it must state the "
+                       "value returned on success; exceptions go in 'raises'")
+
     if not isinstance(obj["examples"], list) or not obj["examples"]:
         return False, "examples is empty -- a contract with no example is untestable"
+    seen = set()
     for i, ex in enumerate(obj["examples"], 1):
         if not isinstance(ex, dict):
             return False, f"example {i}: not an object"
         for side in ("in", "out"):
             if side not in ex or not isinstance(ex[side], str):
                 return False, f"example {i}: missing string {side!r}"
+        # Duplicates yield duplicate anchors and are a fair sign the model had
+        # nothing further to say about the spec.
+        key = (ex["in"].strip(), ex["out"].strip())
+        if key in seen:
+            return False, (f"example {i} repeats an earlier example "
+                           f"({ex['in']!r} -> {ex['out']!r})")
+        seen.add(key)
+
+    # Every example raising means the contract never states what the function
+    # DOES -- the anchors would assert only that it fails. Observed live: a
+    # "display a graph" spec produced two identical `raises ValueError`
+    # examples, so the anchors demanded that correct code throw.
+    if all(_RAISES_EXAMPLE.match(ex["out"].strip()) for ex in obj["examples"]):
+        return False, ("every example raises -- give at least one showing what "
+                       "the function returns on valid input")
 
     return True, ""
 
@@ -85,8 +115,16 @@ CONTRACT_SYSTEM = (
     "description states -- do not invent requirements. Every error case the "
     "description mentions must appear in 'raises'. Give at least two "
     "'examples': 'in' is the argument list as Python source (empty string for "
-    "no arguments), 'out' is either a Python expression for the expected "
-    "return value or the exact form 'raises ExceptionName'."
+    "no arguments), 'out' is either a literal value for the expected return "
+    "or the exact form 'raises ExceptionName'. Examples must be DISTINCT, and "
+    "at least one must show a successful call rather than an error -- a "
+    "contract whose every example raises never says what the function does. "
+    "Both sides must be plain literal data (numbers, strings, lists, dicts, "
+    "tuples, True/False/None); never a function call, lambda, or variable. "
+    "Write strings with quotes: \"'hello'\", not hello. For the error form "
+    "write ONLY 'raises ValueError' -- never add a colon or a message after "
+    "the exception name. 'returns' describes the value returned on success; "
+    "it must not mention exceptions, which belong in 'raises'."
 )
 
 
