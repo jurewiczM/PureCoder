@@ -18,7 +18,9 @@ import sys
 import tempfile
 from collections import Counter
 
+from .anchors import anchor_tests
 from .client import strip_fences
+from .contract import derive_contract, render_contract
 
 # a test file with fewer than this many assertions isn't a test suite,
 # it's a smoke check -- regenerate rather than trust it.
@@ -80,12 +82,13 @@ def public_names(code: str):
             and not n.name.startswith("_")]
 
 
-def lint_tests(tests: str, targets=None):
+def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS):
     """Reject structurally bad tests BEFORE they get to judge code.
 
     Returns (ok, reason). Catches the five failure modes seen in development:
-    doesn't parse, calls nothing under test, too few assertions, degenerate
-    repetition, and asserting on exact exception messages.
+    doesn't parse, calls nothing under test, too few assertions (the floor is
+    caller-tunable via min_assertions), degenerate repetition, and asserting
+    on exact exception messages.
 
     It deliberately cannot catch a plausible-but-wrong expected value -- that
     is spec clarity's job, not this gate's. Said plainly rather than implied.
@@ -101,9 +104,9 @@ def lint_tests(tests: str, targets=None):
 
     # mode 2: too few assertions.
     asserts = [n for n in ast.walk(tree) if isinstance(n, ast.Assert)]
-    if len(asserts) < MIN_ASSERTIONS:
+    if len(asserts) < min_assertions:
         return False, (f"only {len(asserts)} assertion(s); "
-                       f"need at least {MIN_ASSERTIONS}")
+                       f"need at least {min_assertions}")
 
     # mode 3: degenerate repetition of one assertion line.
     lines = [ln.strip() for ln in tests.splitlines()
@@ -142,8 +145,10 @@ TEST_SYSTEM = (
     "directly. STRICT RULES: Only test behavior the description explicitly "
     "states. Do not invent requirements. Do not test unspecified inputs. Never "
     "assert on exact exception messages -- only assert that the correct "
-    "exception TYPE is raised, using try/except with an 'assert False' after "
-    "the call and 'except ThatError: pass'. Respect every word of the spec "
+    "exception TYPE is raised, using try/except/else: call it inside 'try', "
+    "'except ThatError: pass', and 'else: assert False'. Never put "
+    "'assert False' inside the try -- it would be caught by your own except. "
+    "Respect every word of the spec "
     "(if it says 'sorted', expected output must be sorted)."
 )
 
@@ -154,7 +159,7 @@ def generate_tests(pc, description: str, n_predict: int = 512) -> str:
 
 
 def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
-                 n_predict=512):
+                 n_predict=512, min_assertions=MIN_ASSERTIONS):
     """Generate tests and put them through the quality gate, regenerating with
     the reason fed back on rejection. Returns (tests, ok, reason).
 
@@ -164,7 +169,8 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
     task, tests, reason = description, "", ""
     for attempt in range(1, max_retries + 1):
         tests = generate_tests(pc, task, n_predict=n_predict)
-        ok, reason = lint_tests(tests, targets=targets)
+        ok, reason = lint_tests(tests, targets=targets,
+                                min_assertions=min_assertions)
         if ok:
             if verbose:
                 print(f"[tests] accepted on attempt {attempt} "
@@ -180,15 +186,56 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 # ---- the execution fix loop ---------------------------------------------
 
-def generate_validated_python(pc, description, tests=None, max_retries=3,
+def generate_validated_python(pc, description, tests=None, contract=None,
+                              use_contract=False, max_retries=3,
                               timeout=10, verbose=True, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
-    with the traceback fed back. Returns {ok, text, tests, attempts, error}."""
-    if tests is None:
-        tests, _, _ = design_tests(pc, description, max_retries=max_retries,
-                                   verbose=verbose)
+    with the traceback fed back.
 
-    task = description
+    With use_contract, the prose is first turned into a contract that both the
+    writer and the test designer read, and whose examples become mechanical
+    anchor assertions. Returns {ok, text, tests, anchors, contract, attempts,
+    error}.
+    """
+    if use_contract and contract is None:
+        contract, cerr = derive_contract(pc, description,
+                                         max_retries=max_retries,
+                                         verbose=verbose)
+        if contract is None and verbose:
+            print(f"[contract] {cerr} -> continuing without one")
+
+    anchors = ""
+    if contract is not None:
+        anchors, dropped = anchor_tests(contract)
+        if verbose:
+            for reason in dropped:
+                print(f"[contract] dropped {reason}")
+
+    # Everything downstream reads the contract, never the implementation --
+    # the test designer stays code-blind.
+    spec = description
+    if contract is not None:
+        spec = f"{description}\n\n{render_contract(contract)}"
+
+    if tests is None:
+        # Anchors already assert everything the contract states, so the
+        # designer is asked for what they do NOT cover, and judged on that
+        # alone. Counting free anchors toward the floor would let a lazy
+        # tester through on tests it did not write.
+        floor = 1 if anchors else MIN_ASSERTIONS
+        ask = spec
+        if anchors:
+            ask = (f"{spec}\n\nThese cases are already covered and must NOT be "
+                   f"repeated:\n{anchors}\n\nWrite only ADDITIONAL tests.")
+        designed, _, _ = design_tests(pc, ask, max_retries=max_retries,
+                                      verbose=verbose, min_assertions=floor)
+    else:
+        designed = tests
+
+    def _assemble(designed_src):
+        return f"{anchors}\n\n{designed_src}".strip() if anchors else designed_src
+
+    task = spec
     code, error = "", ""
     regated = False          # the target-name check runs once, after code exists
 
@@ -198,7 +245,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         if res["truncated"]:
             error = "output was cut off (hit n_predict)"
-            task = f"{description}\n\nPrevious output was cut off. Be complete but concise."
+            task = f"{spec}\n\nPrevious output was cut off. Be complete but concise."
             if verbose:
                 print(f"[attempt {attempt}] truncated -> retrying")
             continue
@@ -209,28 +256,33 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             regated = True
             targets = public_names(code)
             if targets:
-                gate_ok, gate_reason = lint_tests(tests, targets=targets)
+                floor = 1 if anchors else MIN_ASSERTIONS
+                gate_ok, gate_reason = lint_tests(designed, targets=targets,
+                                                  min_assertions=floor)
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
-                    tests, _, _ = design_tests(pc, description, targets=targets,
-                                               max_retries=max_retries,
-                                               verbose=verbose)
+                    designed, _, _ = design_tests(pc, spec, targets=targets,
+                                                  max_retries=max_retries,
+                                                  verbose=verbose,
+                                                  min_assertions=floor)
 
-        ok, error = run_python(code, tests, timeout=timeout)
+        full = _assemble(designed)
+        ok, error = run_python(code, full, timeout=timeout)
         if ok:
             if verbose:
                 print(f"[attempt {attempt}] all tests passed")
-            return {"ok": True, "text": code, "tests": tests,
-                   "attempts": attempt, "error": ""}
+            return {"ok": True, "text": code, "tests": full, "anchors": anchors,
+                    "contract": contract, "attempts": attempt, "error": ""}
 
         if verbose:
             first = error.splitlines()[-1] if error else "unknown"
             print(f"[attempt {attempt}] tests failed: {first} -> retrying")
-        task = (f"{description}\n\n"
-                f"Your previous implementation failed these tests:\n{tests}\n\n"
+        task = (f"{spec}\n\n"
+                f"Your previous implementation failed these tests:\n{full}\n\n"
                 f"With this error:\n{error}\n\n"
                 f"Output only the corrected code, nothing else.")
 
-    return {"ok": False, "text": code, "tests": tests,
+    return {"ok": False, "text": code, "tests": _assemble(designed),
+            "anchors": anchors, "contract": contract,
             "attempts": max_retries, "error": error}

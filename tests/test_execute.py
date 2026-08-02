@@ -132,3 +132,10 @@ def test_gate_counts_method_calls_as_reaching_the_target():
              "assert obj is not None\n")
     ok, err = lint_tests(tests, targets=["parse"])
     assert ok, err
+
+
+def test_gate_accepts_a_lower_assertion_floor():
+    """With anchors carrying the spec, the designed portion can be smaller."""
+    ok, err = lint_tests("assert add(1, 2) == 3\n", targets=["add"],
+                         min_assertions=1)
+    assert ok, err
