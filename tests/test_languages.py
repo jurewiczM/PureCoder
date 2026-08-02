@@ -12,6 +12,7 @@ import pytest
 from purecoder import languages as L
 from purecoder.execute import lint_tests, run_candidate
 from purecoder.languages import PYTHON, LanguageSpec
+from purecoder.scaffold import scaffold_project
 
 # ---- resolution ----------------------------------------------------------
 
@@ -245,3 +246,41 @@ def test_python_still_uses_the_ast_gate():
     ok, err = lint_tests("assert add(1, 2 == 3\n", spec=PYTHON)
     assert not ok
     assert "do not parse" in err
+
+
+# ---- what lands on disk must actually build -----------------------------
+
+def test_a_scaffolded_compiled_project_builds_standalone(tmp_path):
+    """The sandbox supplies main(); the file written to disk does not. A
+    validated C++ project used to compile clean in the harness and then fail
+    `make test` with "undefined reference to `main`". Observed live -- so this
+    runs the real compiler on the real artifact."""
+    import subprocess
+    import sys as _sys
+
+    _sys.path.insert(0, "tests")
+    from test_loops import MAKEFILE, FakeModel
+
+    spec = _skip_unless("c++")
+    code = "int multiply(int a,int b){return a*b;}"
+    tests = ("int multiply(int,int);\nvoid pc_tests(){ "
+             "PC_CHECK(multiply(2,3)==6); PC_CHECK(multiply(0,5)==0); "
+             "PC_CHECK(multiply(-1,-5)==5); }")
+    pc = FakeModel(code_outputs=[code],
+                   completions=[tests, MAKEFILE, "K=v\n", "# readme"])
+    scaffold_project(pc, "calc", "multiply two ints", outdir=str(tmp_path),
+                     spec=spec, use_contract=False, verbose=False)
+
+    src = tmp_path / "main.cpp"
+    assert src.exists()
+    out = subprocess.run(["g++", "-std=c++17", str(src), "-o",
+                          str(tmp_path / "main")], capture_output=True, text=True)
+    assert out.returncode == 0, f"the shipped artifact does not build:\n{out.stderr}"
+
+
+def test_an_interpreted_language_needs_no_entry_stub():
+    """Python and JavaScript run a module as-is; only linked languages need
+    an entry point added to the file on disk."""
+    assert L.get("python").project.entry_stub == ""
+    assert L.get("javascript").project.entry_stub == ""
+    assert "main" in L.get("c++").project.entry_stub
