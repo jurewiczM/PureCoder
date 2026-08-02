@@ -53,7 +53,7 @@ cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j
 
 ./build/bin/llama-server \
   -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M \
-  -ngl 99 -c 4096 -fa --port 8080
+  -ngl 99 -c 4096 -fa on --port 8080
 ```
 
 ## Quickstart
@@ -109,7 +109,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           123 model-independent tests (no GPU, no server)
+tests/           182 model-independent tests (no GPU, no server)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

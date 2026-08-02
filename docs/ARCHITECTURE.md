@@ -61,12 +61,25 @@ longer the model's opinion.
 confidently wrong contract yields confidently wrong anchors. It makes the
 wrongness *visible*, which is a weaker and more honest claim.
 
-**Second boundary:** not every example becomes an anchor. An example whose
-expression won't parse, or that names an exception the interpreter doesn't
-already know, is *dropped* — an anchor is written before the implementation
-exists, so it can't reference a class that code has yet to define. Dropped
-examples are reported, not hidden, but the mechanical coverage is of the
-examples that survived, not of the contract as a whole. The designed tests
+**Second boundary:** not every example becomes an anchor, and the rule is
+stricter than it first looks. An example is *dropped* when it won't parse, when
+it names an exception the interpreter doesn't already know (an anchor is
+written before the implementation exists, so it can't reference a class that
+code has yet to define), and — the widest of the three — whenever a value is
+not a **literal**. Both the expected value and every argument must survive
+`ast.literal_eval`.
+
+That last rule exists because the contract's author is the same model the
+anchors are meant to check. An anchor may embed data, never behaviour. An `out`
+of `f(1)` emits a tautology every implementation passes; an `in` of
+`(ValueError := BaseException)` leaves the handler reading `except ValueError`
+while catching everything. Both are ordinary Python, and no amount of parsing
+the result distinguishes them from an honest example — so the material is
+restricted instead. Emitted blocks are then checked structurally, and kept only
+if they are the assertion the generator meant to write.
+
+Dropped examples are reported, not hidden, but the mechanical coverage is of
+the examples that survived, not of the contract as a whole. The designed tests
 carry the rest.
 
 **Design line:** the gate judges only the tests the designer wrote, never the

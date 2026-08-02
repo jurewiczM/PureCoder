@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-123 tests, all green, none of them needing a GPU or a running server
+182 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -17,7 +17,7 @@ _Snapshot of what's built, tested, and what's next._
 | 3 | test-quality gate (`lint_tests`) | ✅ tested | one test per observed bad-test mode, all 5 |
 | 4 | `rag.py` chunking + retrieval + gate | ✅ tested | search/gate/persistence proven w/ fake embedder |
 | 4 | code-aware AST chunker | ✅ tested | function/class/method/preamble boundaries verified |
-| 5 | `contract.gbnf` + `validate_contract` | ✅ tested | schema guards past the grammar |
+| 5 | `contract.gbnf` + `validate_contract` | ✅ tested | schema guards past the grammar; grammar verified against a live llama-server |
 | 5 | `anchors.py` (mechanical assertions) | ✅ tested | both shapes, malformed and custom-exception drops |
 | 5 | `derive_contract` + fallback | ✅ tested | retries, feeds errors back, degrades on a dead server |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
@@ -37,23 +37,85 @@ _Snapshot of what's built, tested, and what's next._
    for coherence triggered degeneration. Minimal context per task is the rule.
 5. **Real hardware is 6 GB, not the assumed 12** — shaped every choice and
    strengthens the case for the pruning/specialization track.
+6. **Mechanically-generated tests are not automatically trustworthy.** The
+   anchor generator turns contract examples into assertions with no model
+   involved — and still produced five separate false greens before it was
+   safe, none of which a passing suite revealed. All five came from embedding
+   model-authored *expressions* into generated code: an unparenthesized
+   expected value made `assert f(10,3) == 3, 1` assert only `== 3`; a `#`
+   truncated an assertion to a bare truthiness check; a walrus rebound an
+   exception name so the handler caught `BaseException`; `out: "f(1)"` emitted
+   a tautology. The rule that ended it was structural, not another patch:
+   **an anchor may embed data, never behaviour** — every value must be a
+   literal. Worth remembering that the contract's author is the same model the
+   anchors exist to check.
+7. **A live run finds what unit tests cannot.** Two defects survived 147
+   passing tests and six clean reviews: `contract.gbnf` did not parse in
+   llama.cpp at all (multi-line rules are rejected — every contract run
+   silently fell back), and the test designer can wrap its assertions in a
+   `def test_x():` that nothing ever calls, so `run_python` exits 0 and the
+   loop reports success on an implementation returning garbage. The second is
+   a false green in the project's central claim and pre-dates the contract
+   work entirely. Eight scaffold runs against a live server produced five more
+   defects no test had thought to look for: the writer copying the tests it
+   was shown into the implementation (they then ran twice), the gate's verdict
+   being discarded when it gave up, a missing import burning the whole retry
+   budget, a mid-loop constraint being dropped by the next prompt rebuild, and
+   generated code orphaning spawned processes past the timeout.
+8. **Constrain at the cheapest layer that can express it.** The `.env`
+   rambling comment was attacked three ways: a system prompt (ignored), then a
+   semantic validator (worked, but cost a model call per retry and still
+   failed three attempts in a row). Bounding the line length *in the grammar*
+   made it structurally impossible and free. Line length is shape, and shape
+   is the grammar's job — the validator should never have been the first
+   answer. It is kept, at a looser bound, for hand-written files and as
+   defence in depth.
 
 ## Known boundaries (by design, documented)
 
 - Test gate catches *structural* bad tests, not plausible-but-wrong values.
+- Assertion *reachability* is proven at runtime, not by the gate. The tests
+  are instrumented to count checks that actually execute, so a suite whose
+  asserts sit in a `def test_x():` nobody calls now fails with "no checks
+  ran". The static gate still cannot see it -- the proof is the run.
+- A wrong contract now fails *correct* code rather than silently passing wrong
+  code. The first live contract run produced `parse_ports('80,443') ->
+  [443, 80]` for a spec that said "sorted", and the anchor faithfully failed a
+  correct implementation. Noisy-wrong beats silent-wrong, but it is not free.
+- **Execution validation only reaches stdlib-only, run-to-completion code.**
+  Three hard limits, each confirmed repeatedly against a live server on a
+  "small web app that graphs random numbers" spec: the sandbox has no
+  third-party packages, so anything importing `matplotlib`/`flask`/`PIL`
+  cannot be validated no matter how correct it is; a server that calls
+  `serve_forever()` never returns, so the timeout is the only possible
+  verdict; and successive binds hit `TIME_WAIT`, so even a stdlib
+  `http.server` answer fails to rebind on the next attempt. A missing import
+  now triggers one stdlib-only retry and then stops, rather than burning the
+  whole budget. Function-shaped, stdlib-only specs pass on the first attempt.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
 - Two seams are outside the automated suite: the live `/completion` call and
-  the live embedding call. Both are exercised by hand, neither by CI.
+  the live embedding call. `/completion` has now been exercised by hand end to
+  end, including grammar-constrained contract derivation; the embedding call
+  has not. Neither is exercised by CI. A CI-able check does guard the class of
+  grammar bug that broke `contract.gbnf` (no rule may span lines).
 
 ## Next steps (priority order)
 
-1. **Semantic guard for `.env`** — the one validator that still rubber-stamps
-   degenerate output; `examples/portcheck/.env` is a live example.
-2. **Wire RAG into the scaffolder** — doc-grounded whole projects.
-3. **tree-sitter chunking** — multi-language code retrieval.
-4. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
-   context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
-5. **Measure the contract layer** — does grounding actually reduce
+1. **Wire RAG into the scaffolder** — doc-grounded whole projects.
+2. **Measure the contract layer** — does grounding actually reduce
    spec-divergence, or only make it visible? Needs a small task set with
-   known-ambiguous specs.
+   known-ambiguous specs. This is the claim the whole layer rests on and it
+   is still unmeasured.
+3. **A dependency story for the executor** — today anything outside the
+   stdlib is unvalidatable. A per-run venv, or declaring allowed packages in
+   the spec, would widen execution validation past its current ceiling.
+4. **tree-sitter chunking** — multi-language code retrieval.
+5. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
+   context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
+
+Done since the last snapshot: the reachability false green (runtime check
+instrumentation), the `.env` guard (grammar bound plus a looser validator),
+test leakage into the implementation (`lint_implementation`), the discarded
+gate verdict, dependency thrash (one stdlib retry then stop), and sandbox
+process-group cleanup.
