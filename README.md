@@ -55,9 +55,9 @@ layer assumes the model can be wrong and catches it:
   (the tester never sees the implementation, so it can't rubber-stamp bugs).
 - **A test-quality gate** rejects bad tests before they judge code —
   "who tests the tester."
-- **Spec contracts** turn prose into a structured contract the writer and
-  tester both read, and compile its examples into assertions **no model
-  wrote** — so a misread spec is visible instead of silently agreed on.
+- **Spec contracts** turn prose into a structured contract the writer and the
+  tester both read, and print it — so a misread spec is visible before any code
+  runs, instead of silently agreed on by both.
 - **Retrieval** injects a library's real docs only when relevant, keeping
   token use low on a tight context budget.
 
@@ -159,7 +159,7 @@ ingest once, reuse across runs.
 purecoder/
   client.py      grammar-constrained generation (llama-server /completion)
   contract.py    prose → grammar-constrained spec contract
-  anchors.py     contract examples → assertions no model wrote
+  languages.py   what we can generate, and what we can prove
   validate.py    config validators + write→validate→fix loop
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
@@ -168,7 +168,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           182 model-independent tests (no GPU, no server)
+tests/           214 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -184,16 +184,11 @@ The suite runs without llama-server or a GPU: the validators, executor, test
 gate and chunkers are model-independent by design, and the loops are driven by
 a scripted fake model. That is also what CI runs, on Python 3.10–3.12.
 
-## Roadmap: beyond Python
+## Languages
 
-> **Designed, not built.** Today PureCoder generates and validates **Python
-> only**, and refuses a spec that asks for anything else rather than silently
-> handing back Python. The design below is specified in
-> [docs/superpowers/specs/2026-08-02-multi-language-design.md](docs/superpowers/specs/2026-08-02-multi-language-design.md).
-
-A language registry makes adding a language *data* rather than code — one
-entry declares how to build, run, and assert, and the executor, CLI and
-scaffolder need no changes:
+`--lang` picks the language; a registry entry declares how to build it, run it,
+and how its tests assert. Adding a language is *data*, not code — the executor,
+CLI and scaffolder need no changes.
 
 ```mermaid
 flowchart LR
@@ -221,11 +216,20 @@ flowchart LR
     style NO fill:#fce8e6,stroke:#ea4335,color:#111
 ```
 
+```bash
+purecoder --lang c++ code "a function add(int, int) returning their sum"
+purecoder --lang c++ project calc "a small calculator library" ./calc
+```
+
 The governing rule: **if it cannot be executed, it is not emitted.** A missing
-toolchain is refused with the binary named, not papered over with unvalidated
-output. Power Query M runs only inside Excel and Power BI, so no local
-execution is possible at any effort level — it is refused permanently, and the
-README says so rather than pretending otherwise.
+toolchain is refused with the binary named. Power Query M runs only inside
+Excel and Power BI, so no local execution is possible at any effort level — it
+is refused permanently, and this says so rather than pretending otherwise.
+
+Each language's harness injects its own check helper (`PC_CHECK`, `pc_check!`)
+and the tester is told to use it. That is what lets the run *prove* a check
+executed rather than inferring it from exit code 0 — the false green the Python
+path shipped for months — without needing a parser per language.
 
 ## Architecture
 

@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-182 tests, all green, none of them needing a GPU or a running server
+214 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -18,8 +18,10 @@ _Snapshot of what's built, tested, and what's next._
 | 4 | `rag.py` chunking + retrieval + gate | ✅ tested | search/gate/persistence proven w/ fake embedder |
 | 4 | code-aware AST chunker | ✅ tested | function/class/method/preamble boundaries verified |
 | 5 | `contract.gbnf` + `validate_contract` | ✅ tested | schema guards past the grammar; grammar verified against a live llama-server |
-| 5 | `anchors.py` (mechanical assertions) | ✅ tested | both shapes, malformed and custom-exception drops |
 | 5 | `derive_contract` + fallback | ✅ tested | retries, feeds errors back, degrades on a dead server |
+| 6 | `languages.py` registry | ✅ tested | every entry coherent; availability probed, not assumed |
+| 6 | C++ / JavaScript / Rust / C# execution | ✅ tested | correct passes, wrong fails, no-checks fails -- in each language |
+| 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
@@ -82,7 +84,12 @@ _Snapshot of what's built, tested, and what's next._
   code. The first live contract run produced `parse_ports('80,443') ->
   [443, 80]` for a spec that said "sorted", and the anchor faithfully failed a
   correct implementation. Noisy-wrong beats silent-wrong, but it is not free.
-- **Execution validation only reaches stdlib-only, run-to-completion code.**
+- **Execution validation reaches five languages, still only run-to-completion
+  code.** Python, C++, JavaScript, Rust and C# all compile (where needed), run
+  real assertions, and prove a check executed. Go, Java, Swift and OCaml are
+  declared and refuse until both a toolchain and a test idiom exist. Power
+  Query is refused permanently -- it runs only inside Excel and Power BI.
+- **Standard-library-only, whatever the language.**
   Three hard limits, each confirmed repeatedly against a live server on a
   "small web app that graphs random numbers" spec: the sandbox has no
   third-party packages, so anything importing `matplotlib`/`flask`/`PIL`
@@ -103,15 +110,18 @@ _Snapshot of what's built, tested, and what's next._
 ## Next steps (priority order)
 
 1. **Wire RAG into the scaffolder** — doc-grounded whole projects.
-2. **Measure the contract layer** — does grounding actually reduce
+2. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
+   runner is free, but SQL has no `assert`, and the check idiom every other
+   language gets from its harness needs real design rather than a `1/0` trick.
+3. **Measure the contract layer** — does grounding actually reduce
    spec-divergence, or only make it visible? Needs a small task set with
    known-ambiguous specs. This is the claim the whole layer rests on and it
    is still unmeasured.
-3. **A dependency story for the executor** — today anything outside the
+4. **A dependency story for the executor** — today anything outside the
    stdlib is unvalidatable. A per-run venv, or declaring allowed packages in
    the spec, would widen execution validation past its current ceiling.
-4. **tree-sitter chunking** — multi-language code retrieval.
-5. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
+5. **tree-sitter chunking** — multi-language code retrieval.
+6. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
 
 Done since the last snapshot: the reachability false green (runtime check
