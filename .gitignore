@@ -30,3 +30,6 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# live e2e scratch output
+dashboardTest/
