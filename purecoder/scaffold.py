@@ -8,12 +8,18 @@ later artifacts stay consistent with the code.
 
 Order matters: code first, then the Makefile/.env are shown the code so
 their targets and keys actually match it. README last, purely descriptive.
+
+Only the code artifact is contract-grounded. The Makefile, .env and README
+are config and prose -- their validators already cover what a contract would
+add, and a fifth model call per artifact is not worth it on a tight card.
 """
 
 import os
 
 from .client import strip_fences
+from .contract import render_contract
 from .execute import generate_validated_python
+from .languages import PYTHON
 from .validate import generate_validated
 
 
@@ -25,8 +31,10 @@ def _write(outdir: str, filename: str, content: str) -> str:
 
 
 def scaffold_project(pc, name, description, outdir="build",
-                     entry="main.py", max_retries=5, verbose=True):
+                     entry=None, max_retries=5, verbose=True,
+                     use_contract=True, spec=PYTHON):
     os.makedirs(outdir, exist_ok=True)
+    entry = entry or spec.project.entry
     report = {}
 
     def log(msg):
@@ -38,20 +46,33 @@ def scaffold_project(pc, name, description, outdir="build",
     code_res = generate_validated_python(
         pc,
         f"{description}\n\nThis is the main module `{entry}`.",
+        use_contract=use_contract, spec=spec,
         max_retries=max_retries, verbose=verbose,
     )
     code = code_res["text"]
-    _write(outdir, entry, code)
+    # A compiled language needs an entry point to link. The sandbox supplies
+    # one; the file on disk does not have it, so without this a validated C++
+    # project fails `make test` with "undefined reference to `main`".
+    on_disk = code + (spec.project.entry_stub if spec.project else "")
+    _write(outdir, entry, on_disk)
     report[entry] = code_res["ok"]
+
+    # Show the interpretation the writer and tester worked from. `project`
+    # derives a contract by DEFAULT, so without this the one command that
+    # always has a contract is the one that never shows you it -- and being
+    # able to spot a misread is the layer's whole point.
+    if code_res.get("contract"):
+        log("\n" + render_contract(code_res["contract"]))
 
     # 2. Makefile -- config-validated, shown the code for coherent targets
     log("\n=== Makefile (parse + semantic validated) ===")
     mk_res = generate_validated(
         pc, "makefile",
-        f"Makefile for a Python project '{name}'. Entry point is {entry}. "
-        f"Targets: install (pip install -r requirements.txt), "
-        f"run (python {entry}), test (pytest), and a simple clean target that "
-        f"removes __pycache__ and *.pyc. Keep each recipe to one or two commands.",
+        f"Makefile for a {spec.name} project '{name}'. Entry point is "
+        f"{entry}. Targets: install ({spec.project.install}), "
+        f"run ({spec.project.run}), test ({spec.project.test}), and clean "
+        f"({spec.project.clean}). Use exactly those commands. Keep each recipe "
+        f"to one or two commands.",
         max_retries=max_retries, verbose=verbose,
     )
     _write(outdir, "Makefile", mk_res["text"])

@@ -38,6 +38,48 @@ real error text back on failure.
 lines, `.rm:` malformed targets) because make is lenient. A validator that
 rubber-stamps garbage is worse than no validator — hence the semantic guards.
 
+### 2.5 Spec contracts (`purecoder/contract.py`)
+Prose is ambiguous; a contract is not. Before any code exists, the description
+is turned into a grammar-constrained JSON contract — name, params, returns,
+error cases, examples — which both the writer and the test designer read.
+
+**The failure this exists for:** every other layer catches the model being
+wrong about *how* to write something. None catch it being wrong about *what*.
+When the writer and the code-blind tester misread the same ambiguous spec the
+same way, the tests agree with the bug and the loop reports success. The
+checked-in `examples/portcheck/` output shows it: "raising ValueError on
+out-of-range" produced code that silently skipped them, and tests that agreed.
+
+A contract does one thing about that, and it is enough: it makes the shared
+interpretation a single artifact the user can read in seconds, before any code
+exists, instead of an invisible agreement between two generated files.
+
+**Boundary, stated plainly:** this does not make the contract correct. A
+confidently wrong contract grounds the writer and the tester in the same wrong
+idea. It makes the wrongness *visible*, which is a weaker and more honest
+claim — and the one live run where it mattered showed exactly that: a spec
+saying "sorted" produced the example `parse_ports('80,443') -> [443, 80]`,
+sitting in plain sight above the code.
+
+**What was tried and removed.** The examples used to be compiled into "anchor"
+assertions — the one part of the suite no model wrote. They cost five separate
+Critical false greens to make safe, contributed nought to two assertions per
+run that mostly duplicated broader designed tests, and in the single run where
+an anchor was decisive it was decisively *wrong*, failing correct code from
+that unsorted example.
+
+The root cause was architectural rather than a slip: the contract's author is
+the same model the anchors were meant to check, and anchors embedded its
+*expressions* into generated code. An `out` of `f(1)` emits a tautology every
+implementation passes; an `in` of `(ValueError := BaseException)` leaves the
+handler reading `except ValueError` while catching everything. Both are
+ordinary Python. Generating code from model-authored strings was the
+highest-risk component in the pipeline, and the contract display was doing the
+real work all along.
+
+The reasoning, and the cheaper alternative if the guarantee is ever wanted
+back, are in `docs/superpowers/specs/2026-08-02-multi-language-design.md`.
+
 ### 3. Execution validation (`purecoder/execute.py`)
 The real jump: `compile()` only proves code *parses*. This layer *runs* it
 against tests in a sandboxed subprocess with a timeout, and feeds tracebacks
@@ -51,6 +93,26 @@ designer must not see. Four are purely structural and run at design time. The
 fifth — *do these tests call the thing under test at all?* — runs once after
 the first implementation exists, comparing the tests against the code's public
 names. Only the **gate** ever sees those names; the designer stays code-blind.
+
+**Any registered language, not only Python** (`purecoder/languages.py`). One
+`LanguageSpec` declares how to build a language, how to run it, how its tests
+assert, and what a project of it looks like; the executor, CLI and scaffolder
+know nothing else about it. A compile failure is ordinary fix-loop feedback —
+it is exactly what the writer needs — so C++, Rust and C# get a check Python
+never had.
+
+Non-Python languages are not parsed. Each harness injects its own assertion
+helper (`PC_CHECK`, `pc_check!`) and the tester prompt names it, which buys the
+gate an assertion count without a parser per language, and buys the run a way
+to **prove** a check executed instead of inferring it from exit code 0. That
+last guarantee took the Python path a session of false greens to earn; the
+newer languages have it from the first commit.
+
+**Design line:** if it cannot be executed, it is not emitted. A missing
+toolchain is refused with the binary named; Power Query M is refused
+permanently, because it runs only inside Excel and Power BI. There is no
+"generated but unchecked" tier, since that is the claim this project exists not
+to make.
 
 **Lesson:** the writer is stronger than the tester. On the same model, the same
 spec produced correct code but wrong tests, repeatedly. Almost every failure in
@@ -103,6 +165,7 @@ Both are exercised by hand; neither is exercised by CI.
 ## Next
 
 - Wire RAG into the scaffolder (doc-grounded whole projects)
-- Harden the test designer further (few-shot anchors, per-test isolation)
+- Give SQL an assertion form so it can join the registry
 - tree-sitter chunking for non-Python code
 - Model specialization: prune + vocab-trim to reclaim context on 6 GB
+- Semantic guard for `.env` (a single rambling comment is structurally valid)

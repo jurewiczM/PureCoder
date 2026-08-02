@@ -16,6 +16,32 @@ small projects and grounds generation in a library's own docs via retrieval.
 The bet: a small model, boxed in from several directions, can produce
 trustworthy code — no frontier API, no cloud, nothing leaving your machine.
 
+## How it works
+
+Every arrow out of the model leads into something that can say **no**:
+
+```mermaid
+flowchart LR
+    S([prose spec]) --> C[contract<br/><i>grammar-constrained</i>]
+    C --> W[writer]
+    C --> T[test designer<br/><i>code-blind</i>]
+    T --> G{quality<br/>gate}
+    G -- rejected --> T
+    G -- accepted --> X
+    W --> X[[execute<br/><i>sandboxed</i>]]
+    X -- traceback --> W
+    X -- passes --> OK([validated code])
+
+    style S fill:#e8f0fe,stroke:#4285f4,color:#111
+    style OK fill:#e6f4ea,stroke:#34a853,color:#111
+    style G fill:#fef7e0,stroke:#f9ab00,color:#111
+    style X fill:#fce8e6,stroke:#ea4335,color:#111
+```
+
+The test designer never sees the implementation, so it cannot rubber-stamp a
+bug. The gate judges the tests before they judge the code. The executor is the
+only thing allowed to declare success, and only by running.
+
 ## Why it's interesting
 
 Most "LLM writes code" demos trust the model. PureCoder verifies it. Every
@@ -29,8 +55,44 @@ layer assumes the model can be wrong and catches it:
   (the tester never sees the implementation, so it can't rubber-stamp bugs).
 - **A test-quality gate** rejects bad tests before they judge code —
   "who tests the tester."
+- **Spec contracts** turn prose into a structured contract the writer and the
+  tester both read, and print it — so a misread spec is visible before any code
+  runs, instead of silently agreed on by both.
 - **Retrieval** injects a library's real docs only when relevant, keeping
   token use low on a tight context budget.
+
+### What each layer catches
+
+```mermaid
+flowchart TB
+    subgraph shape["shape — made impossible"]
+        direction LR
+        G1[GBNF grammar<br/><i>.env, Makefile, contract</i>]
+    end
+    subgraph sense["sense — made checkable"]
+        direction LR
+        V1[semantic guards<br/><i>degeneration, prose, spirals</i>]
+        V2[make -n / compile]
+    end
+    subgraph truth["truth — made provable"]
+        direction LR
+        E1[run it]
+        E2[prove a check<br/>actually executed]
+    end
+
+    shape --> sense --> truth
+    truth --> R{{"a claim you can check"}}
+
+    style shape fill:#e8f0fe,stroke:#4285f4,color:#111
+    style sense fill:#fef7e0,stroke:#f9ab00,color:#111
+    style truth fill:#e6f4ea,stroke:#34a853,color:#111
+    style R fill:#f1f3f4,stroke:#5f6368,color:#111
+```
+
+A grammar guarantees *shape* and nothing more — a 2500-character comment is a
+structurally valid comment. Validators add *sense*. Only execution gives
+*truth*, and even then exit code 0 is not evidence: the tests are instrumented
+so a suite that never ran an assertion fails instead of passing.
 
 ## Install
 
@@ -50,7 +112,7 @@ cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j
 
 ./build/bin/llama-server \
   -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M \
-  -ngl 99 -c 4096 -fa --port 8080
+  -ngl 99 -c 4096 -fa on --port 8080
 ```
 
 ## Quickstart
@@ -87,20 +149,26 @@ ingest once, reuse across runs.
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
 | `status`           | live system status |
 
+`project` derives a spec contract by default; `code` does not. Add
+`--contract` to opt in, `--no-contract` to opt out, or set
+`PURECODER_CONTRACT=1` to change the default for both.
+
 ## Layout
 
 ```
 purecoder/
   client.py      grammar-constrained generation (llama-server /completion)
+  contract.py    prose → grammar-constrained spec contract
+  languages.py   what we can generate, and what we can prove
   validate.py    config validators + write→validate→fix loop
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
   rag.py         code/doc-aware chunking + retrieval
   status.py      live system probe
   cli.py         one entry point over all of it
-  grammars/      GBNF: env.gbnf, makefile.gbnf
+  grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           66 model-independent tests (no GPU, no server)
+tests/           214 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -115,6 +183,53 @@ ruff check purecoder tests examples
 The suite runs without llama-server or a GPU: the validators, executor, test
 gate and chunkers are model-independent by design, and the loops are driven by
 a scripted fake model. That is also what CI runs, on Python 3.10–3.12.
+
+## Languages
+
+`--lang` picks the language; a registry entry declares how to build it, run it,
+and how its tests assert. Adding a language is *data*, not code — the executor,
+CLI and scaffolder need no changes.
+
+```mermaid
+flowchart LR
+    SPEC([spec + --lang]) --> REG{{language<br/>registry}}
+
+    REG --> PY["<b>python</b><br/>python file.py"]
+    REG --> CPP["<b>c++</b><br/>g++ → ./bin"]
+    REG --> JS["<b>javascript</b><br/>node file.js"]
+    REG --> RS["<b>rust</b><br/>rustc → ./bin"]
+    REG --> CS["<b>c#</b><br/>dotnet run"]
+    REG --> GO["<b>go, java, swift</b><br/><i>awaiting toolchain</i>"]
+    REG --> PQ["<b>power query</b><br/><i>no local runner</i>"]
+
+    PY --> RUN[[compile + run<br/>real assertions]]
+    CPP --> RUN
+    JS --> RUN
+    RS --> RUN
+    CS --> RUN
+    GO --> NO[refuse<br/><i>naming what to install</i>]
+    PQ --> NO
+
+    style SPEC fill:#e8f0fe,stroke:#4285f4,color:#111
+    style REG fill:#f1f3f4,stroke:#5f6368,color:#111
+    style RUN fill:#e6f4ea,stroke:#34a853,color:#111
+    style NO fill:#fce8e6,stroke:#ea4335,color:#111
+```
+
+```bash
+purecoder --lang c++ code "a function add(int, int) returning their sum"
+purecoder --lang c++ project calc "a small calculator library" ./calc
+```
+
+The governing rule: **if it cannot be executed, it is not emitted.** A missing
+toolchain is refused with the binary named. Power Query M runs only inside
+Excel and Power BI, so no local execution is possible at any effort level — it
+is refused permanently, and this says so rather than pretending otherwise.
+
+Each language's harness injects its own check helper (`PC_CHECK`, `pc_check!`)
+and the tester is told to use it. That is what lets the run *prove* a check
+executed rather than inferring it from exit code 0 — the false green the Python
+path shipped for months — without needing a parser per language.
 
 ## Architecture
 

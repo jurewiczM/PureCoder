@@ -17,13 +17,64 @@ Usage:
 """
 
 import argparse
+import os
+import sys
 
+from . import languages
 from .client import PureCoder
-from .execute import generate_validated_python
+from .execute import generate_validated_python, unsupported_language
 from .validate import generate_validated
 
 
+def resolve_language(args):
+    """The LanguageSpec for this run, or None if we must not proceed.
+
+    Two refusals, both deliberate. A language we cannot execute is refused
+    outright -- there is no "generated but unchecked" tier, because emitting
+    something unverified is the claim this project exists not to make. And a
+    spec that asks for one language while --lang says another is refused
+    rather than silently resolved: that mismatch is how `--lang python` plus
+    "a C++ Dijkstra" used to yield `import heapq`.
+    """
+    try:
+        spec = languages.get(getattr(args, "lang", "python"))
+    except KeyError as e:
+        # KeyError's str() is the repr of its argument, quotes and all.
+        print(e.args[0])
+        return None
+
+    ok, why = spec.available()
+    if not ok:
+        print(f"Cannot generate {spec.name}: {why}.")
+        runnable = [n for n in languages.names() if languages.get(n).available()[0]]
+        print(f"Available right now: {', '.join(runnable)}.")
+        return None
+
+    # The spec's own words override the flag only to catch a contradiction.
+    asked = unsupported_language(getattr(args, "spec", "") or "")
+    if asked and asked not in (spec.name, *spec.aliases):
+        print(f"--lang is {spec.name}, but the spec asks for {asked}. "
+              f"Rerun with --lang {asked} if that is what you meant.")
+        return None
+    return spec
+
+
+def resolve_contract(args, default):
+    """Most specific wins: explicit flag, then PURECODER_CONTRACT, then the
+    per-command default."""
+    if args.contract is not None:
+        return args.contract
+    env = os.environ.get("PURECODER_CONTRACT")
+    if env is not None:
+        return env.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
 def _print_result(res, show_tests=False):
+    contract = res.get("contract")
+    if contract:
+        from .contract import render_contract
+        print(render_contract(contract))
     print("-" * 60)
     print(res["text"])
     print("-" * 60)
@@ -36,9 +87,13 @@ def _print_result(res, show_tests=False):
 
 
 def cmd_code(pc, args):
-    _print_result(generate_validated_python(pc, args.spec,
-                                            max_retries=args.retries),
-                  show_tests=args.show_tests)
+    spec = resolve_language(args)
+    if spec is None:
+        return 1
+    _print_result(generate_validated_python(
+        pc, args.spec, max_retries=args.retries, spec=spec,
+        use_contract=resolve_contract(args, default=False)),
+        show_tests=args.show_tests)
 
 
 def cmd_env(pc, args):
@@ -52,10 +107,14 @@ def cmd_make(pc, args):
 
 
 def cmd_project(pc, args):
+    spec = resolve_language(args)
+    if spec is None:
+        return 1
     from .scaffold import scaffold_project
     r = scaffold_project(pc, args.name, args.spec,
                          outdir=args.outdir or args.name,
-                         max_retries=args.retries)
+                         max_retries=args.retries, spec=spec,
+                         use_contract=resolve_contract(args, default=True))
     print(f"\nscaffold {'complete' if r['ok'] else 'incomplete'} -> {r['outdir']}/")
 
 
@@ -77,8 +136,10 @@ def cmd_ask(pc, args):
         print("[rag] no relevant docs above threshold -- generating without context")
     # doc-grounded, still execution-validated
     task = f"{ctx}\n\n{args.spec}" if ctx else args.spec
-    _print_result(generate_validated_python(pc, task, max_retries=args.retries),
-                  show_tests=args.show_tests)
+    _print_result(generate_validated_python(
+        pc, task, max_retries=args.retries,
+        use_contract=resolve_contract(args, default=False)),
+        show_tests=args.show_tests)
 
 
 def cmd_status(pc, args):
@@ -95,6 +156,14 @@ def main():
     p.add_argument("--device", default="cuda", help="embedding device (cuda/cpu)")
     p.add_argument("--store", default="docstore", help="RAG index path")
     p.add_argument("--show-tests", action="store_true")
+    p.add_argument("--lang", default="python", metavar="LANG",
+                   help=f"language to generate and validate "
+                        f"(default: python; known: {', '.join(languages.names())})")
+    p.add_argument("--contract", dest="contract", action="store_true",
+                   default=None,
+                   help="derive a spec contract first (default: on for project)")
+    p.add_argument("--no-contract", dest="contract", action="store_false",
+                   help="skip contract derivation")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     for name in ("code", "env", "make", "ask"):
@@ -109,7 +178,7 @@ def main():
     args = p.parse_args()
     pc = PureCoder(base_url=args.url)
 
-    {
+    return {
         "code": cmd_code, "env": cmd_env, "make": cmd_make,
         "project": cmd_project, "ingest": cmd_ingest, "ask": cmd_ask,
         "status": cmd_status,
@@ -117,4 +186,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

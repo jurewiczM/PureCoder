@@ -1,0 +1,9 @@
+root ::= "{" ws "\"name\":" ws string "," ws "\"summary\":" ws string "," ws "\"params\":" ws params "," ws "\"returns\":" ws string "," ws "\"raises\":" ws raises "," ws "\"examples\":" ws examples ws "}"
+params ::= "[" ws (param (ws "," ws param)*)? ws "]"
+param ::= "{" ws "\"name\":" ws string "," ws "\"type\":" ws string ws "}"
+raises ::= "[" ws (raise (ws "," ws raise)*)? ws "]"
+raise ::= "{" ws "\"exc\":" ws string "," ws "\"when\":" ws string ws "}"
+examples ::= "[" ws (example (ws "," ws example)*)? ws "]"
+example ::= "{" ws "\"in\":" ws string "," ws "\"out\":" ws string ws "}"
+string ::= "\"" ([^"\\\n\r\t] | "\\" ["\\/bfnrt])* "\""
+ws ::= [ \t\n]*

@@ -91,8 +91,12 @@ class PureCoder:
 
     def env_file(self, description, **kw) -> dict:
         return self.complete(
+            # The grammar guarantees a comment is *shaped* like a comment, not
+            # that it is brief -- left to itself the model writes paragraphs.
             system="You output only the contents of a .env file. "
-                   "No prose, no explanation, no code fences.",
+                   "No prose, no explanation, no code fences. Every line must "
+                   "be under 100 characters. Comments are at most one short "
+                   "sentence. Never explain your reasoning in the file.",
             user=description,
             grammar="env",
             **kw,
@@ -109,8 +113,14 @@ class PureCoder:
 
     def code(self, description, language="python", **kw) -> dict:
         out = self.complete(
-            system=f"You output only {language} code. "
-                   f"No explanation, no markdown, no fences.",
+            # The fix loop shows the model the tests its last attempt failed,
+            # and left to itself it copies them into the implementation --
+            # observed live, and they then run twice, since the real tests are
+            # appended after the code.
+            system=f"You output only {language} code: the implementation and "
+                   f"nothing else. No explanation, no markdown, no fences. "
+                   f"Never include tests, assertions, example calls, print "
+                   f"statements at module level, or a __main__ block.",
             user=description,
             grammar=None,
             **kw,

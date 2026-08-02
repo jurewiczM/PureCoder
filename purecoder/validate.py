@@ -30,14 +30,41 @@ MAKE_SPECIAL_TARGETS = {
 # treat it as a generation spiral rather than a real target.
 MAX_REPEATED_CMD = 15
 
+# a .env line longer than this is prose, not config. Observed live: the model
+# emitted a single 2000-character comment that rambled into a truncated
+# sentence -- structurally a valid comment, so the shape check passed it.
+MAX_ENV_LINE = 200
+
+# the same comment line repeated more than this is a spiral, not a file. The
+# grammar bounds each line's LENGTH, which the model then satisfied by looping
+# a short block instead -- constraining shape cannot constrain repetition.
+MAX_REPEATED_ENV_LINE = 3
+
 
 # ---- validators ---------------------------------------------------------
 
 def validate_env(text: str):
-    """Structural check on a .env file: KEY=VALUE, no dupes."""
+    """Structural check on a .env file: KEY=VALUE, no dupes, no prose.
+
+    The shape check alone rubber-stamps degenerate output the same way `make
+    -n` did for Makefiles: a comment of any length is structurally valid, so a
+    2000-character ramble truncated mid-sentence passed cleanly. Hence the
+    length guard -- a validator that accepts garbage is worse than none.
+    """
+    body = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if body:
+        top, count = Counter(body).most_common(1)[0]
+        if count > MAX_REPEATED_ENV_LINE:
+            return False, (f"degenerate output: the line {top[:40]!r} appears "
+                           f"{count} times -- likely a generation spiral")
+
     seen = set()
     for i, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
+        if len(line) > MAX_ENV_LINE:
+            kind = "comment" if line.startswith("#") else "line"
+            return False, (f"line {i}: {kind} is {len(line)} chars -- .env holds "
+                           f"config, not prose (max {MAX_ENV_LINE})")
         if not line or line.startswith("#"):
             continue
         if "=" not in line:

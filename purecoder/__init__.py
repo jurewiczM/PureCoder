@@ -6,6 +6,7 @@ external: a GBNF grammar, a real tool, a test run. See docs/ARCHITECTURE.md.
 """
 
 from .client import PureCoder, strip_fences
+from .contract import derive_contract, render_contract, validate_contract
 from .execute import generate_validated_python, lint_tests, run_python
 from .scaffold import scaffold_project
 from .status import print_status
@@ -16,6 +17,9 @@ __version__ = "0.1.0"
 __all__ = [
     "PureCoder",
     "strip_fences",
+    "derive_contract",
+    "render_contract",
+    "validate_contract",
     "generate_validated",
     "validate_env",
     "validate_makefile",

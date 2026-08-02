@@ -1,6 +1,15 @@
 """The executor and the test-quality gate -- both model-independent."""
 
-from purecoder.execute import lint_tests, public_names, run_python
+import time
+
+from purecoder.execute import (
+    _trim,
+    lint_implementation,
+    lint_tests,
+    missing_dependency,
+    public_names,
+    run_python,
+)
 
 CODE = "def add(a, b):\n    return a + b\n"
 
@@ -132,3 +141,185 @@ def test_gate_counts_method_calls_as_reaching_the_target():
              "assert obj is not None\n")
     ok, err = lint_tests(tests, targets=["parse"])
     assert ok, err
+
+
+def test_gate_accepts_a_caller_supplied_floor():
+    """The floor is tunable; a caller may accept a smaller designed suite."""
+    ok, err = lint_tests("assert add(1, 2) == 3\n", targets=["add"],
+                         min_assertions=1)
+    assert ok, err
+
+
+# ---- proof that checks actually ran --------------------------------------
+
+def test_assertions_inside_an_uncalled_function_do_not_count_as_passing():
+    """The false green found by the first live run: the designer wrapped its
+    asserts in a def nothing calls, the module exited 0, and the loop reported
+    success against an implementation returning garbage."""
+    code = 'def parse_ports(s):\n    return "garbage"\n'
+    tests = 'def test_it():\n    assert parse_ports("80") == [80]\n'
+
+    assert run_python(code, tests)[0] is True          # exit code alone lies
+    ok, err = run_python(code, tests, require_checks=1)
+    assert not ok
+    assert "no checks ran" in err
+
+
+def test_an_empty_suite_does_not_count_as_passing():
+    ok, err = run_python("def f():\n    pass\n", "", require_checks=1)
+    assert not ok
+    assert "no checks ran" in err
+
+
+def test_a_raises_only_suite_still_passes():
+    """Its success path runs no assert at all -- entering the except handler
+    is the check. Counting only asserts would fail correct tests."""
+    code = 'def f(x):\n    raise ValueError("nope")\n'
+    tests = "try:\n    f(1)\nexcept ValueError:\n    pass\nelse:\n    assert False\n"
+    assert run_python(code, tests, require_checks=1)[0], "raises-only suite rejected"
+
+
+def test_a_raises_only_suite_still_catches_a_wrong_implementation():
+    code = "def f(x):\n    return 1\n"
+    tests = "try:\n    f(1)\nexcept ValueError:\n    pass\nelse:\n    assert False\n"
+    assert not run_python(code, tests, require_checks=1)[0]
+
+
+def test_instrumentation_leaves_a_normal_passing_suite_passing():
+    code = "def add(a, b):\n    return a + b\n"
+    tests = "assert add(1, 2) == 3\nassert add(0, 0) == 0\n"
+    assert run_python(code, tests, require_checks=1)[0]
+
+
+def test_instrumentation_still_reports_a_real_failure():
+    code = "def add(a, b):\n    return a - b\n"
+    ok, err = run_python(code, "assert add(1, 2) == 3\n", require_checks=1)
+    assert not ok
+    assert "AssertionError" in err
+    assert "no checks ran" not in err
+
+
+def test_unparseable_tests_survive_instrumentation():
+    """Instrumentation must not swallow a SyntaxError the executor should report."""
+    ok, err = run_python("def f():\n    pass\n", "assert (1 ==\n",
+                         require_checks=1)
+    assert not ok
+    assert "SyntaxError" in err
+
+
+def test_require_checks_defaults_off():
+    """Existing callers keep the old behaviour."""
+    code = 'def f():\n    return 1\n'
+    assert run_python(code, "def t():\n    assert f() == 999\n")[0] is True
+
+
+# ---- missing dependencies ------------------------------------------------
+
+def test_missing_dependency_is_identified():
+    _, err = run_python("import flask_nonexistent_pkg\n", "assert True\n")
+    assert missing_dependency(err) == "flask_nonexistent_pkg"
+
+
+def test_missing_dependency_returns_none_on_an_ordinary_failure():
+    _, err = run_python("def f():\n    return 1\n", "assert f() == 2\n")
+    assert missing_dependency(err) is None
+
+
+# ---- implementations must not carry their own tests ----------------------
+
+def test_implementation_lint_rejects_module_level_asserts():
+    """Observed live: the writer copied the tests it was shown into main.py."""
+    ok, err = lint_implementation(
+        "def f(x):\n    return x\n\nassert f(1) == 1\n")
+    assert not ok
+    assert "module level" in err
+
+
+def test_implementation_lint_rejects_a_module_level_test_block():
+    code = ("def f(x):\n    return x\n\n"
+            "try:\n    f(-1)\nexcept ValueError:\n    pass\nelse:\n    assert False\n")
+    ok, err = lint_implementation(code)
+    assert not ok
+    assert "try/except test block" in err
+
+
+def test_implementation_lint_allows_asserts_inside_functions():
+    ok, err = lint_implementation(
+        "def f(x):\n    assert x > 0\n    return x\n")
+    assert ok, err
+
+
+def test_implementation_lint_allows_ordinary_code():
+    ok, err = lint_implementation(
+        "import random\n\ndef f(n):\n    return [random.random() for _ in range(n)]\n")
+    assert ok, err
+
+
+def test_implementation_lint_defers_syntax_errors_to_the_executor():
+    ok, _ = lint_implementation("def broken(:\n")
+    assert ok, "the executor reports SyntaxError with a real traceback"
+
+
+# ---- sandbox hygiene -----------------------------------------------------
+
+def test_a_spawned_child_does_not_outlive_the_timeout(tmp_path):
+    """Generated code may spawn servers or workers. Killing only the direct
+    child leaves them holding ports, and the NEXT attempt then fails with
+    "Address already in use" -- fed back to the model as if its code were
+    wrong. Observed live during a scaffold run.
+
+    The child here writes a marker shortly after the parent is killed; if the
+    process group was reaped the marker never appears.
+    """
+    marker = tmp_path / "orphan-was-alive"
+    child = f"import time; time.sleep(2); open({str(marker)!r}, 'w').write('x')"
+    code = (
+        "import subprocess, sys\n"
+        f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "import time; time.sleep(10)\n"
+    )
+
+    run_python(code, "assert True\n", timeout=1)
+    time.sleep(3)                       # well past the child's own delay
+    assert not marker.exists(), "a spawned child outlived the sandbox"
+
+
+def test_the_timeout_message_names_the_server_case():
+    """A generated web server hangs the executor; the message should say so
+    rather than only guessing at an infinite loop."""
+    server = ("import socketserver, http.server\n"
+              "with socketserver.TCPServer(('127.0.0.1', 0),\n"
+              "        http.server.SimpleHTTPRequestHandler) as s:\n"
+              "    s.serve_forever()\n")
+    ok, err = run_python(server, "assert True\n", timeout=2)
+    assert not ok
+    assert "timed out" in err
+    assert "never returns" in err
+
+
+# ---- feedback quality ----------------------------------------------------
+
+def test_trim_keeps_the_first_diagnostics_of_a_compiler_error():
+    """A compiler puts its signal FIRST and then draws carets under the
+    source. Tailing a g++ error yields "|  ^" and nothing else -- observed
+    live, where the loop failed three identical times because that was the
+    whole message the model received."""
+    err = "\n".join(
+        [f"cand.cpp:{i}:1: error: 'X' was not declared in this scope" for i in range(3)]
+        + ["   21 |     PC_CHECK(add(INT_MAX, 1));", "      |              ^~~~~~~"] * 8
+    )
+    out = _trim(err)
+    assert "was not declared" in out
+    assert out.splitlines()[0].endswith("in this scope")
+
+
+def test_trim_keeps_the_last_lines_of_a_python_traceback():
+    """Python's signal is at the END -- the exception, not the frames."""
+    err = "\n".join([f'  File "x.py", line {i}, in f' for i in range(30)]
+                    + ["AssertionError: the actual failure"])
+    out = _trim(err)
+    assert out.splitlines()[-1] == "AssertionError: the actual failure"
+
+
+def test_trim_leaves_short_errors_alone():
+    assert _trim("one\ntwo") == "one\ntwo"

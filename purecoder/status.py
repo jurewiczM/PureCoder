@@ -87,5 +87,5 @@ def print_status(pc):
     if not up:
         print(" ! server down — start it with:")
         print("   llama-server -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
-              ":Q4_K_M -ngl 99 -c 4096 -fa --port 8080")
+              ":Q4_K_M -ngl 99 -c 4096 -fa on --port 8080")
     print()

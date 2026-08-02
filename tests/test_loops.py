@@ -5,6 +5,8 @@ real error back, stops on success, and gives up at max_retries -- without
 needing llama-server running.
 """
 
+import json
+
 from purecoder.execute import generate_validated_python
 from purecoder.scaffold import scaffold_project
 from purecoder.validate import generate_validated
@@ -143,3 +145,216 @@ def test_scaffold_reports_failure_when_an_artifact_never_validates(tmp_path):
                            max_retries=2, verbose=False)
     assert not res["ok"]
     assert res["report"][".env"] is False
+
+
+# ---- contracts -----------------------------------------------------------
+
+CONTRACT = {
+    "name": "add",
+    "summary": "add two numbers",
+    "params": [{"name": "a", "type": "int"}, {"name": "b", "type": "int"}],
+    "returns": "int",
+    "raises": [],
+    "examples": [
+        {"in": "1, 2", "out": "3"},
+        {"in": "0, 0", "out": "0"},
+    ],
+}
+
+
+def test_a_contract_is_derived_and_returned():
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(CONTRACT), GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", use_contract=True,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["contract"]["name"] == "add"
+    assert res["tests"] == GOOD_TESTS.strip()
+
+
+def test_contract_reaches_the_prompts_alongside_the_prose():
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(CONTRACT), GOOD_TESTS])
+    generate_validated_python(pc, "add two numbers", use_contract=True,
+                              verbose=False)
+    grounded = [p for p in pc.prompts if "Contract for" in p]
+    assert grounded, "no prompt carried the rendered contract"
+    assert all("add two numbers" in p for p in grounded)
+
+
+def test_supplied_contract_skips_derivation():
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", contract=CONTRACT,
+                                    use_contract=True, verbose=False)
+    assert res["ok"]
+    assert res["contract"] is CONTRACT
+
+
+def test_a_supplied_contract_is_validated_like_a_derived_one():
+    """Passing `contract=` skips derivation; it must not skip validation.
+
+    A malformed dict used to raise KeyError out of render_contract. Graceful
+    degradation is the invariant, so it falls back to the plain path.
+    """
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers",
+                                    contract={"name": "add"},   # missing keys
+                                    verbose=False)
+    assert res["ok"]
+    assert res["contract"] is None
+
+
+def test_positional_arguments_still_bind_to_max_retries():
+    """`contract`/`use_contract` are keyword-only, so the fourth positional
+    argument is max_retries as it always was."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(pc, "add two numbers", GOOD_TESTS, 2,
+                                    verbose=False)
+    assert not res["ok"] and res["attempts"] == 2
+
+
+def test_failed_derivation_falls_back_to_the_plain_path():
+    """A dead or unhelpful contract call must never make the tool worse."""
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=["{not json", GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", use_contract=True,
+                                    max_retries=1, verbose=False)
+    assert res["ok"]
+    assert res["contract"] is None
+
+
+def test_contract_off_by_default_changes_nothing():
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False)
+    assert res["ok"]
+    assert res["contract"] is None
+    assert not any("Contract for" in p for p in pc.prompts)
+
+
+def test_a_suite_with_no_assertions_is_rejected():
+    """The gate's floor applies to whatever the designer wrote. Nothing else
+    contributes assertions now, so a suite of none must be sent back."""
+    lazy = "x = 1\n"                          # no assertions at all
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(CONTRACT), lazy, GOOD_TESTS])
+    generate_validated_python(pc, "add two numbers", use_contract=True,
+                              verbose=False)
+    assert any("rejected" in p for p in pc.prompts)
+
+
+def test_scaffold_grounds_the_code_artifact_in_a_contract(tmp_path):
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE],
+        completions=[json.dumps(CONTRACT), GOOD_TESTS, MAKEFILE,
+                     "KEY=value\n", "# readme\n"],
+    )
+    out = tmp_path / "proj"
+    res = scaffold_project(pc, "proj", "a project", outdir=str(out),
+                           verbose=False)
+    assert res["ok"]
+    assert any("Contract for" in p for p in pc.prompts)
+
+
+def test_scaffold_can_run_without_a_contract(tmp_path):
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE],
+        completions=[GOOD_TESTS, MAKEFILE, "KEY=value\n", "# readme\n"],
+    )
+    res = scaffold_project(pc, "proj", "a project", outdir=str(tmp_path / "p"),
+                           use_contract=False, verbose=False)
+    assert res["ok"]
+    assert not any("Contract for" in p for p in pc.prompts)
+
+
+# ---- the loop must not paper over a failed gate --------------------------
+
+def test_a_suite_the_gate_never_accepted_is_not_used():
+    """Observed live: the designer was rejected six times, ended with zero
+    assertions, and the loop used that suite anyway. An importable module plus
+    zero assertions exits 0, so it would have reported success."""
+    useless = "x = 1\n"                      # no assertions, ever
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[useless])
+    res = generate_validated_python(pc, "add two numbers", max_retries=2,
+                                    verbose=False)
+    assert not res["ok"]
+    assert "quality gate" in res["error"]
+
+
+def test_a_missing_dependency_asks_for_stdlib_once_then_stops():
+    """Regenerating blind cannot install a package, but the sandbox CAN run
+    stdlib code -- so ask once for a stdlib rewrite, then stop rather than
+    spend the whole budget on a verdict the executor can never reach."""
+    importer = "import definitely_not_a_real_module_xyz\n\ndef add(a, b):\n    return a + b\n"
+    pc = FakeModel(code_outputs=[importer], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", max_retries=5,
+                                    verbose=False)
+    assert not res["ok"]
+    assert res["attempts"] == 2, "one stdlib retry, then stop"
+    assert "definitely_not_a_real_module_xyz" in res["error"]
+    assert "cannot validate" in res["error"]
+    assert any("standard library" in p for p in pc.prompts), \
+        "the retry must actually carry the stdlib constraint"
+
+
+def test_a_stdlib_rewrite_after_a_missing_dependency_can_succeed():
+    """The point of the retry: the second attempt drops the import and passes."""
+    importer = "import definitely_not_a_real_module_xyz\n\ndef add(a, b):\n    return a + b\n"
+    pc = FakeModel(code_outputs=[importer, GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", max_retries=5,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["attempts"] == 2
+
+
+def test_scaffold_shows_the_contract_it_derived(tmp_path, capsys):
+    """`project` derives a contract by default -- it must also display it."""
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE],
+        completions=[json.dumps(CONTRACT), GOOD_TESTS, MAKEFILE,
+                     "KEY=value\n", "# readme\n"],
+    )
+    scaffold_project(pc, "proj", "a project", outdir=str(tmp_path / "p"),
+                     verbose=True)
+    assert "Contract for" in capsys.readouterr().out
+
+
+def test_the_stdlib_constraint_survives_a_later_unrelated_failure():
+    """Observed live: attempt 2 failed on a syntax error, the prompt was
+    rebuilt from the bare spec, the constraint was lost, and attempt 3
+    re-imported the same missing package."""
+    importer = "import definitely_not_a_real_module_xyz\n\ndef add(a, b):\n    return a + b\n"
+    broken = "def add(a, b:\n    return a + b\n"          # syntax error
+    pc = FakeModel(code_outputs=[importer, broken, GOOD_CODE],
+                   completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", max_retries=4,
+                                    verbose=False)
+    assert res["ok"], res["error"]
+    # every prompt after the nudge must still carry it
+    after = pc.prompts[pc.prompts.index(
+        next(p for p in pc.prompts if "HARD CONSTRAINT" in p)):]
+    assert all("HARD CONSTRAINT" in p for p in after), \
+        "the constraint was dropped by a later rebuild"
+
+
+def test_the_loop_stops_when_the_same_failure_repeats():
+    """Observed live: 5x "API endpoint is unreachable", 4x an identical
+    AttributeError, 3x an identical KeyError -- twelve model calls spent after
+    the outcome was already decided."""
+    pc = FakeModel(code_outputs=[BAD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    max_retries=10, verbose=False)
+    assert not res["ok"]
+    assert res["attempts"] < 10, "should have stopped short of the budget"
+    assert "identical failures" in res["error"]
+
+
+def test_a_loop_that_makes_progress_is_not_cut_short():
+    """Different errors each time means the feedback is landing; keep going."""
+    wrong_a = "def add(a, b):\n    return a - b\n"        # AssertionError
+    wrong_b = "def add(a, b):\n    return undefined_name\n"  # NameError
+    pc = FakeModel(code_outputs=[wrong_a, wrong_b, GOOD_CODE],
+                   completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    max_retries=5, verbose=False)
+    assert res["ok"], res["error"]
+    assert res["attempts"] == 3
