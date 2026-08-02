@@ -357,6 +357,21 @@ def test_anchors_drop_a_custom_exception():
     assert "MyOwnError" in dropped[0]
 
 
+def test_anchors_do_not_swallow_their_own_marker():
+    """`raises AssertionError` must not be satisfied by our own assert False."""
+    contract = {**GOOD, "name": "check",
+                "examples": [{"in": "1", "out": "raises AssertionError"}]}
+    src, dropped = anchor_tests(contract)
+    assert dropped == []
+    ns = {"check": lambda x: None}          # raises nothing -- must FAIL
+    try:
+        exec(src, ns)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("anchor passed a function that never raised")
+
+
 def test_anchors_accept_any_builtin_exception():
     contract = {**GOOD, "examples": [{"in": "None", "out": "raises TypeError"}]}
     src, dropped = anchor_tests(contract)
@@ -439,11 +454,15 @@ def anchor_tests(contract):
             if not _is_builtin_exception(exc):
                 dropped.append(f"example {i}: {exc} is not a built-in exception")
                 continue
+            # try/except/else, never `assert False` inside the try: when exc
+            # is AssertionError the except would catch our own marker and the
+            # anchor would pass on a function that raised nothing.
             block = (f"try:\n"
                      f"    {name}({args})\n"
-                     f"    assert False\n"
                      f"except {exc}:\n"
-                     f"    pass")
+                     f"    pass\n"
+                     f"else:\n"
+                     f"    assert False")
         else:
             block = f"assert {name}({args}) == {expected}"
 
@@ -461,7 +480,7 @@ def anchor_tests(contract):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_anchors.py -q`
-Expected: PASS, 8 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Verify the full suite and lint**
 
@@ -806,7 +825,23 @@ Add `import json` to the top of `tests/test_loops.py`.
 Run: `.venv/bin/python -m pytest tests/test_loops.py tests/test_execute.py -q`
 Expected: FAIL — `TypeError: generate_validated_python() got an unexpected keyword argument 'use_contract'` and `lint_tests() got an unexpected keyword argument 'min_assertions'`
 
-- [ ] **Step 3: Make the gate's floor tunable**
+- [ ] **Step 3: Fix the same bug in the test designer's prompt**
+
+`TEST_SYSTEM` in `purecoder/execute.py` currently tells the model to put
+`assert False` inside the `try`. That has the identical hole the anchor
+generator had: for a `raises AssertionError` case the block catches its own
+marker and the test passes on a function that raised nothing. Replace the
+relevant clause:
+
+```python
+    "assert on exact exception messages -- only assert that the correct "
+    "exception TYPE is raised, using try/except/else: call it inside 'try', "
+    "'except ThatError: pass', and 'else: assert False'. Never put "
+    "'assert False' inside the try -- it would be caught by your own except. "
+    "Respect every word of the spec "
+```
+
+- [ ] **Step 4: Make the gate's floor tunable**
 
 In `purecoder/execute.py`, change the `lint_tests` signature and the
 assertion-count check:
@@ -828,7 +863,7 @@ and:
 Update the docstring line listing the five modes to mention the floor is
 caller-tunable.
 
-- [ ] **Step 4: Thread the floor through the designer**
+- [ ] **Step 5: Thread the floor through the designer**
 
 Change `design_tests` in `purecoder/execute.py` to accept and forward it:
 
@@ -844,7 +879,7 @@ and inside the loop:
                                 min_assertions=min_assertions)
 ```
 
-- [ ] **Step 5: Wire the contract into the loop**
+- [ ] **Step 6: Wire the contract into the loop**
 
 Add to the imports at the top of `purecoder/execute.py`:
 
@@ -958,12 +993,12 @@ def generate_validated_python(pc, description, tests=None, contract=None,
             "attempts": max_retries, "error": error}
 ```
 
-- [ ] **Step 6: Run the new tests to verify they pass**
+- [ ] **Step 7: Run the new tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_loops.py tests/test_execute.py -q`
 Expected: PASS.
 
-- [ ] **Step 7: Verify the full suite and lint**
+- [ ] **Step 8: Verify the full suite and lint**
 
 Run: `.venv/bin/python -m pytest -q && .venv/bin/ruff check purecoder tests examples`
 Expected: 106 passed, `All checks passed!`
@@ -974,7 +1009,7 @@ If `test_execution_loop_designs_tests_when_none_are_given` or
 `anchors` is `""` and `_assemble` must return the designed source unchanged.
 Fix `_assemble`, not the test.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add purecoder/execute.py tests/test_loops.py tests/test_execute.py
