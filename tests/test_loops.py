@@ -224,3 +224,27 @@ def test_gate_sees_only_the_designed_portion():
     generate_validated_python(pc, "add two numbers", use_contract=True,
                               verbose=False)
     assert any("rejected" in p for p in pc.prompts)
+
+
+def test_scaffold_grounds_the_code_artifact_in_a_contract(tmp_path):
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE],
+        completions=[json.dumps(CONTRACT), GOOD_TESTS, MAKEFILE,
+                     "KEY=value\n", "# readme\n"],
+    )
+    out = tmp_path / "proj"
+    res = scaffold_project(pc, "proj", "a project", outdir=str(out),
+                           verbose=False)
+    assert res["ok"]
+    assert any("Contract for" in p for p in pc.prompts)
+
+
+def test_scaffold_can_run_without_a_contract(tmp_path):
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE],
+        completions=[GOOD_TESTS, MAKEFILE, "KEY=value\n", "# readme\n"],
+    )
+    res = scaffold_project(pc, "proj", "a project", outdir=str(tmp_path / "p"),
+                           use_contract=False, verbose=False)
+    assert res["ok"]
+    assert not any("Contract for" in p for p in pc.prompts)

@@ -8,6 +8,10 @@ later artifacts stay consistent with the code.
 
 Order matters: code first, then the Makefile/.env are shown the code so
 their targets and keys actually match it. README last, purely descriptive.
+
+Only the code artifact is contract-grounded. The Makefile, .env and README
+are config and prose -- their validators already cover what a contract would
+add, and a fifth model call per artifact is not worth it on a tight card.
 """
 
 import os
@@ -25,7 +29,8 @@ def _write(outdir: str, filename: str, content: str) -> str:
 
 
 def scaffold_project(pc, name, description, outdir="build",
-                     entry="main.py", max_retries=5, verbose=True):
+                     entry="main.py", max_retries=5, verbose=True,
+                     use_contract=True):
     os.makedirs(outdir, exist_ok=True)
     report = {}
 
@@ -38,6 +43,7 @@ def scaffold_project(pc, name, description, outdir="build",
     code_res = generate_validated_python(
         pc,
         f"{description}\n\nThis is the main module `{entry}`.",
+        use_contract=use_contract,
         max_retries=max_retries, verbose=verbose,
     )
     code = code_res["text"]
