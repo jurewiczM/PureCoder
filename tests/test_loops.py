@@ -162,15 +162,14 @@ CONTRACT = {
 }
 
 
-def test_contract_is_derived_and_its_anchors_reach_the_executor():
+def test_a_contract_is_derived_and_returned():
     pc = FakeModel(code_outputs=[GOOD_CODE],
                    completions=[json.dumps(CONTRACT), GOOD_TESTS])
     res = generate_validated_python(pc, "add two numbers", use_contract=True,
                                     verbose=False)
     assert res["ok"]
     assert res["contract"]["name"] == "add"
-    assert "assert add(1, 2) == (3)" in res["anchors"]
-    assert res["anchors"] in res["tests"]
+    assert res["tests"] == GOOD_TESTS.strip()
 
 
 def test_contract_reaches_the_prompts_alongside_the_prose():
@@ -194,7 +193,7 @@ def test_supplied_contract_skips_derivation():
 def test_a_supplied_contract_is_validated_like_a_derived_one():
     """Passing `contract=` skips derivation; it must not skip validation.
 
-    A malformed dict used to raise KeyError out of anchor_tests. Graceful
+    A malformed dict used to raise KeyError out of render_contract. Graceful
     degradation is the invariant, so it falls back to the plain path.
     """
     pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
@@ -203,7 +202,6 @@ def test_a_supplied_contract_is_validated_like_a_derived_one():
                                     verbose=False)
     assert res["ok"]
     assert res["contract"] is None
-    assert res["anchors"] == ""
 
 
 def test_positional_arguments_still_bind_to_max_retries():
@@ -223,7 +221,6 @@ def test_failed_derivation_falls_back_to_the_plain_path():
                                     max_retries=1, verbose=False)
     assert res["ok"]
     assert res["contract"] is None
-    assert res["anchors"] == ""
 
 
 def test_contract_off_by_default_changes_nothing():
@@ -231,17 +228,12 @@ def test_contract_off_by_default_changes_nothing():
     res = generate_validated_python(pc, "add two numbers", verbose=False)
     assert res["ok"]
     assert res["contract"] is None
-    assert res["anchors"] == ""
     assert not any("Contract for" in p for p in pc.prompts)
 
 
-def test_gate_sees_only_the_designed_portion():
-    """Free anchors must not satisfy the gate on a lazy tester's behalf.
-
-    The contract yields two anchors. If the gate counted the combined source
-    it would see 2 assertions and pass a designer that wrote none. Counting
-    the designed portion alone sees 0 and rejects.
-    """
+def test_a_suite_with_no_assertions_is_rejected():
+    """The gate's floor applies to whatever the designer wrote. Nothing else
+    contributes assertions now, so a suite of none must be sent back."""
     lazy = "x = 1\n"                          # no assertions at all
     pc = FakeModel(code_outputs=[GOOD_CODE],
                    completions=[json.dumps(CONTRACT), lazy, GOOD_TESTS])

@@ -5,7 +5,6 @@ Every layer assumes the model can be wrong and catches it with something
 external: a GBNF grammar, a real tool, a test run. See docs/ARCHITECTURE.md.
 """
 
-from .anchors import anchor_tests
 from .client import PureCoder, strip_fences
 from .contract import derive_contract, render_contract, validate_contract
 from .execute import generate_validated_python, lint_tests, run_python
@@ -18,7 +17,6 @@ __version__ = "0.1.0"
 __all__ = [
     "PureCoder",
     "strip_fences",
-    "anchor_tests",
     "derive_contract",
     "render_contract",
     "validate_contract",

@@ -19,7 +19,6 @@ import sys
 import tempfile
 from collections import Counter
 
-from .anchors import anchor_tests, count_anchors
 from .client import strip_fences
 from .contract import derive_contract, render_contract, validate_contract
 
@@ -346,18 +345,6 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 # ---- the execution fix loop ---------------------------------------------
 
-def _designer_floor(anchors: str) -> int:
-    """How many assertions the test designer still owes.
-
-    Anchors count toward the total, so the designer is asked for the
-    remainder instead of MIN_ASSERTIONS more on top. The floor never drops
-    below 1: a contract must not buy a designer out of writing anything.
-    """
-    if not anchors:
-        return MIN_ASSERTIONS
-    return max(1, MIN_ASSERTIONS - count_anchors(anchors))
-
-
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, **kw):
@@ -365,9 +352,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     with the traceback fed back.
 
     With use_contract, the prose is first turned into a contract that both the
-    writer and the test designer read, and whose examples become mechanical
-    anchor assertions. Returns {ok, text, tests, anchors, contract, attempts,
-    error}.
+    writer and the test designer read. Returns {ok, text, tests, contract,
+    attempts, error}.
     """
     if use_contract and contract is None:
         contract, cerr = derive_contract(pc, description,
@@ -378,20 +364,13 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     elif contract is not None:
         # A caller-supplied contract skipped derivation and therefore skipped
         # validation. Degrade the same way a failed derivation does rather
-        # than let a malformed dict raise out of anchor_tests.
+        # than let a malformed dict raise out of render_contract.
         ok, cerr = validate_contract(contract)
         if not ok:
             if verbose:
                 print(f"[contract] supplied contract rejected: {cerr} "
                       f"-> continuing without one")
             contract = None
-
-    anchors = ""
-    if contract is not None:
-        anchors, dropped = anchor_tests(contract)
-        if verbose:
-            for reason in dropped:
-                print(f"[contract] dropped {reason}")
 
     # Everything downstream reads the contract, never the implementation --
     # the test designer stays code-blind.
@@ -400,32 +379,19 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         spec = f"{description}\n\n{render_contract(contract)}"
 
     if tests is None:
-        # Anchors already assert everything the contract states, so the
-        # designer is asked for what they do NOT cover, and judged on that
-        # alone -- the gate never counts free anchors toward the designed
-        # portion. The floor shrinks by the anchor count so the TOTAL still
-        # reaches MIN_ASSERTIONS: a contract may not lower coverage.
-        floor = _designer_floor(anchors)
-        ask = spec
-        if anchors:
-            ask = (f"{spec}\n\nThese cases are already covered and must NOT be "
-                   f"repeated:\n{anchors}\n\nWrite only ADDITIONAL tests.")
         designed, gate_ok, gate_reason = design_tests(
-            pc, ask, max_retries=max_retries, verbose=verbose,
-            min_assertions=floor)
+            pc, spec, max_retries=max_retries, verbose=verbose,
+            min_assertions=MIN_ASSERTIONS)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
             if verbose:
                 print(f"[tests] gate never satisfied: {gate_reason} -> giving up")
-            return {"ok": False, "text": "", "tests": designed, "anchors": anchors,
+            return {"ok": False, "text": "", "tests": designed,
                     "contract": contract, "attempts": 0,
                     "error": f"test design failed the quality gate: {gate_reason}"}
     else:
         designed = tests
-
-    def _assemble(designed_src):
-        return f"{anchors}\n\n{designed_src}".strip() if anchors else designed_src
 
     task = spec
     code, error = "", ""
@@ -456,21 +422,20 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             regated = True
             targets = public_names(code)
             if targets:
-                floor = _designer_floor(anchors)
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
-                                                  min_assertions=floor)
+                                                  min_assertions=MIN_ASSERTIONS)
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
                     designed, redo_ok, redo_reason = design_tests(
                         pc, spec, targets=targets, max_retries=max_retries,
-                        verbose=verbose, min_assertions=floor)
+                        verbose=verbose, min_assertions=MIN_ASSERTIONS)
                     if not redo_ok:
                         if verbose:
                             print(f"[tests] gate never satisfied: {redo_reason} "
                                   f"-> giving up")
                         return {"ok": False, "text": code,
-                                "tests": _assemble(designed), "anchors": anchors,
+                                "tests": designed,
                                 "contract": contract, "attempts": attempt,
                                 "error": f"test design failed the quality gate: "
                                          f"{redo_reason}"}
@@ -487,7 +452,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     f"Output only the implementation, nothing else.")
             continue
 
-        full = _assemble(designed)
+        full = designed
         ok, error = run_python(code, full, timeout=timeout, require_checks=1)
 
         dep = missing_dependency(error)
@@ -511,7 +476,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             if verbose:
                 print(f"[attempt {attempt}] still missing {dep!r} -- "
                       f"cannot validate, stopping")
-            return {"ok": False, "text": code, "tests": full, "anchors": anchors,
+            return {"ok": False, "text": code, "tests": full,
                     "contract": contract, "attempts": attempt,
                     "error": f"cannot validate: the sandbox has no module "
                              f"{dep!r}, and the stdlib-only retry still imported "
@@ -520,7 +485,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         if ok:
             if verbose:
                 print(f"[attempt {attempt}] all tests passed")
-            return {"ok": True, "text": code, "tests": full, "anchors": anchors,
+            return {"ok": True, "text": code, "tests": full,
                     "contract": contract, "attempts": attempt, "error": ""}
 
         # An identical failure means the feedback is not moving the model.
@@ -535,7 +500,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 print(f"[attempt {attempt}] same failure {repeats + 1}x in a "
                       f"row -- the fix loop is not converging, stopping")
             return {"ok": False, "text": code, "tests": full,
-                    "anchors": anchors, "contract": contract,
+                    "contract": contract,
                     "attempts": attempt,
                     "error": f"stopped after {repeats + 1} identical "
                              f"failures: {error}"}
@@ -552,6 +517,6 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 f"With this error:\n{error}\n\n"
                 f"Output only the corrected implementation, nothing else.")
 
-    return {"ok": False, "text": code, "tests": _assemble(designed),
-            "anchors": anchors, "contract": contract,
+    return {"ok": False, "text": code, "tests": designed,
+            "contract": contract,
             "attempts": max_retries, "error": error}
