@@ -272,3 +272,97 @@ def test_scaffold_can_run_without_a_contract(tmp_path):
                            use_contract=False, verbose=False)
     assert res["ok"]
     assert not any("Contract for" in p for p in pc.prompts)
+
+
+# ---- the loop must not paper over a failed gate --------------------------
+
+def test_a_suite_the_gate_never_accepted_is_not_used():
+    """Observed live: the designer was rejected six times, ended with zero
+    assertions, and the loop used that suite anyway. An importable module plus
+    zero assertions exits 0, so it would have reported success."""
+    useless = "x = 1\n"                      # no assertions, ever
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[useless])
+    res = generate_validated_python(pc, "add two numbers", max_retries=2,
+                                    verbose=False)
+    assert not res["ok"]
+    assert "quality gate" in res["error"]
+
+
+def test_a_missing_dependency_asks_for_stdlib_once_then_stops():
+    """Regenerating blind cannot install a package, but the sandbox CAN run
+    stdlib code -- so ask once for a stdlib rewrite, then stop rather than
+    spend the whole budget on a verdict the executor can never reach."""
+    importer = "import definitely_not_a_real_module_xyz\n\ndef add(a, b):\n    return a + b\n"
+    pc = FakeModel(code_outputs=[importer], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", max_retries=5,
+                                    verbose=False)
+    assert not res["ok"]
+    assert res["attempts"] == 2, "one stdlib retry, then stop"
+    assert "definitely_not_a_real_module_xyz" in res["error"]
+    assert "cannot validate" in res["error"]
+    assert any("standard library" in p for p in pc.prompts), \
+        "the retry must actually carry the stdlib constraint"
+
+
+def test_a_stdlib_rewrite_after_a_missing_dependency_can_succeed():
+    """The point of the retry: the second attempt drops the import and passes."""
+    importer = "import definitely_not_a_real_module_xyz\n\ndef add(a, b):\n    return a + b\n"
+    pc = FakeModel(code_outputs=[importer, GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", max_retries=5,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["attempts"] == 2
+
+
+def test_scaffold_shows_the_contract_it_derived(tmp_path, capsys):
+    """`project` derives a contract by default -- it must also display it."""
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE],
+        completions=[json.dumps(CONTRACT), GOOD_TESTS, MAKEFILE,
+                     "KEY=value\n", "# readme\n"],
+    )
+    scaffold_project(pc, "proj", "a project", outdir=str(tmp_path / "p"),
+                     verbose=True)
+    assert "Contract for" in capsys.readouterr().out
+
+
+def test_the_stdlib_constraint_survives_a_later_unrelated_failure():
+    """Observed live: attempt 2 failed on a syntax error, the prompt was
+    rebuilt from the bare spec, the constraint was lost, and attempt 3
+    re-imported the same missing package."""
+    importer = "import definitely_not_a_real_module_xyz\n\ndef add(a, b):\n    return a + b\n"
+    broken = "def add(a, b:\n    return a + b\n"          # syntax error
+    pc = FakeModel(code_outputs=[importer, broken, GOOD_CODE],
+                   completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", max_retries=4,
+                                    verbose=False)
+    assert res["ok"], res["error"]
+    # every prompt after the nudge must still carry it
+    after = pc.prompts[pc.prompts.index(
+        next(p for p in pc.prompts if "HARD CONSTRAINT" in p)):]
+    assert all("HARD CONSTRAINT" in p for p in after), \
+        "the constraint was dropped by a later rebuild"
+
+
+def test_the_loop_stops_when_the_same_failure_repeats():
+    """Observed live: 5x "API endpoint is unreachable", 4x an identical
+    AttributeError, 3x an identical KeyError -- twelve model calls spent after
+    the outcome was already decided."""
+    pc = FakeModel(code_outputs=[BAD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    max_retries=10, verbose=False)
+    assert not res["ok"]
+    assert res["attempts"] < 10, "should have stopped short of the budget"
+    assert "identical failures" in res["error"]
+
+
+def test_a_loop_that_makes_progress_is_not_cut_short():
+    """Different errors each time means the feedback is landing; keep going."""
+    wrong_a = "def add(a, b):\n    return a - b\n"        # AssertionError
+    wrong_b = "def add(a, b):\n    return undefined_name\n"  # NameError
+    pc = FakeModel(code_outputs=[wrong_a, wrong_b, GOOD_CODE],
+                   completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    max_retries=5, verbose=False)
+    assert res["ok"], res["error"]
+    assert res["attempts"] == 3
