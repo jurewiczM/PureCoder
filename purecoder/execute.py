@@ -183,11 +183,26 @@ def run_candidate(spec, code: str, tests: str, timeout: int = 10,
     return False, _trim(stderr.strip() or stdout.strip() or f"exited {rc}")
 
 
+# a compiler diagnostic line: "path:12:34: error: ..." / "warning:" / "note:"
+_DIAGNOSTIC = re.compile(r"^\S*[^:]:\d+[:\d]*:\s*(error|warning|note)\b|"
+                         r"^(error|warning)(\[[^\]]+\])?:", re.IGNORECASE)
+
+
 def _trim(err: str) -> str:
-    """Keep feedback small on a tight context budget -- the last dozen lines
-    of a traceback carry the signal, the rest is frame noise."""
+    """Keep feedback small on a tight context budget.
+
+    A Python traceback puts its signal in the LAST lines. A compiler puts it
+    in the FIRST, then draws carets under the source -- so tailing a g++ error
+    yields "|           ^" and nothing else. Observed live: the loop failed
+    three identical times because that was the entire message the model got.
+    """
     lines = err.splitlines()
-    return "\n".join(lines[-12:]) if len(lines) > 12 else err
+    if len(lines) <= 12:
+        return err
+    diagnostics = [ln for ln in lines if _DIAGNOSTIC.search(ln.strip())]
+    if diagnostics:
+        return "\n".join(diagnostics[:12])
+    return "\n".join(lines[-12:])
 
 
 def run_python(code: str, tests: str, timeout: int = 10, require_checks: int = 0):
