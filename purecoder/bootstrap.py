@@ -120,7 +120,7 @@ def worked_examples(field: str) -> str:
                        for n in EXAMPLE_LANGUAGES)
 
 
-def draft_preamble(pc, name: str, context: str) -> str:
+def draft_preamble(pc, name: str, context: str, feedback: str = "") -> str:
     """The check helper: prints the failed expression to stderr, exits non-zero,
     and counts successes.
 
@@ -138,7 +138,7 @@ def draft_preamble(pc, name: str, context: str) -> str:
         f"at zero; define a helper named PC_CHECK taking one boolean "
         f"expression; on failure print \"CHECK FAILED: \" plus the expression "
         f"to standard error and exit with status 1; on success increment the "
-        f"counter. Output only that code.")
+        f"counter. Output only that code.{feedback}")
     return unfence(pc.complete(system=system, user=user, grammar=None,
                                n_predict=512)["text"])
 
@@ -177,7 +177,8 @@ def draft_check_call(pc, name: str, preamble: str) -> str:
                      f"defines -- the harness and its invocation disagree")
 
 
-def draft_epilogue(pc, name: str, preamble: str, context: str) -> str:
+def draft_epilogue(pc, name: str, preamble: str, context: str,
+                   feedback: str = "") -> str:
     """The tail that fails the run when nothing was checked.
 
     Without it an empty suite exits 0 and the pipeline reports success on
@@ -197,7 +198,7 @@ def draft_epilogue(pc, name: str, preamble: str, context: str) -> str:
         f"run by the time your tail is reached, so do not call them again. "
         f"Then, if the counter is still zero, print \"no checks ran\" to "
         f"standard error and exit with status 2. Use fully qualified names for "
-        f"anything you did not define. Output only that code.")
+        f"anything you did not define. Output only that code.{feedback}")
     return unfence(pc.complete(system=system, user=user, grammar=None,
                                n_predict=512)["text"])
 
@@ -206,7 +207,7 @@ _SECTIONS = ("WRONG", "TESTS", "EMPTY", "ALWAYS_FAILS")
 
 
 def draft_fixture(pc, name: str, preamble: str, epilogue: str,
-                  check_call: str) -> Fixture:
+                  check_call: str, feedback: str = "") -> Fixture:
     """The five snippets the probes run.
 
     Delimited rather than parsed: we do not have a parser for this language and
@@ -239,7 +240,7 @@ def draft_fixture(pc, name: str, preamble: str, epilogue: str,
         f"@@ALWAYS_FAILS@@\n"
         f"5. a test body containing exactly one check that must fail\n\n"
         f"Output the five snippets in that order, with the separator lines "
-        f"between them and nothing else.")
+        f"between them and nothing else.{feedback}")
     text = pc.complete(system=system, user=user, grammar=None,
                        n_predict=768)["text"]
 
@@ -376,6 +377,61 @@ def confirm_commands(build, run, ask=input) -> bool:
     return ask("Run these? [y/N] ").strip().lower() in ("y", "yes")
 
 
+# ---- redrafting ----------------------------------------------------------
+
+@dataclass(frozen=True)
+class Harness:
+    """The four drafted pieces that make one candidate, kept together because
+    they are drafted, redrafted and probed as a unit."""
+
+    preamble: str
+    check_call: str
+    epilogue: str
+    fixture: Fixture
+
+
+def draft_harness(pc, name: str, retrieve, feedback: str = "") -> Harness:
+    """All four pieces, in dependency order.
+
+    Redrafted whole rather than in part: a compile error on the first probe
+    could be the helper, the tail or the fixture, and there is no way to
+    attribute it without a parser for the language -- which is the per-language
+    surface the registry exists to avoid.
+    """
+    preamble = draft_preamble(pc, name, retrieve(QUERIES["helper"]), feedback)
+    check_call = draft_check_call(pc, name, preamble)
+    epilogue = draft_epilogue(pc, name, preamble, retrieve(QUERIES["entry"]),
+                              feedback)
+    fixture = draft_fixture(pc, name, preamble, epilogue, check_call, feedback)
+    return Harness(preamble, check_call, epilogue, fixture)
+
+
+def probe_feedback(probes, max_lines: int = 8) -> str:
+    """What the toolchain said, shaped for the next drafting prompt.
+
+    The probes assemble harness + implementation + tests + tail into one file,
+    so the diagnostic is about the whole assembly. Saying that plainly is the
+    difference between the model fixing the helper and it rewriting `add`.
+    """
+    failures = [p for p in probes if not p.ok]
+    if not failures:
+        return ""
+
+    lines = ["\n\nYour previous attempt was rejected. The harness, an "
+             "implementation and its tests are assembled into ONE file and "
+             "built, and these checks failed:"]
+    for probe in failures:
+        lines.append(f"\n- {probe.name}")
+        detail = probe.detail.strip()
+        if detail:
+            lines.extend("  " + ln for ln in
+                         detail.splitlines()[:max_lines])
+        else:
+            lines.append("  (the run succeeded when it should have failed)")
+    lines.append("\nFix the cause and output only the corrected code.")
+    return "\n".join(lines)
+
+
 # ---- the orchestrator ----------------------------------------------------
 
 # Asked of the docs, once each. Retrieval is per-question rather than one broad
@@ -398,7 +454,7 @@ def _failed(error, probes=()):
 
 def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
                    confirm=confirm_commands, verbose=True, live_check=True,
-                   timeout=60):
+                   timeout=60, max_retries=2):
     """Draft a language entry, prove it, and save it.
 
     -> {ok, probes, error}. Nothing is registered unless every probe passes:
@@ -421,32 +477,47 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
 
     log(f"[learn] drafting a {name} harness")
     try:
-        preamble = draft_preamble(pc, name, retrieve(QUERIES["helper"]))
-        check_call = draft_check_call(pc, name, preamble)
-        epilogue = draft_epilogue(pc, name, preamble, retrieve(QUERIES["entry"]))
-        fixture = draft_fixture(pc, name, preamble, epilogue, check_call)
+        harness = draft_harness(pc, name, retrieve)
         build, run, toolchain = draft_commands(pc, name, extension,
                                                retrieve(QUERIES["commands"]))
     except ValueError as e:
         return _failed(f"drafting failed: {e}")
 
+    # Asked once, outside the retry loop. It prompts on stdin, and the commands
+    # are not what a probe failure implicates -- the build ran.
     if not confirm(build, run):
         return _failed("declined: the drafted commands were not confirmed, so "
                        "nothing was run and nothing was saved")
 
-    spec = LanguageSpec(
-        name=name, extension=extension, probe=(toolchain, "--version"),
-        build=build, run=run, preamble=preamble, epilogue=epilogue,
-        test_system=test_system_for(name, check_call), check_call=check_call,
-    )
+    probes = []
+    for attempt in range(1, max_retries + 1):
+        spec = LanguageSpec(
+            name=name, extension=extension, probe=(toolchain, "--version"),
+            build=build, run=run, preamble=harness.preamble,
+            epilogue=harness.epilogue, check_call=harness.check_call,
+            test_system=test_system_for(name, harness.check_call),
+        )
 
-    log("[learn] probing the candidate")
-    ok, probes = probe_language(spec, fixture, timeout=timeout)
-    for probe in probes:
-        log(f"[learn]   {'pass' if probe.ok else 'FAIL'}  {probe.name}")
-    if not ok:
+        log(f"[learn] probing the candidate (attempt {attempt})")
+        ok, probes = probe_language(spec, harness.fixture, timeout=timeout)
+        for probe in probes:
+            log(f"[learn]   {'pass' if probe.ok else 'FAIL'}  {probe.name}")
+        if ok:
+            break
+
         failed = ", ".join(p.name for p in probes if not p.ok)
-        return _failed(f"the candidate failed a probe: {failed}", probes=probes)
+        if attempt == max_retries:
+            return _failed(f"the candidate failed a probe: {failed}",
+                           probes=probes)
+
+        # Every other layer in this pipeline feeds its error back and tries
+        # again; this one used to refuse on the first bad draft. A live OCaml
+        # run reached four of five probes on a single malformed snippet.
+        log(f"[learn] {failed} -> redrafting with the diagnostic")
+        try:
+            harness = draft_harness(pc, name, retrieve, probe_feedback(probes))
+        except ValueError as e:
+            return _failed(f"redrafting failed: {e}", probes=probes)
 
     # The probes prove the harness can fail wrong code. This proves the writer
     # and the tester can actually work inside it, which is a different claim.

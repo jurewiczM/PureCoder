@@ -258,6 +258,9 @@ DRAFTS = [
 
 
 def _learn(pc, store, name="cpplike", **kw):
+    """One drafting attempt. The retry path has its own tests below; these
+    would otherwise exhaust the scripted queue on the redraft."""
+    kw.setdefault("max_retries", 1)
     return bootstrap.learn_language(
         pc, name, ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
         confirm=lambda b, r: True, verbose=False, live_check=False, **kw)
@@ -502,3 +505,82 @@ def test_fence_markers_are_removed_wherever_they_appear(raw, want):
     the fence rather than at anything the model got wrong. A triple backtick is
     not valid syntax in any language the executor runs, so it is always markup."""
     assert bootstrap.unfence(raw) == want
+
+
+# ---- redrafting ----------------------------------------------------------
+
+def test_a_failed_probe_is_redrafted_with_the_diagnostic(store):
+    """Every other layer feeds its error back and tries again; this one used to
+    refuse on the first bad draft. A live OCaml run reached four of five probes
+    on a single malformed snippet."""
+    _cpp()
+    broken = list(DRAFTS)
+    broken[0] = ("static int pc_checks = 0;\n#define PC_CHECK(x) do { "
+                 "no_such_function(x); pc_checks++; } while (0)\n")
+    pc = FakeModel(completions=[*broken, *DRAFTS])
+    res = bootstrap.learn_language(
+        pc, "cpplike", ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
+        confirm=lambda b, r: True, verbose=False, live_check=False,
+        max_retries=2)
+    assert res["ok"], res["error"]
+    assert (store / "cpplike.json").is_file()
+
+
+def test_the_redraft_prompt_carries_the_compiler_message(store):
+    _cpp()
+    broken = list(DRAFTS)
+    broken[0] = ("static int pc_checks = 0;\n#define PC_CHECK(x) do { "
+                 "no_such_function(x); pc_checks++; } while (0)\n")
+    pc = FakeModel(completions=[*broken, *DRAFTS])
+    bootstrap.learn_language(
+        pc, "cpplike", ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
+        confirm=lambda b, r: True, verbose=False, live_check=False,
+        max_retries=2)
+    redraft = pc.calls[5][1]          # the first prompt of the second attempt
+    assert "previous attempt was rejected" in redraft
+    assert "no_such_function" in redraft, "the diagnostic never reached the model"
+
+
+def test_the_commands_are_confirmed_once_however_many_redrafts(store):
+    """confirm_commands reads stdin. Inside the retry body it would prompt per
+    attempt -- and the commands are not what a probe failure implicates, since
+    the build ran."""
+    _cpp()
+    asked = []
+    broken = list(DRAFTS)
+    broken[0] = "static int pc_checks = 0;\n#define PC_CHECK(x) do { nope(x); } while (0)\n"
+    bootstrap.learn_language(
+        FakeModel(completions=[*broken, *broken, *DRAFTS]), "cpplike", ".cpp",
+        docs_dir=None, retrieve=lambda q: "DOCS",
+        confirm=lambda b, r: asked.append((b, r)) or True, verbose=False,
+        live_check=False, max_retries=3)
+    assert len(asked) == 1
+
+
+def test_giving_up_still_names_the_probe_that_failed(store):
+    _cpp()
+    broken = list(DRAFTS)
+    # Compiles cleanly and counts, but cannot fail -- so the probe it trips is
+    # the one that matters, not an incidental build error.
+    broken[0] = ("#include <cstdio>\nstatic int pc_checks = 0;\n"
+                 "#define PC_CHECK(x) do { pc_checks++; } while (0)\n")
+    res = bootstrap.learn_language(
+        FakeModel(completions=[*broken, *broken]), "cpplike", ".cpp",
+        docs_dir=None, retrieve=lambda q: "DOCS", confirm=lambda b, r: True,
+        verbose=False, live_check=False, max_retries=2)
+    assert not res["ok"]
+    assert "wrong implementation fails" in res["error"], \
+        "giving up must name the probe, not the exhausted retry"
+
+
+def test_feedback_is_empty_when_nothing_failed():
+    assert bootstrap.probe_feedback(
+        [bootstrap.Probe("a", True, ""), bootstrap.Probe("b", True, "")]) == ""
+
+
+def test_feedback_says_so_when_a_probe_failed_by_succeeding():
+    """A harness that cannot fail produces failing probes with empty detail --
+    the run succeeded and there is nothing for the compiler to say."""
+    text = bootstrap.probe_feedback(
+        [bootstrap.Probe("wrong implementation fails", False, "")])
+    assert "succeeded when it should have failed" in text

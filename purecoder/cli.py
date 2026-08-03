@@ -167,7 +167,8 @@ def cmd_learn(pc, args):
 
     res = learn_language(pc, args.name, args.ext, args.docs_dir,
                          retrieve=lambda q: retrieve_context(store, q),
-                         live_check=not args.no_live)
+                         live_check=not args.no_live,
+                         max_retries=args.draft_retries)
     if not res["ok"]:
         print(f"\nnot registered: {res['error']}")
         # Naming the probe says WHICH check failed; its detail says why, and it
@@ -222,6 +223,9 @@ def main():
                     help="source file extension, e.g. .zig")
     sl.add_argument("--no-live", action="store_true",
                     help="skip the live generation round (probes only)")
+    sl.add_argument("--draft-retries", type=int, default=2, metavar="N",
+                    help="drafting attempts before giving up; each redraft "
+                         "carries the failing probes' diagnostics (default: 2)")
     sub.add_parser("status")
 
     args = p.parse_args()
