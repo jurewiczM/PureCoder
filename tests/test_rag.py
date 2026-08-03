@@ -164,10 +164,31 @@ def test_gate_injects_context_when_relevant(store):
     assert "a.md" in ctx
 
 
-def test_retrieve_context_respects_char_budget(store):
-    assert len(retrieve_context(store, "alpha", max_chars=10)) <= len(
-        "Relevant documentation:\n\n")
+def test_retrieve_context_returns_nothing_when_no_block_fits(store):
+    """A header with no documentation under it is still truthy.
 
+    `cmd_ask` reads the return value as "was anything injected?", so this used
+    to print "[rag] injected 25 chars" and hand the model the sentence
+    "Relevant documentation:" followed by nothing at all.
+    """
+    assert retrieve_context(store, "alpha", max_chars=10) == ""
+
+
+def test_an_oversized_top_hit_does_not_discard_the_ones_below_it(tmp_path):
+    d = tmp_path / "docs"
+    d.mkdir()
+    # Ranked apart on purpose: big.md is pure alpha and scores 1.0, small.md
+    # dilutes with beta and comes second. Only the ordering matters here.
+    (d / "big.md").write_text("# Alpha\n" + "alpha " * 100)
+    (d / "small.md").write_text("# Alpha two\nalpha beta\n")
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d), verbose=False)
+
+    ctx = retrieve_context(s, "alpha", k=2, max_chars=120)
+    assert "small.md" in ctx        # the big one is skipped, not the rest
+
+
+# ---- the index on disk ---------------------------------------------------
 
 def test_save_and_load_round_trip(store):
     store.save()

@@ -206,8 +206,16 @@ def retrieve_context(store, query, k=3, min_score=0.3, max_chars=1500):
     blocks, used = [], 0
     for chunk, source, _score in hits:
         block = f"# doc: {source}\n{chunk}"
+        # `continue`, not `break`: one oversized top hit used to discard every
+        # smaller one below it. Prompt order stops matching score order, which
+        # is the cheaper of the two costs.
         if used + len(block) > max_chars:
-            break
+            continue
         blocks.append(block)
         used += len(block)
+    # A header with nothing under it is truthy, so the caller reported
+    # injecting context and the model was handed a promise of documentation
+    # followed by none of it.
+    if not blocks:
+        return ""
     return "Relevant documentation:\n\n" + "\n\n".join(blocks)
