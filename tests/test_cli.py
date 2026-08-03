@@ -173,13 +173,14 @@ def learned(store, monkeypatch):
 def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys):
     """The claim the whole feature exists for: `code --lang X` is grounded with
     no second ingest and no --store."""
-    from purecoder.cli import ground_in_docs
+    from purecoder.cli import _grounded, ground_in_docs
 
-    task, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
-    assert "Relevant documentation:" in task
-    assert "Zig.print" in task
-    assert task.endswith("alpha")
-    assert "from the ziglike docs" in capsys.readouterr().out
+    context, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
+    assert "Relevant documentation:" in context
+    assert "Zig.print" in context
+    assert "using the ziglike docs from `learn`" in capsys.readouterr().out
+    # and the caller puts it in front of the task rather than around it
+    assert _grounded(context, "alpha").endswith("alpha")
 
 
 def test_the_docs_answer_did_you_mean_for_that_language(learned):
@@ -191,14 +192,58 @@ def test_the_docs_answer_did_you_mean_for_that_language(learned):
     assert "Zig.print" in hint("error: cannot find `Zig.prnt` in this scope")
 
 
+def test_an_explicit_store_grounds_any_language(learned, store):
+    """--store wins over the language's own index, and works for a language
+    that never had one -- which is what makes `project` groundable at all,
+    since a hand-written language has no docs_store."""
+    from purecoder.cli import ground_in_docs
+    from purecoder.langstore import docs_index_path
+    from purecoder.languages import get
+
+    named = str(docs_index_path("ziglike"))     # any index, reached by path
+    context, hint = ground_in_docs(DocArgs("python", store=named),
+                                   get("python"), "alpha")
+    assert "Zig.print" in context and hint is not None
+
+
+def test_the_scaffolder_grounds_the_code_and_nothing_else(monkeypatch, tmp_path):
+    """Retrieval reaches the one artifact that is execution-validated. The
+    Makefile's targets come from spec.project, the .env is derived from the
+    code it is shown, and the README is prose -- context is double-edged on
+    this card, and those three would spend it for nothing."""
+    from conftest import FakeModel
+
+    from purecoder import scaffold
+
+    seen = {}
+
+    def spy(pc, description, **kw):
+        seen["description"] = description
+        seen["error_hint"] = kw.get("error_hint")
+        return {"ok": True, "text": "def f():\n    return 1\n", "tests": "",
+                "contract": None, "attempts": 1, "error": ""}
+
+    monkeypatch.setattr(scaffold, "generate_validated_python", spy)
+    pc = FakeModel(completions=["HOST=x\n", "all:\n\techo hi\n", "# readme\n"])
+    scaffold.scaffold_project(pc, "proj", "build a thing",
+                              outdir=str(tmp_path / "out"), verbose=False,
+                              use_contract=False, docs="DOCS HERE",
+                              error_hint=lambda e: "hint")
+
+    assert "DOCS HERE" in seen["description"]
+    assert seen["error_hint"] is not None
+    # The other three prompts are the model's own record of what it was asked.
+    assert not any("DOCS HERE" in p for p in pc.prompts), \
+        "documentation reached an artifact that cannot use it"
+
+
 def test_a_hand_written_language_is_left_alone():
     """C++ was not learned from anything. Grounding must be something a
     learned entry opts into, not a cost every language pays."""
     from purecoder.cli import ground_in_docs
     from purecoder.languages import get
 
-    task, hint = ground_in_docs(DocArgs(), get("python"), "add two numbers")
-    assert task == "add two numbers" and hint is None
+    assert ground_in_docs(DocArgs(), get("python"), "add two numbers") == ("", None)
 
 
 def test_no_docs_turns_it_off():
@@ -206,8 +251,7 @@ def test_no_docs_turns_it_off():
     from purecoder.languages import LanguageSpec
 
     spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
-    task, hint = ground_in_docs(DocArgs(no_docs=True), spec, "a thing")
-    assert task == "a thing" and hint is None
+    assert ground_in_docs(DocArgs(no_docs=True), spec, "a thing") == ("", None)
 
 
 def test_a_missing_index_does_not_stop_generation(capsys, store):
@@ -218,8 +262,7 @@ def test_a_missing_index_does_not_stop_generation(capsys, store):
     from purecoder.languages import LanguageSpec
 
     spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
-    task, hint = ground_in_docs(DocArgs(), spec, "a thing")
-    assert task == "a thing" and hint is None
+    assert ground_in_docs(DocArgs(), spec, "a thing") == ("", None)
     assert "Traceback" not in capsys.readouterr().out
 
 

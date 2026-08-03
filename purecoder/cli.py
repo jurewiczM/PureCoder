@@ -125,36 +125,62 @@ def open_docs(path, device, required=False):
         return None
 
 
-def ground_in_docs(args, spec, task):
-    """(task, error_hint) with a learned language's own documentation applied.
+def ground_in_docs(args, spec, query, required=False):
+    """(context, error_hint) for this run: the retrieved block, not a task.
 
-    This is what `learn` keeping its index buys: `--lang zig code "..."` reads
-    the docs zig was learned from, with no second ingest and no --store to
-    remember. A hand-written language has none and is unaffected.
+    One resolver for every command that generates code, so they cannot drift
+    apart the way `ask` and `code` already did once. An explicit --store wins;
+    otherwise a learned language reads the docs it was learned from, which is
+    what `learn` keeping that index buys. A hand-written language with no
+    --store has nothing to read and is unaffected.
+
+    It hands back the context rather than a finished prompt because the caller
+    is the only one who knows where it belongs. `project` proved why: folding
+    documentation into the description sent it to the README prompt too, and
+    prose cannot use it.
+
+    "" means nothing was retrieved -- the hint is still live, since the symbol
+    library does not depend on any chunk clearing the threshold. None means the
+    documentation was required and is not there.
     """
-    if getattr(args, "no_docs", False) or not spec.docs_store:
-        return task, None
     from .langstore import docs_index_path
     from .rag import retrieve_context
     from .symbols import did_you_mean
 
-    store = open_docs(str(docs_index_path(spec.docs_store)), args.device)
+    if getattr(args, "no_docs", False):
+        return (None, None) if required else ("", None)
+
+    path = getattr(args, "store", None)
+    if path is None and spec is not None and spec.docs_store:
+        path = str(docs_index_path(spec.docs_store))
+        print(f"[rag] using the {spec.name} docs from `learn`")
+    if path is None:
+        if not required:
+            return "", None
+        path = DEFAULT_STORE
+
+    store = open_docs(path, args.device, required=required)
     if store is None:
-        return task, None
-    ctx = retrieve_context(store, task)
-    if ctx:
-        print(f"[rag] {len(ctx)} chars from the {spec.name} docs")
-    return (f"{ctx}\n\n{task}" if ctx else task,
-            lambda err: did_you_mean(err, store.symbols))
+        return (None, None) if required else ("", None)
+
+    ctx = retrieve_context(store, query)
+    print(f"[rag] {len(ctx)} chars of documentation" if ctx else
+          "[rag] nothing above the threshold -- generating without context")
+    return ctx, lambda err: did_you_mean(err, store.symbols)
+
+
+def _grounded(context, task):
+    """The task with its documentation in front, if there is any."""
+    return f"{context}\n\n{task}" if context else task
 
 
 def cmd_code(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
-    task, hint = ground_in_docs(args, spec, args.spec)
+    context, hint = ground_in_docs(args, spec, args.spec)
     _print_result(generate_validated_python(
-        pc, task, max_retries=args.retries, spec=spec,
+        pc, _grounded(context, args.spec), max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
         error_hint=hint),
         show_tests=args.show_tests)
@@ -175,10 +201,14 @@ def cmd_project(pc, args):
     if spec is None:
         return 1
     from .scaffold import scaffold_project
+    # Grounds the code artifact only -- see scaffold_project for why the
+    # Makefile, .env and README are deliberately left out of it.
+    context, hint = ground_in_docs(args, spec, args.spec)
     r = scaffold_project(pc, args.name, args.spec,
                          outdir=args.outdir or args.name,
                          max_retries=args.retries, spec=spec,
-                         use_contract=resolve_contract(args, default=True))
+                         use_contract=resolve_contract(args, default=True),
+                         docs=context, error_hint=hint)
     print(f"\nscaffold {'complete' if r['ok'] else 'incomplete'} -> {r['outdir']}/")
 
 
@@ -256,35 +286,17 @@ def cmd_ask(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
-    from .langstore import docs_index_path
-    from .rag import retrieve_context
-
-    # An explicit --store wins; otherwise a learned language answers out of the
-    # documentation it was learned from, which is the whole point of `learn`
-    # keeping that index. Only if neither exists is this the old error.
-    path = args.store
-    if path is None and spec.docs_store:
-        path = str(docs_index_path(spec.docs_store))
-        print(f"[rag] using the {spec.name} docs from `learn`")
-    store = open_docs(path or DEFAULT_STORE, args.device, required=True)
-    if store is None:
+    # `required`: an index is not an improvement here, it is the command.
+    # Everything else -- which index, the did-you-mean hint, degrading on a
+    # store that cannot be read -- is the same resolver `code` and `project`
+    # use, so the three cannot drift apart again.
+    context, hint = ground_in_docs(args, spec, args.spec, required=True)
+    if context is None:
         return 1
-    ctx = retrieve_context(store, args.spec)
-    if ctx:
-        print(f"[rag] injected {len(ctx)} chars of context")
-    else:
-        print("[rag] no relevant docs above threshold -- generating without context")
-    # doc-grounded, still execution-validated
-    task = f"{ctx}\n\n{args.spec}" if ctx else args.spec
-    # The docs are the ground truth for what this library is called. They
-    # cannot say a name is wrong -- prose never enumerates a module, and the
-    # measurement that settled it is in purecoder/symbols.py -- but once the
-    # toolchain has rejected a name, they can say what the real one is.
-    from .symbols import did_you_mean
     _print_result(generate_validated_python(
-        pc, task, max_retries=args.retries, spec=spec,
+        pc, _grounded(context, args.spec), max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
-        error_hint=lambda err: did_you_mean(err, store.symbols)),
+        error_hint=hint),
         show_tests=args.show_tests)
 
 

@@ -231,6 +231,14 @@ Composes the per-artifact loops into a whole project, generated in dependency
 order (code first, then Makefile/.env see the code for coherence, README last).
 One focused low-token call per artifact — "one agent per task."
 
+**Retrieval reaches exactly one of the four.** `scaffold_project` takes `docs`
+separately from `description`, and that separation is the design rather than a
+signature detail: only the execution-validated module gets the documentation.
+The Makefile's targets come from `ProjectSpec`, the `.env` is derived from the
+code it is already shown, and the README is prose. Folding the context into the
+description instead — the obvious shape — sent it to the README prompt as well,
+which a test caught and review did not.
+
 **Lesson:** context is double-edged. Feeding full code into the Makefile prompt
 triggered degeneration on the tight card. Fix: give each artifact only the slice
 it needs (the Makefile needs the filename, not the whole module). *Low context

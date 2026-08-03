@@ -206,6 +206,11 @@ Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
 (otherwise a learned language uses its own); `--no-docs` ignores it; `-y` skips
 the ingest review; `--exclude GLOB` leaves paths out of an index.
 
+`code`, `ask` and `project` all ground themselves the same way — one resolver,
+so they cannot drift apart. In a scaffold the documentation reaches the
+execution-validated module only; the Makefile, `.env` and README are generated
+without it on purpose.
+
 `project` derives a spec contract by default; `code` does not. Add
 `--contract` to opt in, `--no-contract` to opt out, or set
 `PURECODER_CONTRACT=1` to change the default for both.
@@ -228,7 +233,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           379 tests (no GPU, no server; toolchain ones self-skip)
+tests/           381 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

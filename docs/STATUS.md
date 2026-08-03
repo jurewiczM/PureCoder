@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-379 tests, all green, none of them needing a GPU or a running server
+381 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -120,12 +120,14 @@ _Snapshot of what's built, tested, and what's next._
   so), and it meets the project's oldest finding, that the writer is stronger
   than the tester, for a language the model barely saw. Wiring OCaml properly
   is separate work.
-- **A learned language carries its own documentation, and `project` still
-  cannot use it.** `learn` keeps the index it built, so `code --lang X` is
-  doc-grounded with no second ingest. `project` is not: the scaffolder takes a
-  description straight through to `generate_validated_python`, so the grounding
-  seam is in the CLI where `project` does not pass. Deliberate scope, not an
-  oversight -- doc-grounded scaffolding is the first item under Next steps.
+- **Retrieval reaches the code artifact of a project, and only that one.**
+  `code`, `ask` and `project` share one resolver, so an explicit `--store` or a
+  learned language's own index grounds all three. Inside a scaffold the
+  documentation goes to the execution-validated module alone: the Makefile's
+  targets come from `ProjectSpec`, the `.env` is derived from the code it is
+  shown, and the README is prose. Folding the context into the description
+  instead of passing it separately sent it to the README prompt too -- caught
+  by a test, not by review.
 - **A learned language can be generated and validated, but not scaffolded.**
   It arrives with no `ProjectSpec` -- proving a language runs says nothing
   about how a project of it is laid out -- so `project` refuses it and points
@@ -195,10 +197,11 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **Wire RAG into the scaffolder** — doc-grounded whole projects. `code` and
-   `ask` now ground themselves in a learned language's own docs; `project`
-   still does not, because the seam sits in the CLI and the scaffolder is
-   called past it.
+1. **A `ProjectSpec` for a learned language.** `project` now grounds itself
+   like `code` and `ask`, but a learned language still cannot be scaffolded at
+   all: it arrives with no entry filename and no make targets, so `project`
+   refuses it before retrieval matters. Drafting those is the same problem
+   `learn` already solves for the harness, and the same gate would apply.
 2. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
    runner is free, but SQL has no `assert`, and the check idiom every other
    language gets from its harness needs real design rather than a `1/0` trick.
