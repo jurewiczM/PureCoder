@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-274 tests, all green, none of them needing a GPU or a running server
+278 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -106,6 +106,12 @@ _Snapshot of what's built, tested, and what's next._
   live round decide it, and a harness that cannot fail wrong code is refused.
   What the probes cannot see is *idiom*: a spec can pass every one and still
   produce code no practitioner of that language would write.
+- **A learned language can be generated and validated, but not scaffolded.**
+  It arrives with no `ProjectSpec` -- proving a language runs says nothing
+  about how a project of it is laid out -- so `project` refuses it and points
+  at `code`. It also has no `writer_system`, so a language whose harness needs
+  a shape constraint (C#'s "no class wrapper, no Main" is the built-in example)
+  has no way to express one.
 - **The drafted build/run commands are the one place model output becomes a
   process.** They are argv rather than a shell string, shell syntax is refused,
   and the user confirms before the first execution. That is a closed door, not
