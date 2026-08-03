@@ -8,6 +8,7 @@ harness that can fail wrong code, and that difference is the whole point.
 import dataclasses
 
 import pytest
+from conftest import FakeModel
 
 from purecoder import bootstrap
 from purecoder import languages as L
@@ -75,19 +76,6 @@ def test_every_probe_carries_a_human_readable_name():
 
 # ---- drafting ------------------------------------------------------------
 
-class Scripted:
-    """Returns queued completions in order and records the prompts it saw."""
-
-    def __init__(self, *completions):
-        self.queue = list(completions)
-        self.prompts = []
-
-    def complete(self, system, user, grammar=None, **kw):
-        self.prompts.append((system, user))
-        text = self.queue.pop(0) if len(self.queue) > 1 else self.queue[0]
-        return {"text": text, "truncated": False, "tokens": 1, "raw": {}}
-
-
 def test_worked_examples_carry_real_entries_not_descriptions():
     """Measured result: prose translation rules score BELOW baseline on some
     models, while translation examples never hurt. The prompt must show the C++
@@ -99,10 +87,10 @@ def test_worked_examples_carry_real_entries_not_descriptions():
 
 
 def test_the_preamble_prompt_shows_examples_and_the_retrieved_docs():
-    pc = Scripted("HELPER CODE")
+    pc = FakeModel(completions=["HELPER CODE"])
     out = bootstrap.draft_preamble(pc, "zig", "DOCS ABOUT ZIG")
     assert out == "HELPER CODE"
-    _system, user = pc.prompts[0]
+    _system, user = pc.calls[0]
     assert "DOCS ABOUT ZIG" in user
     assert "#include <cstdio>" in user, "no worked example in the prompt"
 
@@ -110,9 +98,9 @@ def test_the_preamble_prompt_shows_examples_and_the_retrieved_docs():
 def test_the_check_call_is_extracted_from_a_single_line_answer():
     """Rust's invocation is `pc_check!` while its definition reads
     `macro_rules! pc_check {`, so the form has to be observed, not assumed."""
-    assert bootstrap.draft_check_call(Scripted("PC_CHECK(1 == 1);"),
+    assert bootstrap.draft_check_call(FakeModel(completions=["PC_CHECK(1 == 1);"]),
                                       "zig", "PRE PC_CHECK") == "PC_CHECK"
-    assert bootstrap.draft_check_call(Scripted("pc_check!(1 == 1);"),
+    assert bootstrap.draft_check_call(FakeModel(completions=["pc_check!(1 == 1);"]),
                                       "rs", "PRE pc_check") == "pc_check!"
 
 
@@ -120,12 +108,12 @@ def test_a_check_call_the_preamble_never_defines_is_refused():
     """The gate counts this token textually. If the preamble does not define
     it, every suite scores zero checks and the language silently fails."""
     with pytest.raises(ValueError, match="never defines"):
-        bootstrap.draft_check_call(Scripted("VERIFY(1 == 1);"), "zig", "PRE")
+        bootstrap.draft_check_call(FakeModel(completions=["VERIFY(1 == 1);"]), "zig", "PRE")
 
 
 def test_the_fixture_comes_back_as_five_labelled_snippets():
-    pc = Scripted("CORRECT\n@@WRONG@@\nWRONG\n@@TESTS@@\nTESTS\n"
-                  "@@EMPTY@@\nEMPTY\n@@ALWAYS_FAILS@@\nFAILS")
+    pc = FakeModel(completions=["CORRECT\n@@WRONG@@\nWRONG\n@@TESTS@@\nTESTS\n"
+                  "@@EMPTY@@\nEMPTY\n@@ALWAYS_FAILS@@\nFAILS"])
     fx = bootstrap.draft_fixture(pc, "zig", "PRE", "PC_CHECK")
     assert fx.correct == "CORRECT"
     assert fx.wrong == "WRONG"
@@ -139,11 +127,11 @@ def test_a_fixture_missing_a_section_is_refused():
     reports where it stopped rather than where it was going."""
     with pytest.raises(ValueError, match="ALWAYS_FAILS"):
         bootstrap.draft_fixture(
-            Scripted("C\n@@WRONG@@\nW\n@@TESTS@@\nT\n@@EMPTY@@\nE"),
+            FakeModel(completions=["C\n@@WRONG@@\nW\n@@TESTS@@\nT\n@@EMPTY@@\nE"]),
             "zig", "PRE", "PC_CHECK")
 
     with pytest.raises(ValueError, match="TESTS"):
-        bootstrap.draft_fixture(Scripted("C\n@@WRONG@@\nW"), "zig",
+        bootstrap.draft_fixture(FakeModel(completions=["C\n@@WRONG@@\nW"]), "zig",
                                 "PRE", "PC_CHECK")
 
 
@@ -162,7 +150,7 @@ def test_the_tester_prompt_is_templated_not_drafted():
 def test_commands_are_parsed_into_argv_not_a_shell_string():
     """These reach subprocess.Popen. A string would mean a shell, and a shell
     means the model can write a pipeline."""
-    pc = Scripted("BUILD: zigc -o {bin} {src}\nRUN: {bin}\nTOOLCHAIN: zigc")
+    pc = FakeModel(completions=["BUILD: zigc -o {bin} {src}\nRUN: {bin}\nTOOLCHAIN: zigc"])
     build, run, toolchain = bootstrap.draft_commands(pc, "zig", ".zig", "DOCS")
     assert build == ("zigc", "-o", "{bin}", "{src}")
     assert run == ("{bin}",)
@@ -170,7 +158,7 @@ def test_commands_are_parsed_into_argv_not_a_shell_string():
 
 
 def test_an_interpreted_language_needs_no_build():
-    pc = Scripted("BUILD: none\nRUN: zig run {src}\nTOOLCHAIN: zig")
+    pc = FakeModel(completions=["BUILD: none\nRUN: zig run {src}\nTOOLCHAIN: zig"])
     build, run, _ = bootstrap.draft_commands(pc, "zig", ".zig", "DOCS")
     assert build == ()
     assert run == ("zig", "run", "{src}")
@@ -181,7 +169,7 @@ def test_the_toolchain_binary_is_required():
     {bin}, so available() would return True on a machine with no compiler and
     --lang zig would be accepted anywhere."""
     with pytest.raises(ValueError, match="toolchain"):
-        bootstrap.draft_commands(Scripted("BUILD: none\nRUN: zig run {src}"),
+        bootstrap.draft_commands(FakeModel(completions=["BUILD: none\nRUN: zig run {src}"]),
                                  "zig", ".zig", "DOCS")
 
 
@@ -190,14 +178,14 @@ def test_a_run_command_that_never_names_the_source_is_refused():
     every probe would measure whatever it does run."""
     with pytest.raises(ValueError, match="src"):
         bootstrap.draft_commands(
-            Scripted("BUILD: none\nRUN: zig version\nTOOLCHAIN: zig"),
+            FakeModel(completions=["BUILD: none\nRUN: zig version\nTOOLCHAIN: zig"]),
             "zig", ".zig", "DOCS")
 
 
 def test_a_build_command_that_produces_no_binary_is_refused():
     with pytest.raises(ValueError, match="bin"):
         bootstrap.draft_commands(
-            Scripted("BUILD: zigc {src}\nRUN: {bin}\nTOOLCHAIN: zigc"),
+            FakeModel(completions=["BUILD: zigc {src}\nRUN: {bin}\nTOOLCHAIN: zigc"]),
             "zig", ".zig", "DOCS")
 
 
@@ -212,7 +200,7 @@ def test_shell_metacharacters_are_refused(line):
     here means the draft misunderstood the format."""
     with pytest.raises(ValueError, match="shell"):
         bootstrap.draft_commands(
-            Scripted(f"BUILD: none\nRUN: {line}\nTOOLCHAIN: zig"),
+            FakeModel(completions=[f"BUILD: none\nRUN: {line}\nTOOLCHAIN: zig"]),
             "zig", ".zig", "DOCS")
 
 
@@ -258,16 +246,6 @@ DRAFTS = [
 ]
 
 
-@pytest.fixture
-def store(tmp_path, monkeypatch):
-    """A private store, and a registry left exactly as it was found."""
-    monkeypatch.setenv("PURECODER_HOME", str(tmp_path))
-    before = dict(L.REGISTRY)
-    yield tmp_path / "languages"
-    L.REGISTRY.clear()
-    L.REGISTRY.update(before)
-
-
 def _learn(pc, store, name="cpplike", **kw):
     return bootstrap.learn_language(
         pc, name, ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
@@ -276,7 +254,7 @@ def _learn(pc, store, name="cpplike", **kw):
 
 def test_a_language_that_passes_every_probe_is_saved(store):
     _cpp()
-    res = _learn(Scripted(*DRAFTS), store)
+    res = _learn(FakeModel(completions=DRAFTS), store)
     assert res["ok"], res["error"]
     assert (store / "cpplike.json").is_file()
     assert L.get("cpplike").check_call == "PC_CHECK"
@@ -290,7 +268,7 @@ def test_a_language_that_fails_a_probe_is_not_saved(store):
     drafts = list(DRAFTS)
     drafts[0] = ("#include <cstdio>\nstatic int pc_checks = 0;\n"
                  "#define PC_CHECK(x) do { pc_checks++; } while (0)\n")
-    res = _learn(Scripted(*drafts), store)
+    res = _learn(FakeModel(completions=drafts), store)
     assert not res["ok"]
     assert "wrong implementation fails" in res["error"]
     assert not (store / "cpplike.json").exists()
@@ -299,7 +277,7 @@ def test_a_language_that_fails_a_probe_is_not_saved(store):
 
 def test_declining_the_commands_stops_before_anything_runs(store):
     res = bootstrap.learn_language(
-        Scripted(*DRAFTS), "cpplike", ".cpp", docs_dir=None,
+        FakeModel(completions=DRAFTS), "cpplike", ".cpp", docs_dir=None,
         retrieve=lambda q: "DOCS", confirm=lambda b, r: False, verbose=False,
         live_check=False)
     assert not res["ok"]
@@ -308,7 +286,7 @@ def test_declining_the_commands_stops_before_anything_runs(store):
 
 
 def test_a_built_in_name_is_refused_before_any_model_call(store):
-    pc = Scripted(*DRAFTS)
+    pc = FakeModel(completions=DRAFTS)
     res = _learn(pc, store, name="python")
     assert not res["ok"]
     assert "built-in" in res["error"]
@@ -316,30 +294,14 @@ def test_a_built_in_name_is_refused_before_any_model_call(store):
 
 
 def test_a_draft_that_does_not_parse_is_reported_not_raised(store):
-    res = _learn(Scripted("PRE PC_CHECK", "PC_CHECK(1==1);", "POST",
-                          "no separators here at all", "BUILD: none\nRUN: x"),
+    res = _learn(FakeModel(completions=["PRE PC_CHECK", "PC_CHECK(1==1);", "POST",
+                          "no separators here at all", "BUILD: none\nRUN: x"]),
                  store)
     assert not res["ok"]
     assert "drafting failed" in res["error"]
 
 
 # ---- the live round ------------------------------------------------------
-
-class ScriptedWriter(Scripted):
-    """Scripted, plus the `code` call the fix loop makes. Without this the live
-    round is the one branch no test reaches -- and the CLI takes it by default."""
-
-    def __init__(self, *completions, code_outputs=()):
-        super().__init__(*completions)
-        self.code_outputs = list(code_outputs)
-        self.code_kwargs = []
-
-    def code(self, description, language="python", **kw):
-        self.code_kwargs.append({"language": language, **kw})
-        return {"text": self.code_outputs.pop(0) if len(self.code_outputs) > 1
-                else self.code_outputs[0],
-                "truncated": False, "tokens": 1, "raw": {}}
-
 
 BUBBLE_CPP = ("#include <vector>\nstd::vector<int> bubble_sort(std::vector<int> v)"
               "{ for (size_t i=0;i<v.size();i++) for (size_t j=0;j+1<v.size();j++)"
@@ -354,7 +316,7 @@ BUBBLE_TESTS = (
 def test_the_live_round_runs_and_can_pass(store):
     """The default CLI path. It compiles a real bubble sort with g++."""
     _cpp()
-    pc = ScriptedWriter(*DRAFTS[:4], DRAFTS[4], BUBBLE_TESTS,
+    pc = FakeModel(completions=[*DRAFTS, BUBBLE_TESTS],
                         code_outputs=[BUBBLE_CPP])
     res = bootstrap.learn_language(
         pc, "cpplike", ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
@@ -368,7 +330,7 @@ def test_the_live_round_uses_the_same_timeout_as_the_probes(store):
     round on a slow toolchain."""
     _cpp()
     seen = {}
-    pc = ScriptedWriter(*DRAFTS[:4], DRAFTS[4], BUBBLE_TESTS,
+    pc = FakeModel(completions=[*DRAFTS, BUBBLE_TESTS],
                         code_outputs=[BUBBLE_CPP])
 
     import purecoder.bootstrap as B
@@ -393,7 +355,7 @@ def test_a_harness_the_writer_cannot_work_in_is_not_saved(store):
     """The probes and the live round are different claims: this harness passes
     every probe and still fails, because the writer's output never converges."""
     _cpp()
-    pc = ScriptedWriter(*DRAFTS[:4], DRAFTS[4], BUBBLE_TESTS,
+    pc = FakeModel(completions=[*DRAFTS, BUBBLE_TESTS],
                         code_outputs=["int not_bubble_sort(){return 0;}"])
     res = bootstrap.learn_language(
         pc, "cpplike", ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
@@ -410,10 +372,42 @@ def test_a_learned_language_refuses_to_scaffold_rather_than_crashing(store):
     _cpp()
     from purecoder.scaffold import scaffold_project
 
-    assert _learn(Scripted(*DRAFTS), store)["ok"]
+    assert _learn(FakeModel(completions=DRAFTS), store)["ok"]
     out = store.parent / "proj"
     res = scaffold_project(None, "x", "y", outdir=str(out),
                            spec=L.get("cpplike"), verbose=False)
     assert not res["ok"]
     assert "no project layout" in res["error"]
     assert not out.exists()
+
+
+def test_a_refused_candidate_carries_the_diagnostic_not_just_the_verdict(store):
+    """The refusal names which probe failed; the probe's detail says why, and it
+    is the compiler's own message. The CLI prints it, so it has to be there."""
+    _cpp()
+    drafts = list(DRAFTS)
+    # Defines PC_CHECK, so drafting succeeds -- but calls something that does
+    # not exist, so probe 1 fails carrying the compiler's own message. A helper
+    # that merely cannot FAIL produces failing probes with empty detail, since
+    # there the run succeeded and there is nothing to report.
+    drafts[0] = ("static int pc_checks = 0;\n"
+                 "#define PC_CHECK(x) do { no_such_function(x); pc_checks++; } "
+                 "while (0)\n")
+    res = _learn(FakeModel(completions=drafts), store)
+    assert not res["ok"]
+    failed = [p for p in res["probes"] if not p.ok]
+    assert failed, "a refusal with no failing probe explains nothing"
+    assert any("no_such_function" in p.detail for p in failed), \
+        "the compiler said why and the refusal dropped it"
+
+
+def test_every_refusal_path_reports_probes_even_with_none_to_report(store):
+    """The CLI iterates res["probes"] unconditionally, so the key must exist on
+    the paths that never got as far as probing."""
+    declined = bootstrap.learn_language(
+        FakeModel(completions=DRAFTS), "cpplike", ".cpp", docs_dir=None,
+        retrieve=lambda q: "DOCS", confirm=lambda b, r: False, verbose=False,
+        live_check=False)
+    refused = _learn(FakeModel(completions=DRAFTS), store, name="python")
+    for res in (declined, refused):
+        assert res["probes"] == []

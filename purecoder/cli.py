@@ -153,7 +153,9 @@ def cmd_learn(pc, args):
     from .bootstrap import learn_language
     from .rag import DocStore, Embedder, retrieve_context
 
-    store = DocStore(Embedder(device=args.device), path=args.store)
+    # No path: this index is read once and thrown away, so naming a store file
+    # would advertise a persistence that never happens.
+    store = DocStore(Embedder(device=args.device))
     try:
         store.ingest_dir(args.docs_dir)
     except ValueError as e:
@@ -168,6 +170,14 @@ def cmd_learn(pc, args):
                          live_check=not args.no_live)
     if not res["ok"]:
         print(f"\nnot registered: {res['error']}")
+        # Naming the probe says WHICH check failed; its detail says why, and it
+        # is the compiler's own diagnostic. Without this the refusal is the same
+        # shape as an error the fix loop never gets to read.
+        for probe in res["probes"]:
+            if not probe.ok and probe.detail.strip():
+                print(f"\n  {probe.name}:")
+                for line in probe.detail.strip().splitlines()[:8]:
+                    print(f"    {line}")
         return 1
     print(f"\n{args.name} is registered. It is a drafted entry, proven by "
           f"probe rather than written by hand -- try it on something small "
