@@ -17,6 +17,7 @@ add, and a fifth model call per artifact is not worth it on a tight card.
 import os
 
 from .client import strip_fences
+from .contract import render_contract
 from .execute import generate_validated_python
 from .validate import generate_validated
 
@@ -49,6 +50,13 @@ def scaffold_project(pc, name, description, outdir="build",
     code = code_res["text"]
     _write(outdir, entry, code)
     report[entry] = code_res["ok"]
+
+    # Show the interpretation the writer and tester worked from. `project`
+    # derives a contract by DEFAULT, so without this the one command that
+    # always has a contract is the one that never shows you it -- and being
+    # able to spot a misread is the layer's whole point.
+    if code_res.get("contract"):
+        log("\n" + render_contract(code_res["contract"]))
 
     # 2. Makefile -- config-validated, shown the code for coherent targets
     log("\n=== Makefile (parse + semantic validated) ===")
