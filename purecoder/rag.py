@@ -181,6 +181,15 @@ SKIP_DIRS = frozenset({
 })
 
 
+def _is_binary(path, sniff=8192):
+    """A NUL byte in the first block. The same test `file` and grep use."""
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(sniff)
+    except OSError:
+        return True          # unreadable is not something to index either
+
+
 class DocStore:
     def __init__(self, embedder, path="docstore"):
         self.embedder = embedder
@@ -191,7 +200,7 @@ class DocStore:
 
     def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
                    verbose=True, skip_dirs=SKIP_DIRS):
-        pairs, rx, skipped = [], re.compile(pattern), []
+        pairs, rx, skipped, binaries = [], re.compile(pattern), [], []
         for root, dirs, files in os.walk(docs_dir):
             # Pruned in place -- os.walk reads `dirs` back to decide where to
             # descend. Pointing this at a project root is the documented use,
@@ -205,23 +214,48 @@ class DocStore:
             for fn in files:
                 if rx.match(fn):
                     p = os.path.join(root, fn)
+                    rel = os.path.relpath(p, docs_dir)
+                    if _is_binary(p):
+                        # errors="ignore" turns a binary file into text rather
+                        # than refusing it, so a .txt that is really a blob
+                        # became chunks of mojibake sitting in the index at
+                        # whatever score they happen to earn.
+                        binaries.append(rel)
+                        continue
                     with open(p, encoding="utf-8", errors="ignore") as f:
-                        pairs += chunk_file(os.path.relpath(p, docs_dir), f.read())
+                        pairs += chunk_file(rel, f.read())
         if verbose and skipped:
             shown = ", ".join(skipped[:5])
             more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
             print(f"[rag] skipped {len(skipped)} directories: {shown}{more}")
+        if verbose and binaries:
+            print(f"[rag] skipped {len(binaries)} binary files: "
+                  f"{', '.join(binaries[:5])}")
         if not pairs:
             raise ValueError(f"no files matched under {docs_dir}")
-        self.chunks = [c for c, _ in pairs]
-        self.sources = [s for _, s in pairs]
+
+        # Identical text indexed twice competes with itself for the k slots the
+        # gate has to spend. A vendored copy of a doc, or the same licence
+        # header on forty files, can fill every slot with one passage and crowd
+        # out the rest. First occurrence keeps the source.
+        seen, unique = set(), []
+        for chunk, source in pairs:
+            if chunk not in seen:
+                seen.add(chunk)
+                unique.append((chunk, source))
+        if verbose and len(unique) < len(pairs):
+            print(f"[rag] dropped {len(pairs) - len(unique)} duplicate chunks")
+        self.chunks = [c for c, _ in unique]
+        self.sources = [s for _, s in unique]
         self.vectors = self.embedder.embed_docs(self.chunks).astype("float32")
         if verbose:
             print(f"[rag] ingested {len(self.chunks)} chunks from {docs_dir}")
         return len(self.chunks)
 
     def search(self, query, k=3, min_score=0.3):
-        if self.vectors is None or not self.chunks:
+        # An empty query embeds to something, and that something scores against
+        # every chunk. Whatever comes back is not a match for anything.
+        if self.vectors is None or not self.chunks or not query.strip():
             return []
         qv = self.embedder.embed_query(query).astype("float32")
         # Two models at the same dimension produce comparable-looking garbage;

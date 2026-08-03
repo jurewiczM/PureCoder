@@ -320,6 +320,41 @@ def test_ingest_prunes_caches_and_vendored_dependencies(tmp_path, capsys):
     assert "[rag] skipped 2 directories" in capsys.readouterr().out
 
 
+def test_ingest_skips_a_binary_file_wearing_a_text_extension(tmp_path, capsys):
+    """The reader passes errors="ignore", so a blob does not fail -- it becomes
+    mojibake, gets embedded, and sits in the index at whatever score it
+    happens to earn."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "real.md").write_text("# Alpha\nalpha\n")
+    (d / "blob.txt").write_bytes(b"PK\x03\x04\x00\x00garbage\x00\xff\xfe")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d))
+    assert s.sources == ["real.md"]
+    assert "1 binary files" in capsys.readouterr().out
+
+
+def test_ingest_indexes_identical_text_once(tmp_path, capsys):
+    """Duplicates compete with themselves for the k slots the gate has to
+    spend: one passage vendored twice can fill every slot and crowd out the
+    rest of the answer."""
+    d = tmp_path / "docs"
+    (d / "vendor").mkdir(parents=True)
+    (d / "a.md").write_text("# Alpha\nalpha alpha\n")
+    (d / "vendor" / "a-copy.md").write_text("# Alpha\nalpha alpha\n")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d))
+    assert len(s.chunks) == 1
+    assert "dropped 1 duplicate chunks" in capsys.readouterr().out
+
+
+def test_an_empty_query_matches_nothing(store):
+    assert store.search("   ") == []
+    assert retrieve_context(store, "") == ""
+
+
 def test_a_pruned_directory_can_be_asked_for_explicitly(tmp_path):
     """The skip list is a default, not a rule: whoever keeps docs in an
     unusual directory needs a way to say so."""
