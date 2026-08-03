@@ -22,7 +22,7 @@ exists not to make.
 
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class LanguageSpec:
     `preamble` and `epilogue` wrap the candidate so that checks are counted
     without parsing the language: the harness supplies the assertion helper and
     the tester prompt tells the model to use it. That is why non-Python
-    languages need no AST support -- see `counts_checks`.
+    languages need no AST support.
     """
 
     name: str                            # the --lang value
@@ -59,12 +59,14 @@ class LanguageSpec:
     preamble: str = ""                   # emitted above the code
     epilogue: str = ""                   # emitted below the tests
     test_system: str = ""                # assertion idiom for the tester
-    writer_system: str = ""              # extra instruction for the writer
+    # Only set where the language needs more than "output only <name> code",
+    # which the writer prompt already says. C# does: its harness is a .NET
+    # file-based app, so a class wrapper or a Main method breaks the assembly.
+    writer_system: str = ""
     project: ProjectSpec | None = None
     unvalidatable: str = ""              # non-empty: refuse permanently, w/ reason
-    counts_checks: bool = True           # can it prove a check actually ran?
     check_call: str = ""                 # textual marker the gate counts
-    aliases: tuple = field(default=())
+    aliases: tuple = ()
 
     # ---- assembly -------------------------------------------------------
 
@@ -125,7 +127,6 @@ PYTHON = LanguageSpec(
         "except would catch it and the test would pass on code that raised "
         "nothing."
     ),
-    writer_system="You output only python code",
     project=ProjectSpec(
         entry="main.py",
         install="pip install -r requirements.txt",
@@ -220,7 +221,6 @@ register(LanguageSpec(
         "already defined: e.g. PC_CHECK(add(1, 2) == 3);. Use PC_CHECK and "
         "nothing else -- never assert(), never cassert, never a test framework."
     ),
-    writer_system="You output only C++ code",
     project=ProjectSpec(
         entry="main.cpp",
         install="@echo nothing to install",
@@ -265,7 +265,6 @@ register(LanguageSpec(
         "PC_CHECK(JSON.stringify(a) === JSON.stringify(b), 'label'). Assume the "
         "thing under test is already defined in the same file."
     ),
-    writer_system="You output only JavaScript code",
     project=ProjectSpec(
         entry="main.js",
         install="npm install",
@@ -316,7 +315,6 @@ register(LanguageSpec(
         "pc_check!(expr), which is already defined: e.g. pc_check!(add(1, 2) "
         "== 3);."
     ),
-    writer_system="You output only Rust code",
     project=ProjectSpec(
         entry="main.rs",
         install="@echo nothing to install",
@@ -408,7 +406,6 @@ register(LanguageSpec(
         "Power Query M only runs inside Excel or Power BI -- there is no local "
         "interpreter to validate against, so purecoder will not generate it"
     ),
-    counts_checks=False,
     aliases=("m", "power-query"),
 ))
 

@@ -30,6 +30,41 @@ def test_chatml_uses_qwen_special_tokens():
     assert prompt.endswith("<|im_start|>assistant\n")
 
 
+# ---- the writer prompt ---------------------------------------------------
+
+class _Recorder(PureCoder):
+    """Capture the system prompt instead of calling a server."""
+
+    def complete(self, system, user, **kw):
+        self.system = system
+        return {"text": "code", "truncated": False, "tokens": 1, "raw": {}}
+
+
+def test_the_writer_prompt_names_the_language():
+    pc = _Recorder()
+    pc.code("do a thing", language="rust")
+    assert "only rust code" in pc.system
+
+
+def test_a_language_extra_demand_reaches_the_writer():
+    """C# is why this exists: its harness is a .NET file-based app, so a class
+    wrapper or a Main method makes the assembled file fail to build. The demand
+    was declared on the spec and read by nothing, so it never reached a prompt."""
+    from purecoder.languages import get
+
+    pc = _Recorder()
+    pc.code("do a thing", language="c#", writer_system=get("c#").writer_system)
+    assert "no class wrapper" in pc.system
+    assert "no Main method" in pc.system
+
+
+def test_a_language_with_no_extra_demand_adds_nothing():
+    plain, extra = _Recorder(), _Recorder()
+    plain.code("x", language="python")
+    extra.code("x", language="python", writer_system="")
+    assert plain.system == extra.system
+
+
 def test_grammars_resolve_regardless_of_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert PureCoder()._load_grammar("env").startswith("root")
