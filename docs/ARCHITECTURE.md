@@ -125,6 +125,60 @@ development traced to **spec ambiguity** or **test quality**, never the writer.
 The gate catches *structural* bad tests; it cannot catch a plausible-but-wrong
 expected value — that's spec clarity's job, and the code says so honestly.
 
+### 3.5 Learning a language (`purecoder/bootstrap.py`, `purecoder/langstore.py`)
+Five languages exist because a human wrote five entries. `purecoder learn`
+points the pipeline at a language's own documentation and has it draft the
+sixth: check helper, harness tail, tester prompt, build and run commands.
+
+**What is drafted and what is not, and why.** The drafting prompts carry the
+existing C++, JavaScript and Rust entries as *worked examples* rather than a
+prose description of what a harness should look like. That is measured, not
+stylistic: across six models, explicit translation rules scored **below
+baseline** on a third of runs while translation examples improved every model
+above 1B ([arXiv:2501.19085](https://arxiv.org/abs/2501.19085)). The tester
+prompt is templated for the same reason — a model writing its own instructions
+is precisely the technique that measured worst — and the file extension is
+asked for on the command line rather than inferred.
+
+**The gate is the point.** A drafted spec is a claim; six probes turn it into a
+fact. Five are mechanical, run against a trivial `add(a, b)`: a correct
+implementation passes, a wrong one fails, an empty suite reports "no checks
+ran", a broken one produces a diagnostic the fix loop can use, and a
+deliberately failing check fails the run. Then one live round on a bubble sort,
+which is a different claim — the probes prove the harness *can* fail wrong
+code, the live round proves the writer and tester can work *inside* it.
+
+The two negative probes carry the weight. A check helper that prints on failure
+but exits 0 compiles clean, runs clean, and reports success on wrong code; an
+epilogue with no "no checks ran" tail does the same for an empty suite. Both
+are the false-green class this project keeps rediscovering, and both are now
+caught mechanically rather than by someone reading generated code.
+
+**Trust boundary.** Build and run commands are the one place a local model's
+output becomes a process. They are argv rather than a shell string, shell
+syntax is refused on the raw line before `shlex` sees it, the command must name
+`{src}` or `{bin}` or it is not running the candidate at all, and the user
+confirms explicitly before the first execution. Silence is a no.
+
+**Storage.** One JSON file per learned language under `$PURECODER_HOME` or XDG,
+registered at import, recording where it was drafted from. It can never shadow
+a built-in entry — that guard holds at save time *and* at load time, since the
+file is editable by hand.
+
+**Boundary.** The probes check that the harness works. They cannot check
+*idiom*: a spec can pass every probe and still produce code no practitioner of
+that language would write. And a language with no local runner, or one whose
+tests need a framework or a project file, remains out of reach — the harness
+assembles exactly one file.
+
+**Compared against prior art.** [MultiPL-E](https://github.com/nuprl/MultiPL-E)
+solves the adjacent problem with one hand-written translator per language; its
+`LanguageTranslator` interface independently agrees on extension, preamble,
+epilogue and entry stub. It names two things PureCoder lacks — a per-language
+deep-equality primitive (hidden here in prose inside the JavaScript tester
+prompt) and per-language stop tokens. Its literal renderers are deliberately
+*not* adopted: that was the anchors layer.
+
 ### 4. Project scaffolding (`purecoder/scaffold.py`)
 Composes the per-artifact loops into a whole project, generated in dependency
 order (code first, then Makefile/.env see the code for coherence, README last).

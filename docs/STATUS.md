@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-225 tests, all green, none of them needing a GPU or a running server
+274 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -22,6 +22,9 @@ _Snapshot of what's built, tested, and what's next._
 | 6 | `languages.py` registry | ✅ tested | every entry coherent; availability probed, not assumed |
 | 6 | C++ / JavaScript / Rust / C# execution | ✅ tested | correct passes, wrong fails, no-checks fails -- in each language |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
+| 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
+| 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
+| 7 | `learn` drafting + CLI | ✅ tested | drafts scripted; probes run g++ end to end |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
@@ -99,6 +102,17 @@ _Snapshot of what's built, tested, and what's next._
   `http.server` answer fails to rebind on the next attempt. A missing import
   now triggers one stdlib-only retry and then stops, rather than burning the
   whole budget. Function-shaped, stdlib-only specs pass on the first attempt.
+- **A learned language is proven, not trusted.** Five mechanical probes plus a
+  live round decide it, and a harness that cannot fail wrong code is refused.
+  What the probes cannot see is *idiom*: a spec can pass every one and still
+  produce code no practitioner of that language would write.
+- **The drafted build/run commands are the one place model output becomes a
+  process.** They are argv rather than a shell string, shell syntax is refused,
+  and the user confirms before the first execution. That is a closed door, not
+  a sandbox — the executor's isolation is still a temp dir and a process group.
+- The doc chunker is Python-and-markdown only, so a language's own code samples
+  are chunked as prose. tree-sitter chunking remains the real fix, and it
+  matters more here than anywhere else in the pipeline.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
 - Two seams are outside the automated suite: the live `/completion` call and
