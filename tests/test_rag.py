@@ -298,3 +298,35 @@ def test_search_refuses_a_query_of_the_wrong_dimension(store):
 
 def test_search_on_empty_store_returns_nothing(tmp_path):
     assert DocStore(FakeEmbedder(), path=str(tmp_path / "x")).search("alpha") == []
+
+
+# ---- what ingest walks ---------------------------------------------------
+
+def test_ingest_prunes_caches_and_vendored_dependencies(tmp_path, capsys):
+    """Pointing this at a project root is the documented use. `.venv` alone can
+    outnumber the real docs a thousand to one, and the index still looks fine
+    -- every answer just comes from site-packages."""
+    d = tmp_path / "project"
+    (d / ".venv" / "lib").mkdir(parents=True)
+    (d / "__pycache__").mkdir()
+    (d / "docs").mkdir()
+    (d / ".venv" / "lib" / "vendored.py").write_text("def alpha(): pass\n")
+    (d / "__pycache__" / "stale.py").write_text("def beta(): pass\n")
+    (d / "docs" / "real.md").write_text("# Alpha\nalpha\n")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d))
+    assert all("venv" not in src and "pycache" not in src for src in s.sources)
+    assert "[rag] skipped 2 directories" in capsys.readouterr().out
+
+
+def test_a_pruned_directory_can_be_asked_for_explicitly(tmp_path):
+    """The skip list is a default, not a rule: whoever keeps docs in an
+    unusual directory needs a way to say so."""
+    d = tmp_path / "project"
+    (d / "venv").mkdir(parents=True)
+    (d / "venv" / "notes.md").write_text("# Alpha\nalpha\n")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d), verbose=False, skip_dirs=frozenset())
+    assert s.chunks

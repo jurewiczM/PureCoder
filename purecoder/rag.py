@@ -170,6 +170,17 @@ class Embedder:
 
 # ---- vector store (brute-force cosine) ----------------------------------
 
+# Caches, VCS metadata and vendored dependencies -- never the documentation
+# anyone meant to index. Deliberately excludes `build` and `dist`: generated
+# docs live there often enough that pruning them would be the wrong default.
+# Overridable per call for the directory this list gets wrong.
+SKIP_DIRS = frozenset({
+    ".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".ipynb_checkpoints", ".tox", ".eggs", "node_modules",
+    ".venv", "venv", "env", "site-packages",
+})
+
+
 class DocStore:
     def __init__(self, embedder, path="docstore"):
         self.embedder = embedder
@@ -179,14 +190,27 @@ class DocStore:
         self.sources = []
 
     def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
-                   verbose=True):
-        pairs, rx = [], re.compile(pattern)
-        for root, _, files in os.walk(docs_dir):
+                   verbose=True, skip_dirs=SKIP_DIRS):
+        pairs, rx, skipped = [], re.compile(pattern), []
+        for root, dirs, files in os.walk(docs_dir):
+            # Pruned in place -- os.walk reads `dirs` back to decide where to
+            # descend. Pointing this at a project root is the documented use,
+            # and .venv alone can outnumber the real docs a thousand to one:
+            # the index still looks fine, and every answer comes from
+            # site-packages.
+            if pruned := [d for d in dirs if d in skip_dirs]:
+                skipped += [os.path.relpath(os.path.join(root, d), docs_dir)
+                            for d in sorted(pruned)]
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
             for fn in files:
                 if rx.match(fn):
                     p = os.path.join(root, fn)
                     with open(p, encoding="utf-8", errors="ignore") as f:
                         pairs += chunk_file(os.path.relpath(p, docs_dir), f.read())
+        if verbose and skipped:
+            shown = ", ".join(skipped[:5])
+            more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+            print(f"[rag] skipped {len(skipped)} directories: {shown}{more}")
         if not pairs:
             raise ValueError(f"no files matched under {docs_dir}")
         self.chunks = [c for c, _ in pairs]
