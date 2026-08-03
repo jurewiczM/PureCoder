@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-306 tests, all green, none of them needing a GPU or a running server
+365 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -139,11 +139,16 @@ _Snapshot of what's built, tested, and what's next._
   with a cosine of zero. A token in every chunk weighs nothing, so stopwords
   cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
   that decide this, and neither is tuned against a benchmark — there isn't one.
-- **Retrieval cost is the model call, not the search.** Over 7500 chunks the
-  lexical signal is ~0.005 ms (inverted index), cosine ~3 ms (brute-force
-  matmul), and loading an index ~220 ms. The embedding of the query itself
-  dominates all of it. Brute-force cosine stays: an ANN index would trade
-  exactness and a dependency for a few milliseconds nothing is waiting on.
+- **Retrieval cost is the model call, not the search.** Over 7495 chunks --
+  this repo with `llama.cpp/` in it, which is a deliberately pathological
+  corpus, not a docs directory -- the lexical signal is ~0.005 ms (inverted
+  index), cosine ~3 ms (brute-force matmul), and loading an index ~220 ms. The
+  embedding of the query dominates all of it. Worth being plain about the
+  scale: a real docs directory is the OCaml case at 15 chunks, where the old
+  per-chunk walk cost microseconds and the inverted index buys nothing
+  measurable. It is headroom for a large corpus, not a fix for something
+  anyone was waiting on. Brute-force cosine stays for the same reason: an ANN
+  index would trade exactness and a dependency for milliseconds nobody needs.
 - **Documentation names an API; it does not enumerate one.** The symbol library
   extracted from the docs cannot decide that a name is wrong — judging code
   against it produced 45 findings on this project's own source, all of them
