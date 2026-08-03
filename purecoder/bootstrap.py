@@ -495,7 +495,7 @@ def _failed(error, probes=()):
 
 def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
                    confirm=confirm_commands, verbose=True, live_check=True,
-                   timeout=60, max_retries=2):
+                   timeout=60, max_retries=2, docs_store=""):
     """Draft a language entry, prove it, and save it.
 
     -> {ok, probes, error}. Nothing is registered unless every probe passes:
@@ -504,6 +504,11 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
 
     `retrieve` takes a query and returns context, injected so the drafting path
     is testable without an embedding model.
+
+    `docs_store` names an index of the same documentation, so generating in
+    this language later can read what it was learned from. Recorded on the spec
+    rather than assumed from the name: the caller owns the index, and a run
+    that never built one must not leave a spec pointing at nothing.
     """
     from .langstore import save
 
@@ -537,6 +542,7 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
             build=build, run=run, preamble=harness.preamble,
             epilogue=harness.epilogue, check_call=harness.check_call,
             test_system=test_system_for(name, harness.check_call),
+            docs_store=docs_store,
         )
 
         log(f"[learn] probing the candidate (attempt {attempt})")

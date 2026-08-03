@@ -275,6 +275,23 @@ def test_a_language_that_passes_every_probe_is_saved(store):
     assert L.get("cpplike").probe == ("g++", "--version")
 
 
+def test_a_learned_language_records_the_docs_it_came_from(store):
+    """So that generating in it later can read the same documentation, instead
+    of ingesting the directory a second time."""
+    _cpp()
+    assert _learn(FakeModel(completions=DRAFTS), store,
+                  docs_store="cpplike")["ok"]
+    assert L.get("cpplike").docs_store == "cpplike"
+
+
+def test_a_language_learned_without_an_index_points_at_nothing(store):
+    """The caller owns the index. A run that never built one must not leave a
+    spec claiming there is one."""
+    _cpp()
+    assert _learn(FakeModel(completions=DRAFTS), store)["ok"]
+    assert L.get("cpplike").docs_store == ""
+
+
 def test_a_language_that_fails_a_probe_is_not_saved(store):
     """A helper that counts but never fails: compiles, runs, reports success on
     wrong code. It must not reach the store."""

@@ -228,12 +228,16 @@ def cmd_ask(pc, args):
 
 def cmd_learn(pc, args):
     from .bootstrap import learn_language
+    from .langstore import docs_index_path
     from .rag import DocStore, Embedder, MissingRetrieval, retrieve_context
 
-    # No path: this index is read once and thrown away, so naming a store file
-    # would advertise a persistence that never happens.
+    # The index is built to draft the harness and then KEPT, so generating in
+    # this language later can read the same documentation. It used to be thrown
+    # away, which meant `ingest`ing the same directory a second time to get any
+    # benefit from it.
+    index = docs_index_path(args.name)
     try:
-        store = DocStore(Embedder(device=args.device))
+        store = DocStore(Embedder(device=args.device), path=str(index))
     except MissingRetrieval as e:
         print(e)
         return 1
@@ -249,7 +253,8 @@ def cmd_learn(pc, args):
     res = learn_language(pc, args.name, args.ext, args.docs_dir,
                          retrieve=lambda q: retrieve_context(store, q),
                          live_check=not args.no_live,
-                         max_retries=args.draft_retries)
+                         max_retries=args.draft_retries,
+                         docs_store=args.name)
     if not res["ok"]:
         print(f"\nnot registered: {res['error']}")
         # Naming the probe says WHICH check failed; its detail says why, and it
@@ -261,6 +266,13 @@ def cmd_learn(pc, args):
                 for line in probe.detail.strip().splitlines()[:8]:
                     print(f"    {line}")
         return 1
+
+    # Written only now. A failed run must not leave an index behind for a
+    # language that was never registered -- the spec pointing at it does not
+    # exist, so the files would be unreachable litter.
+    index.parent.mkdir(parents=True, exist_ok=True)
+    store.save()
+    print(f"[learn] kept the docs index -> {index}.npy / .json")
     print(f"\n{args.name} is registered. It is a drafted entry, proven by "
           f"probe rather than written by hand -- try it on something small "
           f"first:\n  purecoder --lang {args.name} code \"...\"")
