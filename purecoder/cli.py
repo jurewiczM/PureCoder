@@ -118,11 +118,60 @@ def cmd_project(pc, args):
     print(f"\nscaffold {'complete' if r['ok'] else 'incomplete'} -> {r['outdir']}/")
 
 
+def review_plan(plan_for, exclude, interactive=True):
+    """Show what would be indexed and let the user correct it.
+
+    Planning is free -- it chunks, it does not embed -- so this runs before a
+    model is loaded and an exclusion can be applied without paying twice. The
+    same trust boundary `learn` uses for its commands: nothing expensive or
+    persistent happens until someone has looked.
+
+    Returns the accepted plan, or None if the user abandoned it.
+    """
+    from .rag import render_plan
+
+    while True:
+        try:
+            plan = plan_for(tuple(exclude))
+        except ValueError as e:
+            print(f"nothing to index: {e}")
+            return None
+        print(render_plan(plan))
+        if not interactive:
+            return plan
+
+        choice = input("\n[y] index this  [e] exclude paths  [n] abort: ").strip().lower()
+        if choice in ("", "y"):
+            return plan
+        if choice == "n":
+            print("nothing indexed.")
+            return None
+        if choice == "e":
+            patterns = input("paths or globs to leave out: ").split()
+            if patterns:
+                exclude = list(exclude) + patterns
+                # Printed so a session spent narrowing the index by hand can be
+                # replayed without repeating it. A prompt that cannot be turned
+                # back into a command is a dead end.
+                flags = " ".join(f"--exclude {p}" for p in exclude)
+                print(f"  replay non-interactively with: {flags}")
+
+
 def cmd_ingest(pc, args):
-    from .rag import DocStore, Embedder, MissingRetrieval
+    from .rag import DocStore, Embedder, MissingRetrieval, plan_ingest
+
+    # --yes is for scripts; the isatty check is for pipelines that never had a
+    # keyboard. `echo y | purecoder ...` is how this project is tested, and a
+    # prompt blocking on a closed stdin would break that.
+    interactive = not args.yes and sys.stdin.isatty()
+    plan = review_plan(lambda ex: plan_ingest(args.docs_dir, exclude=ex),
+                       args.exclude or [], interactive=interactive)
+    if plan is None:
+        return 1
+
     try:
         store = DocStore(Embedder(device=args.device), path=args.store)
-        n = store.ingest_dir(args.docs_dir)
+        n = store.ingest_plan(plan)
         store.save()
     except MissingRetrieval as e:
         print(e)
@@ -241,7 +290,12 @@ def main():
     sp.add_argument("name")
     sp.add_argument("spec")
     sp.add_argument("outdir", nargs="?")
-    sub.add_parser("ingest").add_argument("docs_dir")
+    si = sub.add_parser("ingest")
+    si.add_argument("docs_dir")
+    si.add_argument("-y", "--yes", action="store_true",
+                    help="index without the review step")
+    si.add_argument("--exclude", action="append", metavar="GLOB",
+                    help="path or glob to leave out (repeatable)")
     sl = sub.add_parser("learn")
     sl.add_argument("name")
     sl.add_argument("docs_dir")

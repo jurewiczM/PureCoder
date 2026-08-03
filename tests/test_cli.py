@@ -127,6 +127,77 @@ def test_ask_without_an_index_names_the_missing_files(capsys, tmp_path):
     assert "purecoder ingest" in out
 
 
+# ---- the ingest review ---------------------------------------------------
+
+class _Plan:
+    def __init__(self, excluded=()):
+        self.root, self.chunks, self.sources = "docs", ("a",), ("a.md",)
+        self.skipped_dirs, self.binaries, self.duplicates = (), (), 0
+        self.excluded = excluded
+
+    @property
+    def per_file(self):
+        return [("a.md", 1)]
+
+
+def test_the_review_returns_the_plan_when_accepted(monkeypatch, capsys):
+    from purecoder.cli import review_plan
+
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert review_plan(lambda ex: _Plan(), []) is not None
+    assert "a.md" in capsys.readouterr().out
+
+
+def test_the_review_can_abandon_the_index(monkeypatch, capsys):
+    from purecoder.cli import review_plan
+
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert review_plan(lambda ex: _Plan(), []) is None
+    assert "nothing indexed" in capsys.readouterr().out
+
+
+def test_an_exclusion_is_applied_and_printed_back_as_a_flag(monkeypatch, capsys):
+    """A prompt that cannot be turned back into a command is a dead end: a
+    session spent narrowing the index by hand has to be replayable."""
+    from purecoder.cli import review_plan
+
+    answers = iter(["e", "internal drafts/*", "y"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+
+    seen = []
+
+    def plan_for(exclude):
+        seen.append(tuple(exclude))
+        return _Plan(excluded=exclude)
+
+    assert review_plan(plan_for, []) is not None
+    assert seen == [(), ("internal", "drafts/*")]
+    assert "--exclude internal --exclude drafts/*" in capsys.readouterr().out
+
+
+def test_a_non_interactive_review_does_not_read_stdin(monkeypatch):
+    """CI and `echo y | purecoder ...` are how this project is tested. A prompt
+    blocking on a closed stdin would break the reproduce command in its own
+    live-run writeup."""
+    from purecoder.cli import review_plan
+
+    def explode(_):
+        raise AssertionError("prompted with no terminal to prompt at")
+
+    monkeypatch.setattr("builtins.input", explode)
+    assert review_plan(lambda ex: _Plan(), [], interactive=False) is not None
+
+
+def test_a_plan_that_matches_nothing_stops_before_the_model_loads(capsys):
+    from purecoder.cli import review_plan
+
+    def plan_for(exclude):
+        raise ValueError("no files matched under docs")
+
+    assert review_plan(plan_for, [], interactive=False) is None
+    assert "nothing to index" in capsys.readouterr().out
+
+
 def test_python_m_purecoder_propagates_the_exit_code():
     """The README calls `python -m purecoder` identical to the console script.
     setuptools wraps the latter in sys.exit(main()); without the same here a

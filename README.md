@@ -134,6 +134,13 @@ purecoder ingest ./some_library/docs --store lib
 purecoder ask "write code using <that library> to do X" --store lib
 ```
 
+`ingest` shows you what it is about to index and waits — every file with its
+chunk count, plus what it pruned, skipped as binary, or dropped as a duplicate.
+`[e]` drops paths or globs and re-plans; nothing is embedded until you accept,
+because chunking is free and embedding is not. It prints the `--exclude` flags
+matching your choices so the same index can be rebuilt in one command. `-y`
+skips the review, as does a non-interactive stdin.
+
 Embedding is the slow part, so the index persists to `<store>.npy` / `.json` —
 ingest once, reuse across runs.
 

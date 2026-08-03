@@ -196,6 +196,15 @@ on GPU, brute-force cosine over a persisted index. A **retrieve-when-needed
 gate**: if nothing clears the similarity threshold, inject nothing — saving
 tokens and avoiding misleading context.
 
+**Indexing is reviewed before it is paid for.** `plan_ingest` walks and chunks;
+`ingest_plan` embeds. Only the second costs anything, so `purecoder ingest`
+shows the plan — every file, its chunk count, what was pruned, excluded,
+skipped as binary, or dropped as duplicate — and takes `[y] / [e] exclude /
+[n]`, re-planning for free after each exclusion. It prints the `--exclude`
+flags equivalent to the session so it can be replayed non-interactively. `-y`
+and a non-tty both skip the prompt; `learn` never prompts, since its index is
+thrown away and it already has a confirmation.
+
 **Boundary:** retrieval only visibly helps where the model is *ignorant* — new
 or obscure APIs, a project's own functions. It can't improve an answer the model
 already generates fluently.

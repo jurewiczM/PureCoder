@@ -12,9 +12,12 @@ The Embedder is injectable so store/chunk logic is testable without a GPU.
 """
 
 import ast
+import fnmatch
 import json
 import os
 import re
+from collections import Counter
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -190,6 +193,123 @@ def _is_binary(path, sniff=8192):
         return True          # unreadable is not something to index either
 
 
+@dataclass(frozen=True)
+class IngestPlan:
+    """What an index WOULD contain -- everything except the embedding.
+
+    Chunking is cheap and embedding is not, so the split is where the user gets
+    to look. Nothing here has touched a model, which is what makes the review
+    step free and lets it be re-run after an exclusion without paying twice.
+    """
+    root: str
+    chunks: tuple
+    sources: tuple
+    skipped_dirs: tuple
+    binaries: tuple
+    duplicates: int
+    excluded: tuple
+
+    @property
+    def per_file(self):
+        """(path, chunk count), commonest first -- what the review shows."""
+        return Counter(self.sources).most_common()
+
+
+def plan_ingest(docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
+                skip_dirs=SKIP_DIRS, exclude=()):
+    pairs, rx, skipped, binaries, dropped = [], re.compile(pattern), [], [], []
+    for root, dirs, files in os.walk(docs_dir):
+        # Pruned in place -- os.walk reads `dirs` back to decide where to
+        # descend. Pointing this at a project root is the documented use,
+        # and .venv alone can outnumber the real docs a thousand to one:
+        # the index still looks fine, and every answer comes from
+        # site-packages.
+        if pruned := [d for d in dirs if d in skip_dirs]:
+            skipped += [os.path.relpath(os.path.join(root, d), docs_dir)
+                        for d in sorted(pruned)]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for fn in sorted(files):
+            if not rx.match(fn):
+                continue
+            p = os.path.join(root, fn)
+            rel = os.path.relpath(p, docs_dir)
+            if _excluded(rel, exclude):
+                dropped.append(rel)
+                continue
+            if _is_binary(p):
+                # errors="ignore" turns a binary file into text rather than
+                # refusing it, so a .txt that is really a blob became chunks
+                # of mojibake sitting in the index at whatever score they
+                # happen to earn.
+                binaries.append(rel)
+                continue
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                pairs += chunk_file(rel, f.read())
+    if not pairs:
+        raise ValueError(f"no files matched under {docs_dir}")
+
+    # Identical text indexed twice competes with itself for the k slots the
+    # gate has to spend. A vendored copy of a doc, or the same licence header
+    # on forty files, can fill every slot with one passage and crowd out the
+    # rest. First occurrence keeps the source.
+    seen, unique = set(), []
+    for chunk, source in pairs:
+        if chunk not in seen:
+            seen.add(chunk)
+            unique.append((chunk, source))
+
+    return IngestPlan(
+        root=docs_dir,
+        chunks=tuple(c for c, _ in unique),
+        sources=tuple(s for _, s in unique),
+        skipped_dirs=tuple(skipped),
+        binaries=tuple(binaries),
+        duplicates=len(pairs) - len(unique),
+        excluded=tuple(dropped),
+    )
+
+
+def _excluded(rel, patterns):
+    """A glob against the path, or a directory prefix of it."""
+    for pat in patterns:
+        bare = pat.rstrip("/" + os.sep)
+        if fnmatch.fnmatch(rel, pat) or rel == bare \
+                or rel.startswith(bare + os.sep):
+            return True
+    return False
+
+
+def plan_notices(plan):
+    """What the walk decided on its own, one line each."""
+    out = []
+    if plan.skipped_dirs:
+        shown = ", ".join(plan.skipped_dirs[:5])
+        more = (f" (+{len(plan.skipped_dirs) - 5} more)"
+                if len(plan.skipped_dirs) > 5 else "")
+        out.append(f"[rag] skipped {len(plan.skipped_dirs)} directories: {shown}{more}")
+    if plan.binaries:
+        out.append(f"[rag] skipped {len(plan.binaries)} binary files: "
+                   f"{', '.join(plan.binaries[:5])}")
+    if plan.excluded:
+        out.append(f"[rag] excluded {len(plan.excluded)} files: "
+                   f"{', '.join(plan.excluded[:5])}")
+    if plan.duplicates:
+        out.append(f"[rag] dropped {plan.duplicates} duplicate chunks")
+    return out
+
+
+def render_plan(plan, limit=25):
+    """The review: every file that would be indexed, and what was left out."""
+    lines = [f"\n{len(plan.chunks)} chunks from {len(plan.per_file)} files "
+             f"under {plan.root}"]
+    for path, count in plan.per_file[:limit]:
+        lines.append(f"  {count:>4}  {path}")
+    if len(plan.per_file) > limit:
+        lines.append(f"  ... {len(plan.per_file) - limit} more files")
+    lines += ["  " + n for n in plan_notices(plan)]
+    return "\n".join(lines)
+
+
 class DocStore:
     def __init__(self, embedder, path="docstore"):
         self.embedder = embedder
@@ -198,59 +318,23 @@ class DocStore:
         self.chunks = []
         self.sources = []
 
-    def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
-                   verbose=True, skip_dirs=SKIP_DIRS):
-        pairs, rx, skipped, binaries = [], re.compile(pattern), [], []
-        for root, dirs, files in os.walk(docs_dir):
-            # Pruned in place -- os.walk reads `dirs` back to decide where to
-            # descend. Pointing this at a project root is the documented use,
-            # and .venv alone can outnumber the real docs a thousand to one:
-            # the index still looks fine, and every answer comes from
-            # site-packages.
-            if pruned := [d for d in dirs if d in skip_dirs]:
-                skipped += [os.path.relpath(os.path.join(root, d), docs_dir)
-                            for d in sorted(pruned)]
-                dirs[:] = [d for d in dirs if d not in skip_dirs]
-            for fn in files:
-                if rx.match(fn):
-                    p = os.path.join(root, fn)
-                    rel = os.path.relpath(p, docs_dir)
-                    if _is_binary(p):
-                        # errors="ignore" turns a binary file into text rather
-                        # than refusing it, so a .txt that is really a blob
-                        # became chunks of mojibake sitting in the index at
-                        # whatever score they happen to earn.
-                        binaries.append(rel)
-                        continue
-                    with open(p, encoding="utf-8", errors="ignore") as f:
-                        pairs += chunk_file(rel, f.read())
-        if verbose and skipped:
-            shown = ", ".join(skipped[:5])
-            more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
-            print(f"[rag] skipped {len(skipped)} directories: {shown}{more}")
-        if verbose and binaries:
-            print(f"[rag] skipped {len(binaries)} binary files: "
-                  f"{', '.join(binaries[:5])}")
-        if not pairs:
-            raise ValueError(f"no files matched under {docs_dir}")
-
-        # Identical text indexed twice competes with itself for the k slots the
-        # gate has to spend. A vendored copy of a doc, or the same licence
-        # header on forty files, can fill every slot with one passage and crowd
-        # out the rest. First occurrence keeps the source.
-        seen, unique = set(), []
-        for chunk, source in pairs:
-            if chunk not in seen:
-                seen.add(chunk)
-                unique.append((chunk, source))
-        if verbose and len(unique) < len(pairs):
-            print(f"[rag] dropped {len(pairs) - len(unique)} duplicate chunks")
-        self.chunks = [c for c, _ in unique]
-        self.sources = [s for _, s in unique]
+    def ingest_plan(self, plan, verbose=True):
+        """Embed a reviewed plan. The expensive half of ingesting."""
+        self.chunks, self.sources = list(plan.chunks), list(plan.sources)
         self.vectors = self.embedder.embed_docs(self.chunks).astype("float32")
         if verbose:
-            print(f"[rag] ingested {len(self.chunks)} chunks from {docs_dir}")
+            print(f"[rag] ingested {len(self.chunks)} chunks from {plan.root}")
         return len(self.chunks)
+
+    def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
+                   verbose=True, skip_dirs=SKIP_DIRS, exclude=()):
+        """Plan and embed in one step, for callers with nobody to ask."""
+        plan = plan_ingest(docs_dir, pattern=pattern, skip_dirs=skip_dirs,
+                           exclude=exclude)
+        if verbose:
+            for notice in plan_notices(plan):
+                print(notice)
+        return self.ingest_plan(plan, verbose=verbose)
 
     def search(self, query, k=3, min_score=0.3):
         # An empty query embeds to something, and that something scores against

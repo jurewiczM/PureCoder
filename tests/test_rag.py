@@ -15,6 +15,8 @@ from purecoder.rag import (
     chunk_file,
     chunk_markdown,
     chunk_python,
+    plan_ingest,
+    render_plan,
     retrieve_context,
 )
 
@@ -359,6 +361,61 @@ def test_ingest_indexes_identical_text_once(tmp_path, capsys):
 def test_an_empty_query_matches_nothing(store):
     assert store.search("   ") == []
     assert retrieve_context(store, "") == ""
+
+
+# ---- planning, before anything is embedded -------------------------------
+
+@pytest.fixture
+def project(tmp_path):
+    d = tmp_path / "project"
+    (d / "docs").mkdir(parents=True)
+    (d / "internal").mkdir()
+    (d / ".venv").mkdir()
+    (d / "docs" / "guide.md").write_text("# Alpha\nalpha\n")
+    (d / "docs" / "api.md").write_text("# Beta\nbeta\n")
+    (d / "internal" / "notes.md").write_text("# Gamma\ngamma\n")
+    (d / ".venv" / "vendored.md").write_text("# Delta\ndelta\n")
+    return d
+
+
+def test_a_plan_reports_what_it_would_index_without_embedding_it(project):
+    """The Embedder is what costs; chunking is free. Planning has to be
+    separable from embedding or the review can only happen after the bill."""
+    plan = plan_ingest(str(project))
+    assert dict(plan.per_file) == {"docs/guide.md": 1, "docs/api.md": 1,
+                                   "internal/notes.md": 1}
+    assert plan.skipped_dirs == (".venv",)
+
+
+def test_a_plan_can_leave_a_path_out(project):
+    plan = plan_ingest(str(project), exclude=("internal",))
+    assert "internal/notes.md" not in dict(plan.per_file)
+    assert plan.excluded == ("internal/notes.md",)
+
+
+def test_exclusion_takes_a_glob(project):
+    plan = plan_ingest(str(project), exclude=("docs/*.md",))
+    assert list(dict(plan.per_file)) == ["internal/notes.md"]
+
+
+def test_excluding_everything_is_an_error_not_an_empty_index(project):
+    with pytest.raises(ValueError, match="no files matched"):
+        plan_ingest(str(project), exclude=("*",))
+
+
+def test_the_review_names_every_file_and_what_was_left_out(project):
+    text = render_plan(plan_ingest(str(project), exclude=("internal",)))
+    assert "docs/guide.md" in text
+    assert "skipped 1 directories" in text
+    assert "excluded 1 files" in text
+
+
+def test_an_accepted_plan_is_what_gets_embedded(project):
+    plan = plan_ingest(str(project), exclude=("internal",))
+    s = DocStore(FakeEmbedder(), path=str(project / "idx"))
+    s.ingest_plan(plan, verbose=False)
+    assert s.sources == list(plan.sources)
+    assert s.vectors.shape[0] == len(plan.chunks)
 
 
 def test_a_pruned_directory_can_be_asked_for_explicitly(tmp_path):
