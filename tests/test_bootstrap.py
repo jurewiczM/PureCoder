@@ -155,3 +155,83 @@ def test_the_tester_prompt_is_templated_not_drafted():
     assert "zig" in text
     assert "PC_CHECK(expr)" in text
     assert "no prose, no fences" in text.lower()
+
+
+# ---- the trust boundary --------------------------------------------------
+
+def test_commands_are_parsed_into_argv_not_a_shell_string():
+    """These reach subprocess.Popen. A string would mean a shell, and a shell
+    means the model can write a pipeline."""
+    pc = Scripted("BUILD: zigc -o {bin} {src}\nRUN: {bin}\nTOOLCHAIN: zigc")
+    build, run, toolchain = bootstrap.draft_commands(pc, "zig", ".zig", "DOCS")
+    assert build == ("zigc", "-o", "{bin}", "{src}")
+    assert run == ("{bin}",)
+    assert toolchain == "zigc"
+
+
+def test_an_interpreted_language_needs_no_build():
+    pc = Scripted("BUILD: none\nRUN: zig run {src}\nTOOLCHAIN: zig")
+    build, run, _ = bootstrap.draft_commands(pc, "zig", ".zig", "DOCS")
+    assert build == ()
+    assert run == ("zig", "run", "{src}")
+
+
+def test_the_toolchain_binary_is_required():
+    """Without it a compiled language gets no availability probe: run[0] is
+    {bin}, so available() would return True on a machine with no compiler and
+    --lang zig would be accepted anywhere."""
+    with pytest.raises(ValueError, match="toolchain"):
+        bootstrap.draft_commands(Scripted("BUILD: none\nRUN: zig run {src}"),
+                                 "zig", ".zig", "DOCS")
+
+
+def test_a_run_command_that_never_names_the_source_is_refused():
+    """Without {src} or {bin} the command ignores the candidate entirely and
+    every probe would measure whatever it does run."""
+    with pytest.raises(ValueError, match="src"):
+        bootstrap.draft_commands(
+            Scripted("BUILD: none\nRUN: zig version\nTOOLCHAIN: zig"),
+            "zig", ".zig", "DOCS")
+
+
+def test_a_build_command_that_produces_no_binary_is_refused():
+    with pytest.raises(ValueError, match="bin"):
+        bootstrap.draft_commands(
+            Scripted("BUILD: zigc {src}\nRUN: {bin}\nTOOLCHAIN: zigc"),
+            "zig", ".zig", "DOCS")
+
+
+@pytest.mark.parametrize("line", [
+    "sh -c 'cat {src} | zig run -'",
+    "zig run {src} > /tmp/out",
+    "zig build {src} && ./a.out",
+    "zig run $(echo {src})",
+])
+def test_shell_metacharacters_are_refused(line):
+    """Not a sandbox, just a closed door: argv is not a shell, so a pipeline
+    here means the draft misunderstood the format."""
+    with pytest.raises(ValueError, match="shell"):
+        bootstrap.draft_commands(
+            Scripted(f"BUILD: none\nRUN: {line}\nTOOLCHAIN: zig"),
+            "zig", ".zig", "DOCS")
+
+
+def test_commands_are_shown_in_full_before_confirmation(capsys):
+    ok = bootstrap.confirm_commands(("zigc", "{src}"), ("{bin}",),
+                                    ask=lambda _: "y")
+    assert ok
+    out = capsys.readouterr().out
+    assert "zigc {src}" in out
+    assert "{bin}" in out
+
+
+@pytest.mark.parametrize("answer", ["", "n", "no", "later", "Y E S"])
+def test_anything_but_yes_declines(answer):
+    assert bootstrap.confirm_commands(("a",), ("b",),
+                                      ask=lambda _: answer) is False
+
+
+@pytest.mark.parametrize("answer", ["y", "Y", "yes", "YES", " yes "])
+def test_yes_in_any_case_confirms(answer):
+    assert bootstrap.confirm_commands(("a",), ("b",),
+                                      ask=lambda _: answer) is True
