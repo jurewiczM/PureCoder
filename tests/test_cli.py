@@ -137,6 +137,60 @@ class DocArgs(LangArgs):
         self.__dict__.update(kw)
 
 
+@pytest.fixture
+def learned(store, monkeypatch):
+    """A registered language with a real index of its own documentation.
+
+    `open_docs` builds an `Embedder` for real, so standing in for the model is
+    the only way to exercise the path that matters. Every other test of this
+    feature asserts a FAILURE mode -- without this one the suite would stay
+    green if grounding never happened at all.
+    """
+    from conftest import FakeEmbedder
+
+    from purecoder import rag
+    from purecoder.langstore import docs_index_path
+    from purecoder.languages import LanguageSpec, register
+
+    monkeypatch.setattr(rag, "Embedder", lambda **kw: FakeEmbedder())
+    docs = store.parent / "zig-docs"
+    docs.mkdir(parents=True)
+    (docs / "io.md").write_text(
+        "# Alpha\nalpha alpha. Use Zig.print to write output.\n")
+
+    index = docs_index_path("ziglike")
+    index.parent.mkdir(parents=True, exist_ok=True)
+    s = rag.DocStore(FakeEmbedder(), path=str(index))
+    s.ingest_dir(str(docs), verbose=False)
+    s.save()
+
+    spec = LanguageSpec(name="ziglike", extension=".zig", docs_store="ziglike",
+                        run=("true",), test_system="x", probe=("true",))
+    register(spec)
+    return spec
+
+
+def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys):
+    """The claim the whole feature exists for: `code --lang X` is grounded with
+    no second ingest and no --store."""
+    from purecoder.cli import ground_in_docs
+
+    task, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
+    assert "Relevant documentation:" in task
+    assert "Zig.print" in task
+    assert task.endswith("alpha")
+    assert "from the ziglike docs" in capsys.readouterr().out
+
+
+def test_the_docs_answer_did_you_mean_for_that_language(learned):
+    """The second half of the same wiring: the index's symbol library reaches
+    the fix loop, so a name the toolchain rejects gets the real one back."""
+    from purecoder.cli import ground_in_docs
+
+    _, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
+    assert "Zig.print" in hint("error: cannot find `Zig.prnt` in this scope")
+
+
 def test_a_hand_written_language_is_left_alone():
     """C++ was not learned from anything. Grounding must be something a
     learned entry opts into, not a cost every language pays."""

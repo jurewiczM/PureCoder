@@ -181,8 +181,13 @@ Plus one live round — a real generate-and-validate cycle — unless you pass
 A learned language **keeps the index of its documentation**, so the second
 command above is doc-grounded automatically: no second `ingest`, no `--store` to
 remember, and once the toolchain rejects a name, the docs answer *did you mean*.
-`--no-docs` opts out. Registered languages live as one JSON file each under
-`$PURECODER_HOME` (or XDG), so a bad entry is removable with `rm`.
+`--no-docs` opts out. A registered language is two things on disk under
+`$PURECODER_HOME` (or XDG) — `languages/<name>.json` and its index at
+`docs/<name>.npy` / `.json` — so removing one by hand means removing both:
+
+```bash
+rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
+```
 
 ## Commands
 
@@ -223,7 +228,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           377 tests (no GPU, no server; toolchain ones self-skip)
+tests/           379 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

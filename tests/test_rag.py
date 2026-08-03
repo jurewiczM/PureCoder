@@ -8,6 +8,7 @@ import json
 
 import numpy as np
 import pytest
+from conftest import FakeEmbedder
 
 from purecoder.rag import (
     DocStore,
@@ -233,23 +234,6 @@ def test_the_lexical_index_survives_a_round_trip(api_store):
 
 
 # ---- store + gate, with a fake embedder ---------------------------------
-
-class FakeEmbedder:
-    """Bag-of-words unit vectors: similar text -> high cosine, no model needed."""
-
-    VOCAB = ["alpha", "beta", "gamma", "delta"]
-
-    def _vec(self, text):
-        v = np.array([float(text.lower().count(w)) for w in self.VOCAB])
-        norm = np.linalg.norm(v)
-        return v / norm if norm else v
-
-    def embed_docs(self, texts):
-        return np.vstack([self._vec(t) for t in texts])
-
-    def embed_query(self, text):
-        return self._vec(text)
-
 
 @pytest.fixture
 def store(tmp_path):
