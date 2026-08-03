@@ -53,7 +53,7 @@ def scaffold_project(pc, name, description, outdir="build",
     # A compiled language needs an entry point to link. The sandbox supplies
     # one; the file on disk does not have it, so without this a validated C++
     # project fails `make test` with "undefined reference to `main`".
-    on_disk = code + (spec.project.entry_stub if spec.project else "")
+    on_disk = code + spec.project.entry_stub
     _write(outdir, entry, on_disk)
     report[entry] = code_res["ok"]
 

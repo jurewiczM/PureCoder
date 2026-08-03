@@ -206,9 +206,3 @@ def retrieve_context(store, query, k=3, min_score=0.3, max_chars=1500):
         blocks.append(block)
         used += len(block)
     return "Relevant documentation:\n\n" + "\n\n".join(blocks)
-
-
-def code_with_docs(pc, store, description, **kw):
-    ctx = retrieve_context(store, description)
-    task = f"{ctx}\n\n{description}" if ctx else description
-    return pc.code(task, language="python", **kw)

@@ -10,8 +10,8 @@ then reuse the same store path on later runs (see --store on the CLI).
 import os
 import sys
 
-from purecoder import PureCoder
-from purecoder.rag import DocStore, Embedder, code_with_docs
+from purecoder import PureCoder, generate_validated_python
+from purecoder.rag import DocStore, Embedder, retrieve_context
 
 
 def main():
@@ -33,7 +33,14 @@ def main():
         store.save()
 
     pc = PureCoder()
-    print(code_with_docs(pc, store, spec)["text"])
+    # Retrieval grounds the prompt; it does not excuse the code from being
+    # run. This mirrors `purecoder ask`, which is the point of the example --
+    # printing a raw completion here would contradict the project's one rule.
+    ctx = retrieve_context(store, spec)
+    task = f"{ctx}\n\n{spec}" if ctx else spec
+    result = generate_validated_python(pc, task)
+    print(result["text"])
+    print("passed:", result["ok"], "in", result["attempts"], "attempts")
     return 0
 
 
