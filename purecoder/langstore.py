@@ -31,6 +31,17 @@ def store_dir() -> Path:
     return Path(xdg) / "purecoder" / "languages"
 
 
+def docs_index_path(stem: str) -> Path:
+    """Where a learned language's docs index lives.
+
+    A sibling of the languages directory rather than inside it, so `load_all`'s
+    `*.json` glob cannot mistake an index's metadata file for a language.
+    Derived from the same root, so moving PURECODER_HOME moves both together --
+    which is why a spec stores the stem and never the path.
+    """
+    return store_dir().parent / "docs" / stem
+
+
 def to_json(spec: LanguageSpec, **provenance) -> dict:
     """A spec plus where it came from.
 

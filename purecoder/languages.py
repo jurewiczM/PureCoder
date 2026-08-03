@@ -67,6 +67,11 @@ class LanguageSpec:
     unvalidatable: str = ""              # non-empty: refuse permanently, w/ reason
     check_call: str = ""                 # textual marker the gate counts
     aliases: tuple = ()
+    # The docs this language was learned from, kept as an index. A STEM, not a
+    # path: the store's location follows PURECODER_HOME, so an absolute path
+    # written here would break the moment that moved. Empty for a hand-written
+    # entry -- C++ was not learned from anything.
+    docs_store: str = ""
 
     # ---- assembly -------------------------------------------------------
 

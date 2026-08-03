@@ -33,6 +33,33 @@ def test_provenance_is_recorded_and_does_not_break_the_round_trip():
     assert langstore.from_json(data) == PYTHON
 
 
+def test_a_docs_store_survives_the_round_trip():
+    spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
+    assert langstore.from_json(langstore.to_json(spec)).docs_store == "zig"
+
+
+def test_an_entry_written_before_the_field_existed_still_loads():
+    """Real files predate it. A missing key is an old entry, not a broken one."""
+    data = langstore.to_json(LanguageSpec(name="zig", extension=".zig"))
+    del data["docs_store"]
+    assert langstore.from_json(data).docs_store == ""
+
+
+def test_the_docs_index_follows_the_store_root(monkeypatch, tmp_path):
+    """The spec holds a stem, never a path: an absolute path baked into a saved
+    language breaks the moment PURECODER_HOME moves."""
+    monkeypatch.setenv("PURECODER_HOME", str(tmp_path))
+    assert langstore.docs_index_path("zig") == tmp_path / "docs" / "zig"
+
+
+def test_the_docs_index_is_not_inside_the_languages_directory(monkeypatch,
+                                                              tmp_path):
+    """`load_all` globs *.json there. An index's metadata file living alongside
+    the languages would be read as one."""
+    monkeypatch.setenv("PURECODER_HOME", str(tmp_path))
+    assert langstore.store_dir() not in langstore.docs_index_path("zig").parents
+
+
 def test_the_built_in_names_are_reserved():
     assert {"python", "c++", "rust", "powerquery", "go", "ocaml"} <= BUILTIN_NAMES
 
