@@ -36,6 +36,15 @@ def test_markdown_drops_empty_sections():
     assert chunk_markdown("\n\n   \n", "doc.md") == []
 
 
+def test_markdown_terminates_when_overlap_exceeds_the_window():
+    """Stride was `max_chars - overlap`. At or below zero the loop never
+    advances: no output, no error, the process simply stops responding. A
+    caller narrowing max_chars without touching the default overlap of 150 is
+    all it takes."""
+    chunks = chunk_markdown("# Big\n" + ("word " * 200), "doc.md", max_chars=100)
+    assert chunks
+
+
 # ---- code-aware chunking -------------------------------------------------
 
 SOURCE = '''\

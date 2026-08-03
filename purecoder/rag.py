@@ -39,10 +39,15 @@ def chunk_markdown(text, source, max_chars=800, overlap=150):
         if len(sec) <= max_chars:
             chunks.append(sec)
         else:
+            # An overlap at or above the window makes the stride zero or
+            # negative -- the loop never advances and the process hangs with no
+            # output. `chunk_markdown(text, src, max_chars=100)` against the
+            # default overlap of 150 is enough to do it.
+            stride = max(1, max_chars - overlap)
             start = 0
             while start < len(sec):
                 chunks.append(sec[start:start + max_chars].strip())
-                start += max_chars - overlap
+                start += stride
     return [(c, source) for c in chunks if c.strip()]
 
 
