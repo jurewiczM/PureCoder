@@ -312,7 +312,7 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     lines = [ln.strip() for ln in tests.splitlines()
              if spec.check_call in ln]
     if lines:
-        top, repeats = Counter(lines).most_common(1)[0]
+        repeats = Counter(lines).most_common(1)[0][1]
         if repeats > MAX_REPEATED_ASSERT:
             return False, (f"degenerate tests: identical check repeated "
                            f"{repeats} times -- likely a generation spiral")
@@ -357,7 +357,7 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
     lines = [ln.strip() for ln in tests.splitlines()
              if ln.strip().startswith("assert")]
     if lines:
-        top, count = Counter(lines).most_common(1)[0]
+        count = Counter(lines).most_common(1)[0][1]
         if count > MAX_REPEATED_ASSERT:
             return False, (f"degenerate tests: identical assertion repeated "
                            f"{count} times -- likely a generation spiral")
@@ -451,6 +451,16 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     writer and the test designer read. Returns {ok, text, tests, contract,
     attempts, error}.
     """
+    # A language with no test idiom cannot be validated, so generating for it
+    # would emit unverified code. The CLI refuses such a spec before reaching
+    # here; a library caller (or scaffold_project, which has already made the
+    # output directory) gets the loop's ordinary failure dict rather than an
+    # exception out of the middle of a half-written project.
+    ok, why = spec.available()
+    if not ok:
+        return {"ok": False, "text": "", "tests": "", "contract": None,
+                "attempts": 0, "error": f"cannot generate {spec.name}: {why}"}
+
     if use_contract and contract is None:
         contract, cerr = derive_contract(pc, description,
                                          max_retries=max_retries,
