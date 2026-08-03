@@ -214,9 +214,15 @@ def cmd_ask(pc, args):
         print("[rag] no relevant docs above threshold -- generating without context")
     # doc-grounded, still execution-validated
     task = f"{ctx}\n\n{args.spec}" if ctx else args.spec
+    # The docs are the ground truth for what this library is called. They
+    # cannot say a name is wrong -- prose never enumerates a module, and the
+    # measurement that settled it is in purecoder/symbols.py -- but once the
+    # toolchain has rejected a name, they can say what the real one is.
+    from .symbols import did_you_mean
     _print_result(generate_validated_python(
         pc, task, max_retries=args.retries, spec=spec,
-        use_contract=resolve_contract(args, default=False)),
+        use_contract=resolve_contract(args, default=False),
+        error_hint=lambda err: did_you_mean(err, store.symbols)),
         show_tests=args.show_tests)
 
 

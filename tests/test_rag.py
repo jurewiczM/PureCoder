@@ -175,6 +175,28 @@ def test_explain_separates_the_two_signals(api_store):
     assert combined == pytest.approx(0.5)
 
 
+def test_the_store_carries_the_names_the_docs_use(api_store):
+    assert "Printf.eprintf" in api_store.symbols
+
+
+def test_the_symbol_library_survives_a_round_trip(api_store):
+    """Derived from the chunks like the lexical index, and for the same
+    reason: a third file on disk is a third thing that can drift."""
+    api_store.save()
+    reloaded = DocStore(FakeEmbedder(), path=api_store.path).load()
+    assert reloaded.symbols == api_store.symbols
+
+
+def test_the_review_names_the_modules_it_found(tmp_path):
+    """The fastest way to tell a docs directory that covers the API from one
+    that does not: if these are not the library's modules, neither is the
+    index."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "api.md").write_text("# API\nPrintf.eprintf and Printf.sprintf\n")
+    assert "Printf (2)" in render_plan(plan_ingest(str(d)))
+
+
 def test_the_lexical_index_survives_a_round_trip(api_store):
     """It is rebuilt from the chunks rather than stored, so the scores after a
     load must equal the scores before a save -- otherwise `ask` ranks

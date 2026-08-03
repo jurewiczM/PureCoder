@@ -210,6 +210,29 @@ The lexical index is rebuilt from the chunks on load rather than persisted — a
 third file on disk is a third thing that can drift out of step, and drift is
 what `load` exists to refuse.
 
+**A symbol library, and the check it cannot support** (`purecoder/symbols.py`).
+Every qualified name the docs mention — `Printf.eprintf`, `os.path.join` — is
+extracted at ingest and shown in the review, because the modules listed there
+are the fastest way to tell a docs directory that covers the API from one that
+does not.
+
+The obvious use of that library does not work, and the measurement came before
+the belief. Flagging names whose module the docs describe but whose member they
+never mention was run against this project's own source with its own docs as
+the corpus: **45 findings, every one wrong.** `re.escape`, `ast.walk` and
+`json.dump` are all real; the docs simply had no reason to mention them. The
+rule assumes documentation *enumerates* a module, and prose never does — so the
+check cannot tell an invented name from an undocumented one.
+
+Inverting who decides makes it sound. The toolchain already knows a name is
+wrong ("Unbound value List.fold"); it just cannot say what to use instead,
+never having read the docs. So the compiler rules on wrongness and the library
+only answers *did you mean*, which needs no completeness assumption. It is
+reached solely from a failed run, its text goes to the retry prompt and never
+into `error` — so the no-progress signal keeps reading the toolchain's own
+message — and it stays silent unless a name in the error is a near miss for one
+the docs name. `ask` wires it; `code` does not, having no index to consult.
+
 **Indexing is reviewed before it is paid for.** `plan_ingest` walks and chunks;
 `ingest_plan` embeds. Only the second costs anything, so `purecoder ingest`
 shows the plan — every file, its chunk count, what was pruned, excluded,

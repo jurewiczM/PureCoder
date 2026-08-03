@@ -149,6 +149,12 @@ exact-name score for *what you literally typed*. Embeddings are worst at API
 symbols, which is most of what gets asked here — `Printf.eprintf` retrieves the
 page defining it even when a page merely about output formatting embeds closer.
 
+`ingest` also collects every qualified name the docs use. It cannot tell you a
+name is wrong — prose documentation never enumerates a module, and assuming
+otherwise flagged 45 pieces of correct code in the measurement that settled it
+— but once the compiler has rejected a name, it answers *did you mean* from the
+real API instead of leaving the fix loop guessing.
+
 ## Commands
 
 | command | what it does |
@@ -177,6 +183,7 @@ purecoder/
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
   rag.py         code/doc-aware chunking + retrieval
+  symbols.py     the names the docs use, and what they can honestly decide
   status.py      live system probe
   bootstrap.py   draft a language entry from its docs, then probe it
   langstore.py   where a learned language lives between runs

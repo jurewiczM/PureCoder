@@ -28,6 +28,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .symbols import extract_symbols, modules
+
 # ---- markdown / prose chunking ------------------------------------------
 
 def chunk_markdown(text, source, max_chars=800, overlap=150):
@@ -345,6 +347,14 @@ def render_plan(plan, limit=25):
     if len(plan.per_file) > limit:
         lines.append(f"  ... {len(plan.per_file) - limit} more files")
     lines += ["  " + n for n in plan_notices(plan)]
+
+    # The names the index will know. Shown because it is the fastest way to
+    # tell a docs directory that covers the API from one that does not: if the
+    # modules listed here are not the library's, neither is the index.
+    names = extract_symbols(plan.chunks)
+    if names:
+        top = ", ".join(f"{mod} ({n})" for mod, n in modules(names)[:6])
+        lines.append(f"  [rag] {len(names)} qualified names -- {top}")
     return "\n".join(lines)
 
 
@@ -357,12 +367,17 @@ class DocStore:
         self.sources = []
         self._tokens = []
         self._idf = {}
+        # Every qualified name the docs mention. Derived from the chunks like
+        # the lexical index, and for the same reason: another file on disk is
+        # another thing that can drift out of step with the vectors.
+        self.symbols = frozenset()
 
     def ingest_plan(self, plan, verbose=True):
         """Embed a reviewed plan. The expensive half of ingesting."""
         self.chunks, self.sources = list(plan.chunks), list(plan.sources)
         self.vectors = self.embedder.embed_docs(self.chunks).astype("float32")
         self._build_lexical()
+        self.symbols = extract_symbols(self.chunks)
         if verbose:
             print(f"[rag] ingested {len(self.chunks)} chunks from {plan.root}")
         return len(self.chunks)
@@ -522,6 +537,7 @@ class DocStore:
 
         self.vectors, self.chunks, self.sources = vectors, chunks, sources
         self._build_lexical()
+        self.symbols = extract_symbols(self.chunks)
         return self
 
 

@@ -139,6 +139,13 @@ _Snapshot of what's built, tested, and what's next._
   with a cosine of zero. A token in every chunk weighs nothing, so stopwords
   cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
   that decide this, and neither is tuned against a benchmark — there isn't one.
+- **Documentation names an API; it does not enumerate one.** The symbol library
+  extracted from the docs cannot decide that a name is wrong — judging code
+  against it produced 45 findings on this project's own source, all of them
+  correct code the docs had no reason to mention. What it can do is answer *did
+  you mean* once the toolchain has already rejected a name, which needs no
+  completeness. That inversion is the whole design of `purecoder/symbols.py`,
+  and there is deliberately no function in it that takes code.
 - **Measured, and the result is weaker than the motivation.** Run over this
   repo (7128 chunks, real bge-small embeddings) on six queries — five exact
   symbols and one prose control — the lexical signal changed the ranking in

@@ -125,6 +125,40 @@ def test_execution_loop_gives_up_and_reports_the_error():
     assert "AssertionError" in res["error"]
 
 
+def test_an_error_hint_reaches_the_retry_prompt():
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_hint=lambda err: "the documentation defines List.fold_left")
+    assert res["ok"]
+    assert "List.fold_left" in pc.prompts[1]
+
+
+def test_an_error_hint_cannot_change_a_verdict():
+    """It is consulted only after a run has already failed, and its text goes
+    to the prompt rather than to `error` -- so a hint can neither fail a
+    passing run nor pass a failing one."""
+    said = []
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_hint=lambda err: said.append(err) or "invented nonsense")
+    assert res["ok"] and said == [], "a passing run must not consult the docs"
+
+
+def test_a_hint_does_not_disturb_the_no_progress_signal():
+    """The stop-when-stuck check compares the toolchain's last line across
+    attempts. Enriching `error` would make an unchanging failure look like a
+    moving one, and the loop would keep burning calls."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=6, verbose=False,
+        error_hint=lambda err: f"hint about attempt {len(pc.prompts)}")
+    assert not res["ok"]
+    assert "identical failures" in res["error"]
+    assert "hint about" not in res["error"]
+
+
 def test_execution_loop_designs_tests_when_none_are_given():
     pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
     res = generate_validated_python(pc, "add two numbers", verbose=False)

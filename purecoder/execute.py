@@ -443,13 +443,20 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
-                              use_contract=False, spec=PYTHON, **kw):
+                              use_contract=False, spec=PYTHON,
+                              error_hint=None, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
     With use_contract, the prose is first turned into a contract that both the
     writer and the test designer read. Returns {ok, text, tests, contract,
     attempts, error}.
+
+    `error_hint(error) -> str` may add context to a failure the toolchain has
+    already reported -- `ask` uses it to answer "did you mean" from the indexed
+    docs. It is consulted only when a run has failed, and only its text reaches
+    the retry prompt: the verdict stays the executor's, and the no-progress
+    signal keeps reading the toolchain's own message.
     """
     # A language with no test idiom cannot be validated, so generating for it
     # would emit unverified code. The CLI refuses such a spec before reaching
@@ -658,6 +665,12 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         if verbose:
             print(f"[attempt {attempt}] tests failed: {first} -> retrying")
+        # Appended to the prompt, never to `error`: the no-progress check above
+        # reads the toolchain's last line, and enriching it would make an
+        # unchanging failure look like a moving one.
+        hint = error_hint(error) if error_hint else ""
+        if hint and verbose:
+            print(f"[docs] {hint.splitlines()[0]}")
         # The tests are shown so the model knows what it must satisfy, but
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run
@@ -665,7 +678,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         task = (f"{grounded}{constraints}\n\n"
                 f"Your previous implementation failed these tests, which are "
                 f"run separately and must NOT appear in your output:\n{full}\n\n"
-                f"With this error:\n{error}\n\n"
+                f"With this error:\n{error}\n"
+                f"{hint}\n\n"
                 f"Output only the corrected implementation, nothing else.")
 
     return {"ok": False, "text": code, "tests": designed,
