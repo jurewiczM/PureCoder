@@ -127,6 +127,13 @@ def cmd_ingest(pc, args):
 
 
 def cmd_ask(pc, args):
+    # `ask` is `code` with retrieval in front of it, so it resolves the
+    # language the same way. Without this, --lang was parsed and silently
+    # dropped here -- the one command that would answer a C++ question in
+    # Python, which is the exact failure the registry exists to stop.
+    spec = resolve_language(args)
+    if spec is None:
+        return 1
     from .rag import DocStore, Embedder, retrieve_context
     store = DocStore(Embedder(device=args.device), path=args.store).load()
     ctx = retrieve_context(store, args.spec)
@@ -137,7 +144,7 @@ def cmd_ask(pc, args):
     # doc-grounded, still execution-validated
     task = f"{ctx}\n\n{args.spec}" if ctx else args.spec
     _print_result(generate_validated_python(
-        pc, task, max_retries=args.retries,
+        pc, task, max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False)),
         show_tests=args.show_tests)
 

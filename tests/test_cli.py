@@ -95,3 +95,41 @@ def test_an_alias_in_the_spec_is_not_a_contradiction():
     """--lang c++ with a spec that says 'cpp' means the same thing."""
     args = LangArgs("cpp", "a cpp quicksort")
     assert resolve_language(args).name == "c++"
+
+
+# ---- every code-producing command resolves the language ------------------
+
+def test_ask_refuses_a_language_it_cannot_validate(capsys):
+    """`ask` is `code` with retrieval in front of it, and it used to parse
+    --lang and drop it -- answering a C++ question in Python, which is the one
+    failure the registry exists to stop. The refusal must come before the RAG
+    import, so this needs neither a store nor sentence-transformers."""
+    from purecoder.cli import cmd_ask
+
+    assert cmd_ask(None, LangArgs("powerquery", "anything")) == 1
+    assert "Power BI" in capsys.readouterr().out
+
+
+def test_python_m_purecoder_propagates_the_exit_code():
+    """The README calls `python -m purecoder` identical to the console script.
+    setuptools wraps the latter in sys.exit(main()); without the same here a
+    refusal printed its reason and exited 0."""
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-m", "purecoder", "--lang", "go",
+                          "code", "x"], capture_output=True, text=True)
+    assert "not implemented" in out.stdout
+    assert out.returncode == 1, "a refusal must not look like success"
+
+
+def test_every_code_producing_command_resolves_the_language():
+    """A guard against the next command that forgets. `env` and `make` are
+    exempt: config artifacts have no language."""
+    import inspect
+
+    from purecoder import cli
+
+    for name in ("cmd_code", "cmd_ask", "cmd_project"):
+        src = inspect.getsource(getattr(cli, name))
+        assert "resolve_language(args)" in src, f"{name} ignores --lang"
