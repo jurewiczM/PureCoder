@@ -107,14 +107,25 @@ def test_the_check_call_is_extracted_from_a_single_line_answer():
 def test_a_check_call_the_preamble_never_defines_is_refused():
     """The gate counts this token textually. If the preamble does not define
     it, every suite scores zero checks and the language silently fails."""
-    with pytest.raises(ValueError, match="never defines"):
-        bootstrap.draft_check_call(FakeModel(completions=["VERIFY(1 == 1);"]), "zig", "PRE")
+    with pytest.raises(ValueError, match="disagree"):
+        bootstrap.draft_check_call(FakeModel(completions=["VERIFY(1 == 1);"]),
+                                   "zig", "PRE")
+
+
+def test_a_leading_keyword_is_not_mistaken_for_the_call():
+    """Observed live: OCaml answered `if pc_check 1 = 1 then ...` and taking the
+    first identifier yielded `if`, which the preamble of course never defines.
+    Candidates are tried against the preamble rather than assumed by position."""
+    pre = "let pc_check cond = if not cond then exit 1"
+    assert bootstrap.draft_check_call(
+        FakeModel(completions=["if pc_check (1 = 1) then () else ()"]),
+        "ocaml", pre) == "pc_check"
 
 
 def test_the_fixture_comes_back_as_five_labelled_snippets():
     pc = FakeModel(completions=["CORRECT\n@@WRONG@@\nWRONG\n@@TESTS@@\nTESTS\n"
                   "@@EMPTY@@\nEMPTY\n@@ALWAYS_FAILS@@\nFAILS"])
-    fx = bootstrap.draft_fixture(pc, "zig", "PRE", "PC_CHECK")
+    fx = bootstrap.draft_fixture(pc, "zig", "PRE", "POST", "PC_CHECK")
     assert fx.correct == "CORRECT"
     assert fx.wrong == "WRONG"
     assert fx.tests == "TESTS"
@@ -128,11 +139,11 @@ def test_a_fixture_missing_a_section_is_refused():
     with pytest.raises(ValueError, match="ALWAYS_FAILS"):
         bootstrap.draft_fixture(
             FakeModel(completions=["C\n@@WRONG@@\nW\n@@TESTS@@\nT\n@@EMPTY@@\nE"]),
-            "zig", "PRE", "PC_CHECK")
+            "zig", "PRE", "POST", "PC_CHECK")
 
     with pytest.raises(ValueError, match="TESTS"):
         bootstrap.draft_fixture(FakeModel(completions=["C\n@@WRONG@@\nW"]), "zig",
-                                "PRE", "PC_CHECK")
+                                "PRE", "POST", "PC_CHECK")
 
 
 def test_the_tester_prompt_is_templated_not_drafted():
@@ -411,3 +422,70 @@ def test_every_refusal_path_reports_probes_even_with_none_to_report(store):
     refused = _learn(FakeModel(completions=DRAFTS), store, name="python")
     for res in (declined, refused):
         assert res["probes"] == []
+
+
+def test_each_fixture_section_is_unfenced_separately():
+    """Observed live on OCaml: the model fences every snippet, so stripping the
+    outermost pair once leaves ``` markers embedded mid-fixture. The language
+    then failed to parse and the diagnostic pointed at the syntax error rather
+    than at the cause."""
+    pc = FakeModel(completions=[
+        "```ocaml\nlet add x y = x + y\n```\n@@WRONG@@\n"
+        "```ocaml\nlet add x y = x - y\n```\n@@TESTS@@\n"
+        "```ocaml\npc_check (add 1 2 = 3);\n```\n@@EMPTY@@\n"
+        "```ocaml\n()\n```\n@@ALWAYS_FAILS@@\n"
+        "```ocaml\npc_check false;\n```"])
+    fx = bootstrap.draft_fixture(pc, "ocaml", "PRE", "POST", "pc_check")
+    for section in (fx.correct, fx.wrong, fx.tests, fx.empty, fx.always_fails):
+        assert "```" not in section, f"fence survived in {section!r}"
+    assert fx.correct == "let add x y = x + y"
+
+
+def test_the_fixture_prompt_shows_the_tail_that_will_run_the_tests():
+    """The tests and the epilogue have to agree on shape. On OCaml the tail
+    called `pc_tests ()` while the tests were top-level statements, so the
+    harness could not compile however good either half was alone."""
+    pc = FakeModel(completions=["C\n@@WRONG@@\nW\n@@TESTS@@\nT\n"
+                                "@@EMPTY@@\nE\n@@ALWAYS_FAILS@@\nF"])
+    bootstrap.draft_fixture(pc, "zig", "THE PREAMBLE", "THE EPILOGUE", "PC_CHECK")
+    _system, user = pc.calls[0]
+    assert "THE EPILOGUE" in user
+    assert "THE PREAMBLE" in user
+
+
+def test_a_dot_slash_prefixed_placeholder_is_normalised_not_refused():
+    """`./{bin}` is a near-universal habit and it is broken here: {bin} expands
+    to an absolute path, so the `./` resolves it against the working directory.
+    It has exactly one correct reading, so it is fixed rather than refused --
+    two of four live OCaml drafts wrote it."""
+    build, run, _ = bootstrap.draft_commands(
+        FakeModel(completions=["BUILD: ocamlc -o {bin} {src}\n"
+                               "RUN: ./{bin}\nTOOLCHAIN: ocamlc"]),
+        "ocaml", ".ml", "DOCS")
+    assert run == ("{bin}",)
+    assert build == ("ocamlc", "-o", "{bin}", "{src}")
+
+
+def test_the_epilogue_prompt_says_where_the_tests_already_are():
+    """Two of the three worked examples need an entry point, so the model
+    generalised the majority shape onto OCaml and emitted `pc_tests ()` for a
+    language that runs top-level statements. The invariant is now stated."""
+    pc = FakeModel(completions=["TAIL"])
+    bootstrap.draft_epilogue(pc, "ocaml", "PRE", "DOCS")
+    _system, user = pc.calls[0]
+    assert "already placed" in user
+    assert "top-level statements in order" in user
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("```ocaml\nlet x = 1\n```", "let x = 1"),          # the normal case
+    ("let x = 1\n;;```", "let x = 1\n;;"),              # fence welded to code
+    ("```ocaml\nlet x = 1", "let x = 1"),               # opened, never closed
+    ("```\nlet x = 1\n```\nmore\n```", "let x = 1\n\nmore"),   # several
+    ("let x = 1", "let x = 1"),                         # nothing to do
+])
+def test_fence_markers_are_removed_wherever_they_appear(raw, want):
+    """Three of these reached the OCaml compiler as a syntax error pointing at
+    the fence rather than at anything the model got wrong. A triple backtick is
+    not valid syntax in any language the executor runs, so it is always markup."""
+    assert bootstrap.unfence(raw) == want
