@@ -133,6 +133,14 @@ _Snapshot of what's built, tested, and what's next._
   matters more here than anywhere else in the pipeline.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
+- **An index is refused rather than half-trusted.** The vectors and the chunk
+  metadata are two files, and `search` pairs them by row index, so a count
+  mismatch used to inject documentation under a filename it never came from —
+  no exception, right-looking score. `load` now refuses on a count or shape
+  mismatch, on a model other than the one that built the index, and on a file
+  it cannot read; `search` refuses a query of the wrong dimension. What it
+  cannot detect is an index that is merely *stale* — docs edited since the last
+  `ingest` are still answered from the old text.
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call
