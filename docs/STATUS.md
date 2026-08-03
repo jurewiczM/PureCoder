@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-290 tests, all green, none of them needing a GPU or a running server
+306 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -109,17 +109,12 @@ _Snapshot of what's built, tested, and what's next._
 - The first live run of the bootstrap layer, its five defects and the two
   gaps still open, are written up in
   [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
-- **Bootstrap drafts once and never retries.** Every other layer in the
-  pipeline feeds its error back and tries again; this one refuses on the first
-  bad draft. A live OCaml run reached 4 of 5 probes with one malformed fixture
-  snippet, which a single retry carrying the compiler's message would very
-  likely have fixed. This is the largest known gap in the layer.
-- **The worked examples bias the harness shape.** Two of the three (C++, Rust)
-  need an entry point and call `pc_tests()`; JavaScript does not. Asked for
-  OCaml, which runs top-level statements, the model generalised the majority
-  and emitted a tail calling a function the tests never defined. Correcting
-  only that tail by hand made all five probes pass, so the drafting is close
-  and the bias is the thing in the way.
+- **A learned language is only as good as its tester.** OCaml now registers on
+  the first attempt with all five probes green, but generating *with* it stalls
+  on test quality: the writer produced correct OCaml every time while the
+  tester produced source the compiler rejected. The loop refuses honestly
+  rather than emitting it. This is the project's oldest finding -- the writer is
+  stronger than the tester -- amplified for a language the model barely saw.
 - **A learned language can be generated and validated, but not scaffolded.**
   It arrives with no `ProjectSpec` -- proving a language runs says nothing
   about how a project of it is laid out -- so `project` refuses it and points
@@ -133,12 +128,6 @@ _Snapshot of what's built, tested, and what's next._
 - The doc chunker is Python-and-markdown only, so a language's own code samples
   are chunked as prose. tree-sitter chunking remains the real fix, and it
   matters more here than anywhere else in the pipeline.
-- **A compile error from the TEST section is fed back to the writer.** For
-  any compiled language the fix loop treats a build failure as the
-  implementation's fault, so a tester that emits invalid C++/Rust/C#/OCaml
-  sends the writer round the loop until NO_PROGRESS_LIMIT stops it. The
-  textual gate cannot catch it: it counts check calls and has no parser.
-  Observed live on OCaml.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
 - Two seams are outside the automated suite: the live `/completion` call and
