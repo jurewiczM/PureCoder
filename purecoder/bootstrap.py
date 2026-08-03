@@ -12,6 +12,7 @@ a rubber stamp, and it would make every later run report success.
 """
 
 import re
+import shlex
 from dataclasses import dataclass
 
 from .client import strip_fences
@@ -219,3 +220,95 @@ def test_system_for(name: str, check_call: str) -> str:
         f"with {check_call}(expr), which is already defined: e.g. "
         f"{check_call}(add(1, 2) == 3). Use {check_call} and nothing else. "
         f"Assume the thing under test is already defined in the same file.")
+
+
+# ---- the trust boundary --------------------------------------------------
+#
+# Every hand-written entry's build and run commands were written by a person.
+# These are written by a local model and then handed to subprocess.Popen, which
+# is a different trust category from anything else in this codebase. Three
+# things follow: argv rather than a shell string, structural checks that the
+# command actually names the candidate, and explicit confirmation before the
+# first execution.
+
+# Braces are deliberately absent: `{src}` and `{bin}` are the executor's own
+# placeholders and must survive. Everything here is shell grammar, which argv
+# does not have.
+_SHELL_METACHARACTERS = set(";|&$`><()\n")
+
+
+def _parse_command(label: str, line: str) -> tuple:
+    """One drafted line to argv, or a refusal."""
+    if line.strip().lower() in ("none", "-", ""):
+        return ()
+    # Checked on the raw line, before shlex: quoting must not be a way to smuggle
+    # a pipeline past the guard.
+    found = sorted(set(line) & _SHELL_METACHARACTERS)
+    if found:
+        raise ValueError(f"the {label} command uses shell syntax ({''.join(found)}) "
+                         f"and argv is not a shell: {line!r}")
+    try:
+        return tuple(shlex.split(line))
+    except ValueError as e:
+        raise ValueError(f"the {label} command does not parse: {e}") from e
+
+
+def draft_commands(pc, name: str, extension: str, context: str):
+    """How this language compiles and runs ONE file. -> (build, run, toolchain).
+
+    Placeholders are `{src}`, `{bin}` and `{python}`, filled in by the executor.
+    The toolchain binary is asked for separately because it cannot be inferred:
+    a compiled language runs `{bin}`, so there is nothing in `run` to probe, and
+    without it `available()` would return True on a machine with no compiler.
+    """
+    system = "You output exactly three lines and nothing else."
+    user = (
+        f"Reference documentation for {name}:\n\n{context}\n\n"
+        f"A single source file `candidate{extension}` must be compiled (if the "
+        f"language needs it) and run. Write exactly three lines:\n"
+        f"BUILD: the compile command, using {{src}} for the source path and "
+        f"{{bin}} for the output binary -- or the word none if this language "
+        f"needs no compilation step\n"
+        f"RUN: the command that runs it, using {{bin}} if you compiled one, "
+        f"otherwise {{src}}\n"
+        f"TOOLCHAIN: the name of the binary that must be installed for those "
+        f"commands to work, on its own\n"
+        f"Use no shell features: no pipes, no redirection, no &&.")
+    text = strip_fences(pc.complete(system=system, user=user, grammar=None,
+                                    n_predict=128)["text"])
+
+    lines = {}
+    for raw in text.splitlines():
+        key, sep, value = raw.partition(":")
+        if sep and key.strip().upper() in ("BUILD", "RUN", "TOOLCHAIN"):
+            lines[key.strip().upper()] = value.strip()
+    if "RUN" not in lines:
+        raise ValueError(f"no RUN command in the draft: {text!r}")
+
+    build = _parse_command("build", lines.get("BUILD", ""))
+    run = _parse_command("run", lines["RUN"])
+
+    toolchain = lines.get("TOOLCHAIN", "").strip()
+    if not toolchain or len(toolchain.split()) != 1:
+        raise ValueError("the draft names no single toolchain binary, so the "
+                         "language could not be probed for on this machine")
+    if build and not any("{bin}" in a for a in build):
+        raise ValueError("the build command never writes to {bin}, so the run "
+                         "command would have no binary to execute")
+    if not any("{src}" in a or "{bin}" in a for a in run):
+        raise ValueError("the run command names neither {src} nor {bin}, so it "
+                         "would not run the candidate at all")
+    return build, run, toolchain
+
+
+def confirm_commands(build, run, ask=input) -> bool:
+    """Show the drafted commands and require an explicit yes.
+
+    This is the only place a local model's output becomes a process on the
+    user's machine. It is shown in full, and silence is a no.
+    """
+    print("\nThese commands were drafted from the documentation and will be "
+          "run on your machine:")
+    print(f"  build : {' '.join(build) if build else '(none)'}")
+    print(f"  run   : {' '.join(run)}")
+    return ask("Run these? [y/N] ").strip().lower() in ("y", "yes")
