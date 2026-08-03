@@ -131,6 +131,10 @@ class MissingRetrieval(ImportError):
     """sentence-transformers is not installed. It is not in the base install."""
 
 
+class StoreError(ValueError):
+    """The index on disk cannot be trusted -- absent, unreadable, or mismatched."""
+
+
 class Embedder:
     def __init__(self, model_name="BAAI/bge-small-en-v1.5", device="cuda",
                  query_prefix="Represent this sentence for searching "
@@ -147,6 +151,10 @@ class Embedder:
                 'does not include (it pulls in torch, ~2 GB).\n  pip install -e ".[rag]"'
             ) from e
         self.model = SentenceTransformer(model_name, device=device)
+        # Kept so an index can name the model that built it: vectors from two
+        # different models are not comparable, and at equal dimensions nothing
+        # about that mismatch is visible at query time.
+        self.model_name = model_name
         self.query_prefix = query_prefix
         self.doc_prefix = doc_prefix
 
@@ -192,21 +200,89 @@ class DocStore:
         if self.vectors is None or not self.chunks:
             return []
         qv = self.embedder.embed_query(query).astype("float32")
+        # Two models at the same dimension produce comparable-looking garbage;
+        # at different dimensions numpy raises about shapes and says nothing
+        # about why. Either way the index was built by something else.
+        if qv.shape[0] != self.vectors.shape[1]:
+            raise StoreError(
+                f"this index holds {self.vectors.shape[1]}-dimensional vectors "
+                f"and the embedder produces {qv.shape[0]} -- it was built by a "
+                f"different model. Re-run `ingest`."
+            )
         scores = self.vectors @ qv
         order = np.argsort(-scores)[:k]
         return [(self.chunks[i], self.sources[i], float(scores[i]))
                 for i in order if scores[i] >= min_score]
 
     def save(self):
-        np.save(self.path + ".npy", self.vectors)
-        with open(self.path + ".json", "w") as f:
-            json.dump({"chunks": self.chunks, "sources": self.sources}, f)
+        # Saving an un-ingested store writes `None` into the .npy as a pickled
+        # object, and np.load then refuses it with a message about pickles that
+        # names nothing real. Refuse here, where the cause is still visible.
+        if self.vectors is None:
+            raise StoreError("nothing to save -- ingest before saving")
 
-    def load(self):
-        self.vectors = np.load(self.path + ".npy")
-        with open(self.path + ".json") as f:
-            meta = json.load(f)
-        self.chunks, self.sources = meta["chunks"], meta["sources"]
+        meta = {"chunks": self.chunks, "sources": self.sources,
+                "embedder": getattr(self.embedder, "model_name", "")}
+
+        # Write beside the target and rename. Two renames are not atomic as a
+        # pair, so this shrinks the window rather than closing it -- what slips
+        # through is a vector/chunk count mismatch, which `load` refuses.
+        # The temp name ends in .npy on purpose: np.save appends the suffix to
+        # any name that lacks it, so `idx.npy.tmp` would land on disk as
+        # `idx.npy.tmp.npy` and the rename would find nothing.
+        npy_tmp, json_tmp = self.path + ".tmp.npy", self.path + ".json.tmp"
+        np.save(npy_tmp, self.vectors)
+        with open(json_tmp, "w") as f:
+            json.dump(meta, f)
+        os.replace(npy_tmp, self.path + ".npy")
+        os.replace(json_tmp, self.path + ".json")
+
+    def load(self, verbose=True):
+        npy, meta_path = self.path + ".npy", self.path + ".json"
+        for p in (npy, meta_path):
+            if not os.path.exists(p):
+                raise StoreError(f"no index at {p} -- run `ingest` first")
+
+        try:
+            # allow_pickle stays off (the numpy default): an index is plain
+            # floats, and a store file is exactly the kind of thing that should
+            # not be able to execute on load.
+            vectors = np.load(npy)
+            with open(meta_path) as f:
+                meta = json.load(f)
+            chunks, sources = meta["chunks"], meta["sources"]
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
+            raise StoreError(f"{self.path} is not a readable index: {e}") from e
+
+        # THE check. `search` looks chunks up by a vector's row index, so a
+        # count mismatch does not crash -- it pairs a chunk with someone else's
+        # source and someone else's score, and injects documentation under a
+        # filename it never came from. Silent, and wrong in the one direction
+        # retrieval must never be wrong in.
+        if vectors.ndim != 2 or len(chunks) != vectors.shape[0] \
+                or len(sources) != len(chunks):
+            raise StoreError(
+                f"{self.path} is inconsistent: {getattr(vectors, 'shape', '?')} "
+                f"vectors against {len(chunks)} chunks and {len(sources)} "
+                f"sources. Re-run `ingest`."
+            )
+
+        # An index built by another model scores nothing correctly. Compared
+        # only when both sides name themselves, so an injected fake embedder
+        # stays usable.
+        built_by, mine = meta.get("embedder", ""), getattr(self.embedder, "model_name", "")
+        if built_by and mine and built_by != mine:
+            raise StoreError(
+                f"{self.path} was built with {built_by}, this run embeds with "
+                f"{mine} -- the scores would be meaningless. Re-run `ingest`."
+            )
+        # Indexes written before the field existed are not corrupt, just
+        # unverifiable. Say so once rather than bricking them.
+        if "embedder" not in meta and verbose:
+            print(f"[rag] {self.path} predates model tracking -- "
+                  f"cannot confirm it was built with this embedder")
+
+        self.vectors, self.chunks, self.sources = vectors, chunks, sources
         return self
 
 

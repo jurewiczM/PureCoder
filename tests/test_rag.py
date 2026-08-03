@@ -4,11 +4,14 @@ The Embedder is injectable precisely so this runs without a GPU or a model
 download -- a deterministic fake stands in for sentence-transformers.
 """
 
+import json
+
 import numpy as np
 import pytest
 
 from purecoder.rag import (
     DocStore,
+    StoreError,
     chunk_file,
     chunk_markdown,
     chunk_python,
@@ -196,6 +199,101 @@ def test_save_and_load_round_trip(store):
     assert reloaded.chunks == store.chunks
     assert reloaded.sources == store.sources
     assert np.allclose(reloaded.vectors, store.vectors)
+
+
+def test_load_refuses_an_index_whose_counts_disagree(store):
+    """The one failure retrieval must never have: silent, and wrong.
+
+    `search` looks a chunk up by its vector's row index. Drop a chunk from the
+    metadata and nothing raises -- it pairs each chunk with the next one's
+    source and score, and injects documentation under a filename it never came
+    from.
+    """
+    store.save()
+    meta_path = store.path + ".json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta["chunks"] = meta["chunks"][:-1]
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    with pytest.raises(StoreError, match="inconsistent"):
+        DocStore(FakeEmbedder(), path=store.path).load()
+
+
+def test_load_refuses_an_index_built_by_another_model(store):
+    """Vectors from two models are not comparable, and at equal dimensions the
+    mismatch is invisible at query time -- the scores are simply noise."""
+    store.save()
+    meta_path = store.path + ".json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta["embedder"] = "BAAI/bge-large-en-v1.5"
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    named = FakeEmbedder()
+    named.model_name = "BAAI/bge-small-en-v1.5"
+    with pytest.raises(StoreError, match="built with"):
+        DocStore(named, path=store.path).load()
+
+
+def test_an_unnamed_embedder_can_still_read_the_index(store):
+    """The identity check compares only when both sides name themselves, so an
+    injectable fake -- the reason this whole file runs without a GPU -- stays
+    usable."""
+    store.save()
+    assert DocStore(FakeEmbedder(), path=store.path).load().chunks
+
+
+def test_an_index_predating_model_tracking_loads_with_a_note(store, capsys):
+    """Real indexes exist on disk from before the field. Unverifiable is not
+    the same as corrupt: say so once rather than bricking them."""
+    store.save()
+    meta_path = store.path + ".json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    del meta["embedder"]
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    assert DocStore(FakeEmbedder(), path=store.path).load().chunks
+    assert "predates model tracking" in capsys.readouterr().out
+
+
+def test_load_names_a_missing_index_instead_of_raising_oserror(tmp_path):
+    with pytest.raises(StoreError, match="no index at"):
+        DocStore(FakeEmbedder(), path=str(tmp_path / "absent")).load()
+
+
+def test_load_names_a_corrupt_index(store):
+    store.save()
+    with open(store.path + ".json", "w") as f:
+        f.write("{not json")
+    with pytest.raises(StoreError, match="not a readable index"):
+        DocStore(FakeEmbedder(), path=store.path).load()
+
+
+def test_saving_before_ingesting_is_refused(tmp_path):
+    """np.save writes None as a pickled object and np.load then refuses it with
+    a message about pickles that names nothing the user did."""
+    with pytest.raises(StoreError, match="ingest before saving"):
+        DocStore(FakeEmbedder(), path=str(tmp_path / "x")).save()
+
+
+def test_save_leaves_no_partial_files_behind(store, tmp_path):
+    store.save()
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_search_refuses_a_query_of_the_wrong_dimension(store):
+    class WiderEmbedder(FakeEmbedder):
+        def embed_query(self, text):
+            return np.zeros(768)
+
+    store.embedder = WiderEmbedder()
+    with pytest.raises(StoreError, match="different model"):
+        store.search("alpha")
 
 
 def test_search_on_empty_store_returns_nothing(tmp_path):
