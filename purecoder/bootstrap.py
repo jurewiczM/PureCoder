@@ -399,12 +399,41 @@ def confirm_commands(build, run, project=None, ask=input) -> bool:
 
 # ---- the project layout --------------------------------------------------
 
+# A make recipe IS a shell line -- `g++ ... && ./main` needs `&&`, so the argv
+# discipline `_parse_command` enforces cannot apply here. That makes this the
+# one place drafted output reaches a shell, so the shell's other powers are
+# denied by name. Calibrated against the five hand-written ProjectSpecs: `&&`
+# is the only metacharacter any of them uses, plus a `*` glob in one `clean`.
+_RECIPE_FORBIDDEN = frozenset("|;<>$`\n")
+
+
+def _check_recipe(label: str, recipe: str, entry: str = ""):
+    """A drafted make recipe, or a refusal naming what it did."""
+    found = sorted(set(recipe) & _RECIPE_FORBIDDEN)
+    if found:
+        raise ValueError(f"the {label} recipe uses shell features "
+                         f"({''.join(found)}) that a project of one file has no "
+                         f"reason to need: {recipe!r}")
+    # `&&` chains two commands and is unavoidable; a single `&` backgrounds one,
+    # which would make `make test` exit before the program had run.
+    if recipe.replace("&&", "").count("&"):
+        raise ValueError(f"the {label} recipe backgrounds a command, so its "
+                         f"result would not be waited for: {recipe!r}")
+    if entry and entry not in recipe:
+        raise ValueError(f"the {label} recipe never names {entry}, so it is not "
+                         f"building or running the project at all: {recipe!r}")
+    return recipe
+
+
 def draft_project(pc, name: str, extension: str, context: str):
     """How a one-file project of this language is laid out. -> ProjectSpec.
 
     Worked examples, like every other prompt here. Three of them, chosen to
     span the axis that matters: Python needs no build, C++ needs one and an
     entry point, JavaScript needs neither but has a real install step.
+
+    Every recipe is checked before it can reach a shell -- see `_check_recipe`,
+    and `probe_project` for why `install` is never run at all.
     """
     system = "You output exactly five lines and nothing else."
     user = (
@@ -454,11 +483,17 @@ def draft_project(pc, name: str, extension: str, context: str):
     if not entry.endswith(extension):
         raise ValueError(f"the entry file {entry!r} does not end in "
                          f"{extension}, so the toolchain would not read it")
+    # `run` and `test` additionally have to name the file: a recipe that never
+    # touches the entry cannot be building it, and `test` is the one thing here
+    # that purecoder itself executes.
     return ProjectSpec(
         entry=entry,
-        install=fields.get("INSTALL") or "@echo nothing to install",
-        run=fields["RUN"], test=fields["TEST"],
-        clean=fields.get("CLEAN") or "@echo nothing to clean",
+        install=_check_recipe("install",
+                              fields.get("INSTALL") or "@echo nothing to install"),
+        run=_check_recipe("run", fields["RUN"], entry),
+        test=_check_recipe("test", fields["TEST"], entry),
+        clean=_check_recipe("clean",
+                            fields.get("CLEAN") or "@echo nothing to clean"),
     )
 
 
@@ -644,6 +679,8 @@ QUERIES = {
               "macro or function taking a boolean",
     "entry": "program entry point, main function, top-level statements",
     "commands": "compile and run a single source file from the command line",
+    "layout": "project layout, build and run a program with a Makefile, "
+              "install dependencies, clean build output",
 }
 
 BUBBLE_SORT = ("a function that takes an array of integers and returns them "
@@ -704,7 +741,10 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
     # the first could not be drafted would throw away work the probes proved.
     project = None
     if want_project:
-        context = retrieve(QUERIES["commands"])
+        # Its own query. "compile one file" and "lay a project out" are
+        # different questions, and reusing the first context here would be
+        # convenience rather than design.
+        context = retrieve(QUERIES["layout"])
         try:
             project = draft_project(pc, name, extension, context)
             project = dataclasses.replace(

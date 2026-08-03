@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-392 tests, all green, none of them needing a GPU or a running server
+398 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -140,10 +140,15 @@ _Snapshot of what's built, tested, and what's next._
   A learned language still has no `writer_system`, so one whose harness needs a
   shape constraint (C#'s "no class wrapper, no Main" is the built-in example)
   has no way to express it.
-- **The drafted build/run commands are the one place model output becomes a
-  process.** They are argv rather than a shell string, shell syntax is refused,
-  and the user confirms before the first execution. That is a closed door, not
-  a sandbox — the executor's isolation is still a temp dir and a process group.
+- **Drafted commands reach the machine two ways, and they are not equally
+  narrow.** Build and run are argv, and shell syntax is refused outright. A
+  project recipe cannot be argv -- `g++ ... && ./main` needs `&&` -- so it is a
+  shell line with the shell's other powers denied by name (pipes, redirection,
+  `;`, command substitution, a backgrounding `&`), and `run`/`test` must name
+  the entry file. The denylist is calibrated against the five hand-written
+  layouts and a test keeps it there. The user confirms both before anything
+  runs, and `make install` is never run at all. That is a closed door, not a
+  sandbox — the executor's isolation is still a temp dir and a process group.
 - The doc chunker is Python-and-markdown only, so a language's own code samples
   are chunked as prose. tree-sitter chunking remains the real fix, and it
   matters more here than anywhere else in the pipeline.

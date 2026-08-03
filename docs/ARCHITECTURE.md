@@ -221,6 +221,17 @@ and a project of code that cannot parse must fail. The second is the one that
 matters — a `test` recipe that never touches the source passes the first and
 proves nothing.
 
+**A make recipe is a shell line, and that is a wider door than the build and
+run commands.** Those are argv, and `_parse_command` refuses shell syntax
+outright. A recipe cannot be: `g++ ... && ./main` needs `&&`. So this is the one
+place drafted output reaches a shell, and the shell's other powers are denied by
+name — pipes, redirection, `;`, command substitution, and a lone `&` that would
+let `make test` exit before the program ran. `run` and `test` must additionally
+name the entry file, since a recipe that never touches the project cannot be
+building it. The denylist is calibrated against the five hand-written
+`ProjectSpec`s, all of which pass it, and a test asserts they still do — a rule
+the built-in entries could not meet would be a rule about taste, not safety.
+
 `make install` is deliberately never run. It installs software, and a drafted
 command is not reason enough to do that on someone's machine, so it is shown at
 the confirmation and taken on trust. What the probe proves is narrower than it
