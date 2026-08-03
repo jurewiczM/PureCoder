@@ -127,12 +127,25 @@ def chunk_file(path, source, max_chars_code=1200, max_chars_docs=800):
 
 # ---- embedder (needs sentence-transformers + a model) -------------------
 
+class MissingRetrieval(ImportError):
+    """sentence-transformers is not installed. It is not in the base install."""
+
+
 class Embedder:
     def __init__(self, model_name="BAAI/bge-small-en-v1.5", device="cuda",
                  query_prefix="Represent this sentence for searching "
                               "relevant passages: ",
                  doc_prefix=""):
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            # The retrieval extra pulls in torch (~2 GB), so it is deliberately
+            # optional -- which makes this the first wall a new user hits. It
+            # deserves the install command, not an import traceback.
+            raise MissingRetrieval(
+                "retrieval needs sentence-transformers, which the base install "
+                'does not include (it pulls in torch, ~2 GB).\n  pip install -e ".[rag]"'
+            ) from e
         self.model = SentenceTransformer(model_name, device=device)
         self.query_prefix = query_prefix
         self.doc_prefix = doc_prefix

@@ -119,10 +119,17 @@ def cmd_project(pc, args):
 
 
 def cmd_ingest(pc, args):
-    from .rag import DocStore, Embedder
-    store = DocStore(Embedder(device=args.device), path=args.store)
-    n = store.ingest_dir(args.docs_dir)
-    store.save()
+    from .rag import DocStore, Embedder, MissingRetrieval
+    try:
+        store = DocStore(Embedder(device=args.device), path=args.store)
+        n = store.ingest_dir(args.docs_dir)
+        store.save()
+    except MissingRetrieval as e:
+        print(e)
+        return 1
+    except ValueError as e:      # StoreError included -- it is a ValueError
+        print(f"nothing indexed: {e}")
+        return 1
     print(f"indexed {n} chunks -> {args.store}.npy / .json")
 
 
@@ -134,9 +141,24 @@ def cmd_ask(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
-    from .rag import DocStore, Embedder, retrieve_context
-    store = DocStore(Embedder(device=args.device), path=args.store).load()
-    ctx = retrieve_context(store, args.spec)
+    from .rag import DocStore, Embedder, MissingRetrieval, retrieve_context
+    # Checked before the Embedder is built: forgetting to ingest is the common
+    # mistake, and it should not cost a multi-second model load to be told so.
+    missing = [p for p in (args.store + ".npy", args.store + ".json")
+               if not os.path.exists(p)]
+    if missing:
+        print(f"no index at {args.store} ({', '.join(missing)} missing).\n"
+              f"  purecoder ingest <docs_dir> --store {args.store}")
+        return 1
+    try:
+        store = DocStore(Embedder(device=args.device), path=args.store).load()
+        ctx = retrieve_context(store, args.spec)
+    except MissingRetrieval as e:
+        print(e)
+        return 1
+    except ValueError as e:      # StoreError: present, but not to be trusted
+        print(f"cannot use the index: {e}")
+        return 1
     if ctx:
         print(f"[rag] injected {len(ctx)} chars of context")
     else:
@@ -151,11 +173,15 @@ def cmd_ask(pc, args):
 
 def cmd_learn(pc, args):
     from .bootstrap import learn_language
-    from .rag import DocStore, Embedder, retrieve_context
+    from .rag import DocStore, Embedder, MissingRetrieval, retrieve_context
 
     # No path: this index is read once and thrown away, so naming a store file
     # would advertise a persistence that never happens.
-    store = DocStore(Embedder(device=args.device))
+    try:
+        store = DocStore(Embedder(device=args.device))
+    except MissingRetrieval as e:
+        print(e)
+        return 1
     try:
         store.ingest_dir(args.docs_dir)
     except ValueError as e:

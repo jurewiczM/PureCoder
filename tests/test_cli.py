@@ -110,6 +110,23 @@ def test_ask_refuses_a_language_it_cannot_validate(capsys):
     assert "Power BI" in capsys.readouterr().out
 
 
+def test_ask_without_an_index_names_the_missing_files(capsys, tmp_path):
+    """Forgetting to ingest is the common mistake, and it used to surface as a
+    FileNotFoundError traceback out of np.load -- after paying for a model
+    load first. Checking the files before building the Embedder is what lets
+    this test run at all: sentence-transformers is not in the base install."""
+    from purecoder.cli import cmd_ask
+
+    args = LangArgs("python", "anything")
+    args.store, args.device, args.retries, args.show_tests = \
+        str(tmp_path / "absent"), "cpu", 1, False
+
+    assert cmd_ask(None, args) == 1
+    out = capsys.readouterr().out
+    assert "no index at" in out
+    assert "purecoder ingest" in out
+
+
 def test_python_m_purecoder_propagates_the_exit_code():
     """The README calls `python -m purecoder` identical to the console script.
     setuptools wraps the latter in sys.exit(main()); without the same here a
