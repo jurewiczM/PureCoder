@@ -328,7 +328,8 @@ def cmd_learn(pc, args):
                          retrieve=lambda q: retrieve_context(store, q),
                          live_check=not args.no_live,
                          max_retries=args.draft_retries,
-                         docs_store=args.name)
+                         docs_store=args.name,
+                         want_project=not args.no_project)
     if not res["ok"]:
         print(f"\nnot registered: {res['error']}")
         # Naming the probe says WHICH check failed; its detail says why, and it
@@ -350,6 +351,13 @@ def cmd_learn(pc, args):
     print(f"\n{args.name} is registered. It is a drafted entry, proven by "
           f"probe rather than written by hand -- try it on something small "
           f"first:\n  purecoder --lang {args.name} code \"...\"")
+    # Two separate claims, so say which ones hold. A language with no layout is
+    # fully usable by `code`; only `project` is out of reach.
+    if languages.get(args.name).project is None:
+        print(f"  It has no project layout, so `project --lang {args.name}` "
+              f"will refuse. `code` and `ask` are unaffected.")
+    else:
+        print(f"  purecoder --lang {args.name} project demo \"...\"")
 
 
 def cmd_status(pc, args):
@@ -399,6 +407,8 @@ def main():
                     help="source file extension, e.g. .zig")
     sl.add_argument("--no-live", action="store_true",
                     help="skip the live generation round (probes only)")
+    sl.add_argument("--no-project", action="store_true",
+                    help="do not draft a project layout for this language")
     sl.add_argument("--draft-retries", type=int, default=2, metavar="N",
                     help="drafting attempts before giving up; each redraft "
                          "carries the failing probes' diagnostics (default: 2)")

@@ -178,6 +178,14 @@ stamp, not a language entry, and is refused with the compiler's own message.
 Plus one live round — a real generate-and-validate cycle — unless you pass
 `--no-live`.
 
+`learn` also drafts a **project layout** — entry filename, make targets, and an
+entry point for languages that need one to link — and probes that separately:
+a project of correct code must build and run, and one of code that cannot parse
+must fail. If it does not hold the language is still registered without a
+layout, so `project` refuses it and `code` is unaffected. `make install` is
+shown to you but never run: it installs software, and a drafted command is not
+reason enough. `--no-project` skips the whole thing.
+
 A learned language **keeps the index of its documentation**, so the second
 command above is doc-grounded automatically: no second `ingest`, no `--store` to
 remember, and once the toolchain rejects a name, the docs answer *did you mean*.
@@ -233,7 +241,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           381 tests (no GPU, no server; toolchain ones self-skip)
+tests/           392 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

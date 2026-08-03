@@ -212,6 +212,27 @@ whose whole purpose is the documentation, a missing index is still an error.
 `--no-docs` opts out; a hand-written language has no `docs_store` and is
 untouched.
 
+**A project layout, drafted and proven separately.** A language that runs is
+not a language whose projects are laid out — those are two claims, so they get
+two gates. `learn` also drafts a `ProjectSpec` (entry filename, the four make
+targets, and an entry stub for languages that need one to link) and probes it
+two-sided against a real `make`: a project of correct code must build and run,
+and a project of code that cannot parse must fail. The second is the one that
+matters — a `test` recipe that never touches the source passes the first and
+proves nothing.
+
+`make install` is deliberately never run. It installs software, and a drafted
+command is not reason enough to do that on someone's machine, so it is shown at
+the confirmation and taken on trust. What the probe proves is narrower than it
+looks and worth stating: for a one-file project `make test` *builds and runs*
+that file. It does not run a test suite — neither does the hand-written C++ or
+JavaScript entry.
+
+A failed layout costs only itself. The language is still registered without a
+`ProjectSpec`, so `project` refuses it and `code` and `ask` do not notice.
+Losing an entry the harness probes already earned, because a Makefile recipe
+did not work, would be the wrong trade.
+
 **Boundary.** The probes check that the harness works. They cannot check
 *idiom*: a spec can pass every probe and still produce code no practitioner of
 that language would write. And a language with no local runner, or one whose

@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-381 tests, all green, none of them needing a GPU or a running server
+392 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -26,6 +26,7 @@ _Snapshot of what's built, tested, and what's next._
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
 | 7 | `learn` drafting + CLI | ✅ tested | drafts scripted; probes run g++ end to end |
 | 8 | hybrid ranking + reviewed ingest | ✅ tested | exact-name signal decides where cosine is blind; nothing embedded before the user accepts |
+| 8 | drafted project layout + its probe | ✅ tested | two-sided against real make; a recipe that touches nothing is rejected |
 | 8 | a learned language keeps its docs | ✅ tested | `code --lang X` grounded with no second ingest; every failure path degrades instead of stopping |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
@@ -128,12 +129,17 @@ _Snapshot of what's built, tested, and what's next._
   shown, and the README is prose. Folding the context into the description
   instead of passing it separately sent it to the README prompt too -- caught
   by a test, not by review.
-- **A learned language can be generated and validated, but not scaffolded.**
-  It arrives with no `ProjectSpec` -- proving a language runs says nothing
-  about how a project of it is laid out -- so `project` refuses it and points
-  at `code`. It also has no `writer_system`, so a language whose harness needs
-  a shape constraint (C#'s "no class wrapper, no Main" is the built-in example)
-  has no way to express one.
+- **A learned language is now scaffoldable, when its layout can be proven.**
+  `learn` drafts a `ProjectSpec` and probes it two-sided against a real `make`:
+  correct code must build and run, code that cannot parse must fail. If it does
+  not hold, the language is still registered without one -- `project` refuses
+  it, `code` and `ask` do not notice. What the probe proves is narrower than it
+  sounds: for a one-file project `make test` builds and runs the file rather
+  than running a suite, exactly as the hand-written C++ and JavaScript entries
+  do. `make install` is never run, so it is trusted rather than proven.
+  A learned language still has no `writer_system`, so one whose harness needs a
+  shape constraint (C#'s "no class wrapper, no Main" is the built-in example)
+  has no way to express it.
 - **The drafted build/run commands are the one place model output becomes a
   process.** They are argv rather than a shell string, shell syntax is refused,
   and the user confirms before the first execution. That is a closed door, not
@@ -197,11 +203,11 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **A `ProjectSpec` for a learned language.** `project` now grounds itself
-   like `code` and `ask`, but a learned language still cannot be scaffolded at
-   all: it arrives with no entry filename and no make targets, so `project`
-   refuses it before retrieval matters. Drafting those is the same problem
-   `learn` already solves for the harness, and the same gate would apply.
+1. **`writer_system` for a learned language.** The last field `learn` cannot
+   produce. A language whose harness demands a shape -- C#'s "no class wrapper,
+   no Main" is the built-in example -- has no way to say so, and the failure is
+   silent: the writer emits something the harness cannot assemble, and the fix
+   loop sees only a compile error it cannot act on.
 2. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
    runner is free, but SQL has no `assert`, and the check idiom every other
    language gets from its harness needs real design rather than a `1/0` trick.
