@@ -501,6 +501,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     task = grounded
     code, error = "", ""
     regated = False          # the target-name check runs once, after code exists
+    redesigned = False       # the tests get one second chance, not a loop
     asked_stdlib = False     # the stdlib-only nudge is offered at most once
     last_error = None
     repeats = 0              # identical failures in a row -- the loop is stuck
@@ -530,6 +531,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             if targets:
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
                                                   spec=spec)
+                # Tests the caller supplied are theirs. Redesigning them here
+                # discarded the one thing they asked the code to be checked
+                # against, and then reported success against tests they never
+                # wrote -- a green result that is not evidence of the request.
+                if not gate_ok and tests is not None:
+                    if verbose:
+                        print(f"[tests] supplied tests fail the gate: {gate_reason}")
+                    return {"ok": False, "text": code, "tests": designed,
+                            "contract": contract, "attempts": attempt,
+                            "error": f"the tests you supplied fail the quality "
+                                     f"gate: {gate_reason}"}
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
@@ -607,6 +619,34 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         repeats = repeats + 1 if first == last_error else 0
         last_error = first
         if repeats >= NO_PROGRESS_LIMIT:
+            # The tests do not change between attempts. An identical failure
+            # across DIFFERENT generated code is therefore evidence that the
+            # tests are at fault, not the implementation -- and for a compiled
+            # language they share a build, so a tester that emits invalid
+            # source fails the writer's work. Observed live on OCaml: the
+            # tester wrote `bubble_sort([||]) = ||`, the compiler said "Syntax
+            # error", and that went to the writer three times.
+            #
+            # Blaming by line number would need a diagnostic format per
+            # language. This needs none: it is the same no-progress signal the
+            # loop already computes, read for what it actually implies.
+            if tests is None and not redesigned:
+                redesigned = True
+                repeats, last_error = 0, None
+                if verbose:
+                    print(f"[attempt {attempt}] the same failure on different "
+                          f"code -- suspecting the tests, redesigning them")
+                designed, redo_ok, redo_reason = design_tests(
+                    pc, grounded, targets=public_names(code),
+                    max_retries=max_retries, verbose=verbose, spec=spec)
+                if not redo_ok:
+                    return {"ok": False, "text": code, "tests": designed,
+                            "contract": contract, "attempts": attempt,
+                            "error": f"test design failed the quality gate: "
+                                     f"{redo_reason}"}
+                task = f"{grounded}{constraints}"
+                continue
+
             if verbose:
                 print(f"[attempt {attempt}] same failure {repeats + 1}x in a "
                       f"row -- the fix loop is not converging, stopping")

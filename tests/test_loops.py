@@ -382,3 +382,52 @@ def test_a_loop_that_makes_progress_is_not_cut_short():
                                     max_retries=5, verbose=False)
     assert res["ok"], res["error"]
     assert res["attempts"] == 3
+
+
+def test_a_failure_that_survives_new_code_is_blamed_on_the_tests():
+    """The tests do not change between attempts, so an identical failure across
+    DIFFERENT generated code is evidence the tests are at fault. Observed live
+    on OCaml: the tester emitted invalid source, the compiler said "Syntax
+    error", and that went to the writer three times while the writer's own
+    output was fine each time."""
+    broken_tests = "assert add(1, 2) == 3\nassert add(0 0) == 0\n"   # will not parse
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE, "def add(a, b):\n    return b + a\n"],
+        completions=[broken_tests, GOOD_TESTS],
+    )
+    res = generate_validated_python(pc, "add two numbers", verbose=False)
+    assert res["ok"], res["error"]
+    assert res["tests"] == GOOD_TESTS.strip(), "the tests were never redesigned"
+
+
+def test_the_tests_get_one_second_chance_not_a_loop():
+    """A redesign that does not help must not restart the cycle -- that would
+    turn a decided outcome into an unbounded spend."""
+    broken_tests = "assert add(1, 2 == 3\n"
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[broken_tests])
+    res = generate_validated_python(pc, "add two numbers", max_retries=6,
+                                    verbose=False)
+    assert not res["ok"]
+    # 6 attempts were allowed; the run stops well short of spending them.
+    assert res["attempts"] < 6
+
+
+def test_supplied_tests_that_fail_the_gate_are_reported_not_replaced():
+    """A caller who passed tests in owns them. The post-code gate used to
+    redesign them, discarding the one thing they asked the code to be checked
+    against and then reporting success against tests they never wrote."""
+    thin = "assert add(1, 2) == 3\n"          # one assertion; the floor is three
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=thin,
+                                    max_retries=4, verbose=False)
+    assert not res["ok"]
+    assert "tests you supplied" in res["error"]
+    assert res["tests"] == thin, "the caller's tests were swapped out"
+
+
+def test_supplied_tests_that_pass_the_gate_are_used_as_given():
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["tests"] == GOOD_TESTS
