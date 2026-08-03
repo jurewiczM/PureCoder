@@ -196,6 +196,20 @@ on GPU, brute-force cosine over a persisted index. A **retrieve-when-needed
 gate**: if nothing clears the similarity threshold, inject nothing — saving
 tokens and avoiding misleading context.
 
+**Two ranking signals, not one.** Cosine answers *is this about the same
+thing*; an IDF-weighted lexical score answers *does this contain the exact name
+you typed*. Embeddings are weakest on precisely the query this tool gets most —
+an API symbol, spelled exactly — so the second signal is not a refinement, it
+decides those cases. It is bounded in `[0,1]` absolutely, never normalised per
+query, which is what lets it share the gate's threshold: a chunk containing
+every rare token of the query clears the gate on the lexical signal alone. A
+token appearing in *every* chunk weighs zero, so a query of stopwords matches
+nothing. `DocStore.explain(query)` shows the two separately.
+
+The lexical index is rebuilt from the chunks on load rather than persisted — a
+third file on disk is a third thing that can drift out of step, and drift is
+what `load` exists to refuse.
+
 **Indexing is reviewed before it is paid for.** `plan_ingest` walks and chunks;
 `ingest_plan` embeds. Only the second costs anything, so `purecoder ingest`
 shows the plan — every file, its chunk count, what was pruned, excluded,

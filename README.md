@@ -144,6 +144,11 @@ skips the review, as does a non-interactive stdin.
 Embedding is the slow part, so the index persists to `<store>.npy` / `.json` —
 ingest once, reuse across runs.
 
+Ranking uses two signals: embedding similarity for *what this is about*, and an
+exact-name score for *what you literally typed*. Embeddings are worst at API
+symbols, which is most of what gets asked here — `Printf.eprintf` retrieves the
+page defining it even when a page merely about output formatting embeds closer.
+
 ## Commands
 
 | command | what it does |

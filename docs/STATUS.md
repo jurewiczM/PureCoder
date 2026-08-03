@@ -132,6 +132,13 @@ _Snapshot of what's built, tested, and what's next._
   are chunked as prose. tree-sitter chunking remains the real fix, and it
   matters more here than anywhere else in the pipeline.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
+- **Ranking is two signals, and the gate is shared.** Cosine plus an
+  IDF-weighted exact-name score, the latter bounded in `[0,1]` absolutely so it
+  can share `min_score`. The consequence is deliberate: a chunk containing
+  every rare token of the query clears the gate on the lexical signal alone,
+  with a cosine of zero. A token in every chunk weighs nothing, so stopwords
+  cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
+  that decide this, and neither is tuned against a benchmark — there isn't one.
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
 - **An index is refused rather than half-trusted.** The vectors and the chunk
   metadata are two files, and `search` pairs them by row index, so a count

@@ -8,12 +8,19 @@ with a small model -> store vectors on disk -> at generation time retrieve the
 top-k relevant chunks ONLY IF they clear a similarity threshold (the "retrieve
 when needed" gate), injecting just that slice to stay inside context.
 
+Ranking uses two signals. Cosine similarity answers "is this about the same
+thing"; an IDF-weighted lexical score answers "does this contain the exact name
+you asked for". Embeddings are worst at precisely the queries this tool gets
+most -- an API symbol, spelled exactly -- so the second signal is not a
+refinement, it is the one that decides those.
+
 The Embedder is injectable so store/chunk logic is testable without a GPU.
 """
 
 import ast
 import fnmatch
 import json
+import math
 import os
 import re
 from collections import Counter
@@ -184,6 +191,37 @@ SKIP_DIRS = frozenset({
 })
 
 
+# ---- the lexical signal -------------------------------------------------
+
+# How much an exact-name match is worth next to cosine similarity. At 0.5,
+# against the default min_score of 0.3, a chunk containing every rare token of
+# the query clears the gate on the lexical signal alone. That is the point:
+# `Printf.eprintf` should retrieve the page defining it even when a page merely
+# *about* output formatting embeds closer.
+LEXICAL_WEIGHT = 0.5
+
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+
+
+def tokenize(text):
+    """Lowercased tokens; a dotted name is kept whole AND split.
+
+    `Printf.eprintf` yields {printf.eprintf, printf, eprintf}, so a query hits
+    whether it spells the name qualified or bare. snake_case and camelCase are
+    deliberately not split: `pc_check` -> `pc` + `check` makes `check` worthless
+    as a signal and buys nothing the dotted split does not already give.
+    """
+    out = set()
+    for match in _TOKEN.findall(text.lower()):
+        token = match.strip(".")
+        if not token:
+            continue
+        out.add(token)
+        if "." in token:
+            out.update(part for part in token.split(".") if part)
+    return out
+
+
 def _is_binary(path, sniff=8192):
     """A NUL byte in the first block. The same test `file` and grep use."""
     try:
@@ -317,11 +355,14 @@ class DocStore:
         self.vectors = None
         self.chunks = []
         self.sources = []
+        self._tokens = []
+        self._idf = {}
 
     def ingest_plan(self, plan, verbose=True):
         """Embed a reviewed plan. The expensive half of ingesting."""
         self.chunks, self.sources = list(plan.chunks), list(plan.sources)
         self.vectors = self.embedder.embed_docs(self.chunks).astype("float32")
+        self._build_lexical()
         if verbose:
             print(f"[rag] ingested {len(self.chunks)} chunks from {plan.root}")
         return len(self.chunks)
@@ -336,11 +377,44 @@ class DocStore:
                 print(notice)
         return self.ingest_plan(plan, verbose=verbose)
 
-    def search(self, query, k=3, min_score=0.3):
-        # An empty query embeds to something, and that something scores against
-        # every chunk. Whatever comes back is not a match for anything.
-        if self.vectors is None or not self.chunks or not query.strip():
-            return []
+    # ---- lexical index ---------------------------------------------------
+
+    def _build_lexical(self):
+        """Rebuilt from the chunks rather than stored.
+
+        Persisting it would add a third file to keep in step with the other
+        two, and a file that can drift is the thing `load` exists to refuse.
+        Recomputing costs a pass over text already in memory.
+        """
+        self._tokens = [tokenize(c) for c in self.chunks]
+        df = Counter()
+        for tokens in self._tokens:
+            df.update(tokens)
+        n = len(self._tokens)
+        # log((n+1)/(df+1)) rather than log(1 + n/df): a token in EVERY chunk
+        # weighs exactly zero. Without that, a query of nothing but stopwords
+        # scores near 1 against any chunk containing them, and clears the gate
+        # on words that distinguish nothing.
+        self._idf = {t: math.log((n + 1) / (d + 1)) for t, d in df.items()}
+
+    def _lexical(self, query):
+        """Share of the query's rare tokens each chunk contains, in [0, 1].
+
+        Absolute, not normalised per query -- which is what lets it share a
+        threshold with cosine. A token the corpus has never seen weighs
+        nothing, so a query of only unknown tokens scores 0 rather than
+        dividing by zero or trivially scoring 1.
+        """
+        weights = {t: self._idf.get(t, 0.0) for t in tokenize(query)}
+        total = sum(weights.values())
+        if not total:
+            return np.zeros(len(self.chunks), dtype="float32")
+        return np.array(
+            [sum(w for t, w in weights.items() if t in tokens) / total
+             for tokens in self._tokens], dtype="float32")
+
+    def _scores(self, query):
+        """(combined, cosine, lexical) for every chunk."""
         qv = self.embedder.embed_query(query).astype("float32")
         # Two models at the same dimension produce comparable-looking garbage;
         # at different dimensions numpy raises about shapes and says nothing
@@ -351,10 +425,32 @@ class DocStore:
                 f"and the embedder produces {qv.shape[0]} -- it was built by a "
                 f"different model. Re-run `ingest`."
             )
-        scores = self.vectors @ qv
+        cosine = self.vectors @ qv
+        lexical = self._lexical(query)
+        return cosine + LEXICAL_WEIGHT * lexical, cosine, lexical
+
+    def search(self, query, k=3, min_score=0.3):
+        # An empty query embeds to something, and that something scores against
+        # every chunk. Whatever comes back is not a match for anything.
+        if self.vectors is None or not self.chunks or not query.strip():
+            return []
+        scores, _, _ = self._scores(query)
         order = np.argsort(-scores)[:k]
         return [(self.chunks[i], self.sources[i], float(scores[i]))
                 for i in order if scores[i] >= min_score]
+
+    def explain(self, query, k=5):
+        """Top k with both signals separated -- why a hit ranked where it did.
+
+        The two answer different questions, and which one carried a hit is the
+        thing worth seeing: cosine says "about the same subject", lexical says
+        "contains the name you typed".
+        """
+        if self.vectors is None or not self.chunks or not query.strip():
+            return []
+        scores, cosine, lexical = self._scores(query)
+        return [(self.sources[i], float(scores[i]), float(cosine[i]),
+                 float(lexical[i])) for i in np.argsort(-scores)[:k]]
 
     def save(self):
         # Saving an un-ingested store writes `None` into the .npy as a pickled
@@ -425,6 +521,7 @@ class DocStore:
                   f"cannot confirm it was built with this embedder")
 
         self.vectors, self.chunks, self.sources = vectors, chunks, sources
+        self._build_lexical()
         return self
 
 

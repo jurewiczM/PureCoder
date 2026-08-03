@@ -18,6 +18,7 @@ from purecoder.rag import (
     plan_ingest,
     render_plan,
     retrieve_context,
+    tokenize,
 )
 
 # ---- markdown chunking ---------------------------------------------------
@@ -108,6 +109,81 @@ def test_python_falls_back_to_markdown_on_syntax_error():
 def test_chunk_file_routes_by_extension():
     assert any("function alpha" in c for c, _ in chunk_file("mod.py", SOURCE))
     assert not any("function" in c for c, _ in chunk_file("doc.md", "# H\ntext\n"))
+
+
+# ---- the lexical signal --------------------------------------------------
+
+def test_a_dotted_name_is_tokenised_whole_and_in_parts():
+    assert tokenize("Printf.eprintf fmt") == {"printf.eprintf", "printf",
+                                              "eprintf", "fmt"}
+
+
+def test_snake_case_is_left_alone():
+    """Splitting it would make `check` a token in every harness chunk, which
+    is worth nothing, and the dotted split already covers qualified names."""
+    assert tokenize("pc_check(x)") == {"pc_check", "x"}
+
+
+@pytest.fixture
+def api_store(tmp_path):
+    """Docs where the embedder is blind: the fake scores only alpha/beta/gamma,
+    so an API-symbol query has cosine 0 everywhere and the lexical signal is
+    the only thing that can find anything. That is the real case in
+    miniature -- embeddings are worst at exactly the queries this tool gets
+    most."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    # "the" appears in both on purpose: it is the ubiquitous-token case.
+    (d / "printf.md").write_text(
+        "# Output\nPrintf.eprintf writes the formatted string to stderr.\n")
+    (d / "stdlib.md").write_text(
+        "# Stdlib\nThe exit function ends the program with a status code.\n")
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d), verbose=False)
+    return s
+
+
+def test_an_exact_symbol_retrieves_its_page_when_cosine_is_blind(api_store):
+    assert [src for _, src, _ in api_store.search("Printf.eprintf")] == ["printf.md"]
+    # Nothing was found by similarity: every cosine is 0, so the hit is the
+    # lexical signal's alone.
+    assert all(cosine == 0.0
+               for _, _, cosine, _ in api_store.explain("Printf.eprintf"))
+
+
+def test_the_bare_name_finds_the_qualified_one(api_store):
+    assert [src for _, src, _ in api_store.search("eprintf")] == ["printf.md"]
+
+
+def test_a_word_the_corpus_never_saw_matches_nothing(api_store):
+    """No division by zero, and no trivial 1.0 either: a query made only of
+    unknown tokens is not a match for everything."""
+    assert api_store.search("mutex") == []
+
+
+def test_a_query_of_only_ubiquitous_words_clears_nothing(api_store):
+    """`the` is in every chunk, so it distinguishes nothing and must weigh
+    nothing. Weighted the other way, a stopword query scores near 1 against
+    any chunk containing it and walks straight through the gate."""
+    assert api_store.search("the") == []
+
+
+def test_explain_separates_the_two_signals(api_store):
+    source, combined, cosine, lexical = api_store.explain("Printf.eprintf")[0]
+    assert source == "printf.md"
+    assert cosine == 0.0 and lexical == 1.0
+    assert combined == pytest.approx(0.5)
+
+
+def test_the_lexical_index_survives_a_round_trip(api_store):
+    """It is rebuilt from the chunks rather than stored, so the scores after a
+    load must equal the scores before a save -- otherwise `ask` ranks
+    differently from `ingest` and nothing says so."""
+    before = api_store.search("Printf.eprintf")
+    api_store.save()
+    after = DocStore(FakeEmbedder(), path=api_store.path).load().search(
+        "Printf.eprintf")
+    assert before == after
 
 
 # ---- store + gate, with a fake embedder ---------------------------------
