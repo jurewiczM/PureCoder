@@ -365,19 +365,20 @@ class DocStore:
         self.vectors = None
         self.chunks = []
         self.sources = []
-        self._tokens = []
+        self._postings = {}
         self._idf = {}
-        # Every qualified name the docs mention. Derived from the chunks like
-        # the lexical index, and for the same reason: another file on disk is
-        # another thing that can drift out of step with the vectors.
-        self.symbols = frozenset()
+        # Every qualified name the docs mention, derived on demand. Like the
+        # lexical index it is rebuilt from the chunks rather than stored --
+        # another file on disk is another thing that can drift out of step with
+        # the vectors -- but unlike it, nothing needs it until something fails.
+        self._symbols = None
 
     def ingest_plan(self, plan, verbose=True):
         """Embed a reviewed plan. The expensive half of ingesting."""
         self.chunks, self.sources = list(plan.chunks), list(plan.sources)
         self.vectors = self.embedder.embed_docs(self.chunks).astype("float32")
         self._build_lexical()
-        self.symbols = extract_symbols(self.chunks)
+        self._symbols = None
         if verbose:
             print(f"[rag] ingested {len(self.chunks)} chunks from {plan.root}")
         return len(self.chunks)
@@ -394,23 +395,43 @@ class DocStore:
 
     # ---- lexical index ---------------------------------------------------
 
+    @property
+    def symbols(self):
+        """Every qualified name the docs mention.
+
+        Computed on first use, not at load: it costs a full pass over the
+        chunks, and its only consumer is the did-you-mean hint, which is
+        reached solely from a failed run. A generation that works first time
+        should not pay for it.
+        """
+        if self._symbols is None:
+            self._symbols = extract_symbols(self.chunks)
+        return self._symbols
+
     def _build_lexical(self):
         """Rebuilt from the chunks rather than stored.
 
         Persisting it would add a third file to keep in step with the other
         two, and a file that can drift is the thing `load` exists to refuse.
         Recomputing costs a pass over text already in memory.
+
+        The result is an INVERTED index -- token -> the chunks holding it --
+        not a token set per chunk. Both answer the same question; only one
+        answers it without visiting every chunk.
         """
-        self._tokens = [tokenize(c) for c in self.chunks]
-        df = Counter()
-        for tokens in self._tokens:
-            df.update(tokens)
-        n = len(self._tokens)
+        postings = {}
+        for i, chunk in enumerate(self.chunks):
+            for token in tokenize(chunk):
+                postings.setdefault(token, []).append(i)
+        n = len(self.chunks)
         # log((n+1)/(df+1)) rather than log(1 + n/df): a token in EVERY chunk
         # weighs exactly zero. Without that, a query of nothing but stopwords
         # scores near 1 against any chunk containing them, and clears the gate
         # on words that distinguish nothing.
-        self._idf = {t: math.log((n + 1) / (d + 1)) for t, d in df.items()}
+        self._idf = {t: math.log((n + 1) / (len(rows) + 1))
+                     for t, rows in postings.items()}
+        self._postings = {t: np.asarray(rows, dtype=np.intp)
+                          for t, rows in postings.items()}
 
     def _lexical(self, query):
         """Share of the query's rare tokens each chunk contains, in [0, 1].
@@ -419,14 +440,29 @@ class DocStore:
         threshold with cosine. A token the corpus has never seen weighs
         nothing, so a query of only unknown tokens scores 0 rather than
         dividing by zero or trivially scoring 1.
+
+        Only chunks that actually contain a query token are touched. Every
+        other chunk scores zero by construction, and the old version proved
+        that by visiting all of them: a rare symbol reached three chunks out of
+        seven thousand and paid for the other 7487.
         """
-        weights = {t: self._idf.get(t, 0.0) for t in tokenize(query)}
-        total = sum(weights.values())
+        # Accumulated at float64 and cast once at the end. Summing weights
+        # into a float32 array instead put a full match at 0.99999988, which
+        # is harmless against a threshold and needlessly untidy in `explain`.
+        scores = np.zeros(len(self.chunks), dtype="float64")
+        total = 0.0
+        for token in tokenize(query):
+            weight = self._idf.get(token, 0.0)
+            if not weight:
+                continue
+            total += weight
+            # Safe as a plain scatter because a chunk contributes each token
+            # once: postings are built from a per-chunk token SET, so no index
+            # repeats and none of numpy's buffered-duplicate trap applies.
+            scores[self._postings[token]] += weight
         if not total:
             return np.zeros(len(self.chunks), dtype="float32")
-        return np.array(
-            [sum(w for t, w in weights.items() if t in tokens) / total
-             for tokens in self._tokens], dtype="float32")
+        return (scores / total).astype("float32")
 
     def _scores(self, query):
         """(combined, cosine, lexical) for every chunk."""
@@ -537,7 +573,7 @@ class DocStore:
 
         self.vectors, self.chunks, self.sources = vectors, chunks, sources
         self._build_lexical()
-        self.symbols = extract_symbols(self.chunks)
+        self._symbols = None
         return self
 
 

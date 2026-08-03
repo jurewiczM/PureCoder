@@ -175,8 +175,32 @@ def test_explain_separates_the_two_signals(api_store):
     assert combined == pytest.approx(0.5)
 
 
+def test_only_chunks_holding_a_query_token_are_scored(api_store):
+    """The lexical index is inverted -- token -> the chunks holding it -- so a
+    rare symbol touches the chunks that contain it and nothing else. Walking
+    every chunk gave identical answers and cost 400x more at 7500 chunks.
+    """
+    scores = api_store._lexical("Printf.eprintf")
+    assert list(scores).count(0.0) == len(api_store.chunks) - 1
+    assert scores.max() == 1.0
+
+
+def test_a_token_the_corpus_lacks_reaches_no_postings(api_store):
+    """The lookup must miss cleanly rather than raise on an absent key."""
+    assert not api_store._lexical("mutex").any()
+
+
 def test_the_store_carries_the_names_the_docs_use(api_store):
     assert "Printf.eprintf" in api_store.symbols
+
+
+def test_the_symbol_library_is_not_built_until_something_needs_it(api_store):
+    """Its only consumer is the did-you-mean hint, reached solely from a failed
+    run. A generation that works first time should not pay a full pass over
+    the chunks for it."""
+    assert api_store._symbols is None
+    assert api_store.symbols                 # first use builds it
+    assert api_store._symbols is not None
 
 
 def test_the_symbol_library_survives_a_round_trip(api_store):

@@ -206,9 +206,13 @@ every rare token of the query clears the gate on the lexical signal alone. A
 token appearing in *every* chunk weighs zero, so a query of stopwords matches
 nothing. `DocStore.explain(query)` shows the two separately.
 
-The lexical index is rebuilt from the chunks on load rather than persisted — a
-third file on disk is a third thing that can drift out of step, and drift is
-what `load` exists to refuse.
+The lexical index is *inverted* — token → the chunks holding it — so a query
+touches only chunks that contain one of its tokens. A per-chunk token set gives
+identical scores and visits everything: measured over 7500 chunks, a rare
+symbol reached three of them and paid for the other 7497, at **400–500× the
+cost**. It is rebuilt from the chunks on load rather than persisted — a third
+file on disk is a third thing that can drift out of step, and drift is what
+`load` exists to refuse.
 
 **A symbol library, and the check it cannot support** (`purecoder/symbols.py`).
 Every qualified name the docs mention — `Printf.eprintf`, `os.path.join` — is

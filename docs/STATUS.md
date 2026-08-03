@@ -139,6 +139,11 @@ _Snapshot of what's built, tested, and what's next._
   with a cosine of zero. A token in every chunk weighs nothing, so stopwords
   cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
   that decide this, and neither is tuned against a benchmark — there isn't one.
+- **Retrieval cost is the model call, not the search.** Over 7500 chunks the
+  lexical signal is ~0.005 ms (inverted index), cosine ~3 ms (brute-force
+  matmul), and loading an index ~220 ms. The embedding of the query itself
+  dominates all of it. Brute-force cosine stays: an ANN index would trade
+  exactness and a dependency for a few milliseconds nothing is waiting on.
 - **Documentation names an API; it does not enumerate one.** The symbol library
   extracted from the docs cannot decide that a name is wrong — judging code
   against it produced 45 findings on this project's own source, all of them
