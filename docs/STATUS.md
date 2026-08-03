@@ -106,6 +106,9 @@ _Snapshot of what's built, tested, and what's next._
   live round decide it, and a harness that cannot fail wrong code is refused.
   What the probes cannot see is *idiom*: a spec can pass every one and still
   produce code no practitioner of that language would write.
+- The first live run of the bootstrap layer, its five defects and the two
+  gaps still open, are written up in
+  [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
 - **Bootstrap drafts once and never retries.** Every other layer in the
   pipeline feeds its error back and tries again; this one refuses on the first
   bad draft. A live OCaml run reached 4 of 5 probes with one malformed fixture
@@ -130,6 +133,12 @@ _Snapshot of what's built, tested, and what's next._
 - The doc chunker is Python-and-markdown only, so a language's own code samples
   are chunked as prose. tree-sitter chunking remains the real fix, and it
   matters more here than anywhere else in the pipeline.
+- **A compile error from the TEST section is fed back to the writer.** For
+  any compiled language the fix loop treats a build failure as the
+  implementation's fault, so a tester that emits invalid C++/Rust/C#/OCaml
+  sends the writer round the loop until NO_PROGRESS_LIMIT stops it. The
+  textual gate cannot catch it: it counts check calls and has no parser.
+  Observed live on OCaml.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
 - Two seams are outside the automated suite: the live `/completion` call and
