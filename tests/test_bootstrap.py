@@ -71,3 +71,87 @@ def test_a_broken_implementation_must_produce_an_error_message():
 def test_every_probe_carries_a_human_readable_name():
     _, results = bootstrap.probe_language(_cpp(), CPP_FIXTURE)
     assert all(r.name and " " in r.name for r in results)
+
+
+# ---- drafting ------------------------------------------------------------
+
+class Scripted:
+    """Returns queued completions in order and records the prompts it saw."""
+
+    def __init__(self, *completions):
+        self.queue = list(completions)
+        self.prompts = []
+
+    def complete(self, system, user, grammar=None, **kw):
+        self.prompts.append((system, user))
+        text = self.queue.pop(0) if len(self.queue) > 1 else self.queue[0]
+        return {"text": text, "truncated": False, "tokens": 1, "raw": {}}
+
+
+def test_worked_examples_carry_real_entries_not_descriptions():
+    """Measured result: prose translation rules score BELOW baseline on some
+    models, while translation examples never hurt. The prompt must show the C++
+    and JavaScript harnesses, not describe them."""
+    text = bootstrap.worked_examples("preamble")
+    assert "PC_CHECK" in text
+    assert "#include <cstdio>" in text          # the real C++ entry
+    assert "process.exit(1)" in text            # the real JavaScript entry
+
+
+def test_the_preamble_prompt_shows_examples_and_the_retrieved_docs():
+    pc = Scripted("HELPER CODE")
+    out = bootstrap.draft_preamble(pc, "zig", "DOCS ABOUT ZIG")
+    assert out == "HELPER CODE"
+    _system, user = pc.prompts[0]
+    assert "DOCS ABOUT ZIG" in user
+    assert "#include <cstdio>" in user, "no worked example in the prompt"
+
+
+def test_the_check_call_is_extracted_from_a_single_line_answer():
+    """Rust's invocation is `pc_check!` while its definition reads
+    `macro_rules! pc_check {`, so the form has to be observed, not assumed."""
+    assert bootstrap.draft_check_call(Scripted("PC_CHECK(1 == 1);"),
+                                      "zig", "PRE PC_CHECK") == "PC_CHECK"
+    assert bootstrap.draft_check_call(Scripted("pc_check!(1 == 1);"),
+                                      "rs", "PRE pc_check") == "pc_check!"
+
+
+def test_a_check_call_the_preamble_never_defines_is_refused():
+    """The gate counts this token textually. If the preamble does not define
+    it, every suite scores zero checks and the language silently fails."""
+    with pytest.raises(ValueError, match="never defines"):
+        bootstrap.draft_check_call(Scripted("VERIFY(1 == 1);"), "zig", "PRE")
+
+
+def test_the_fixture_comes_back_as_five_labelled_snippets():
+    pc = Scripted("CORRECT\n@@WRONG@@\nWRONG\n@@TESTS@@\nTESTS\n"
+                  "@@EMPTY@@\nEMPTY\n@@ALWAYS_FAILS@@\nFAILS")
+    fx = bootstrap.draft_fixture(pc, "zig", "PRE", "PC_CHECK")
+    assert fx.correct == "CORRECT"
+    assert fx.wrong == "WRONG"
+    assert fx.tests == "TESTS"
+    assert fx.empty == "EMPTY"
+    assert fx.always_fails == "FAILS"
+
+
+def test_a_fixture_missing_a_section_is_refused():
+    """The refusal names the FIRST missing section, so a draft that stops early
+    reports where it stopped rather than where it was going."""
+    with pytest.raises(ValueError, match="ALWAYS_FAILS"):
+        bootstrap.draft_fixture(
+            Scripted("C\n@@WRONG@@\nW\n@@TESTS@@\nT\n@@EMPTY@@\nE"),
+            "zig", "PRE", "PC_CHECK")
+
+    with pytest.raises(ValueError, match="TESTS"):
+        bootstrap.draft_fixture(Scripted("C\n@@WRONG@@\nW"), "zig",
+                                "PRE", "PC_CHECK")
+
+
+def test_the_tester_prompt_is_templated_not_drafted():
+    """Prose rules the model writes for itself measured below baseline. The
+    tester prompt is the project's discipline, so it is filled in, not asked
+    for -- and no model call is made to produce it."""
+    text = bootstrap.test_system_for("zig", "PC_CHECK")
+    assert "zig" in text
+    assert "PC_CHECK(expr)" in text
+    assert "no prose, no fences" in text.lower()
