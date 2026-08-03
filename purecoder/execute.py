@@ -281,6 +281,65 @@ def lint_implementation(code: str):
     return True, ""
 
 
+# An identifier applied to arguments and followed by a block: `int main() {`,
+# `void pc_tests() {`, `fn main() {`. A call is not followed by one, which is
+# the same distinction `bootstrap.dangling_calls` draws from the other side.
+_DEFINITION = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*\{")
+
+# Words that look like a definition under that regex and are not one.
+_NOT_A_NAME = frozenset((
+    "if", "else", "for", "while", "do", "switch", "catch", "using", "lock",
+    "foreach", "return", "match", "when", "unsafe", "try", "with",
+))
+
+
+def _block_definitions(text: str) -> set:
+    return {name for name in _DEFINITION.findall(text)
+            if name not in _NOT_A_NAME}
+
+
+def harness_collision(spec, code: str, tests: str = "") -> str:
+    """What the implementation defines that the assembled file already has.
+
+    The writer's demand (`bootstrap.writer_system_for`) tries to prevent this;
+    this is what to say once it has happened anyway. The failure is reported at
+    the wrong address by every toolchain involved: the harness's tail defines
+    `main`, the writer defines one too, and the linker says "multiple definition
+    of `main'" about a file the writer has never seen. Feeding that back
+    unexplained sends the model to rewrite its own correct logic.
+
+    Textual on purpose -- it runs for languages this project does not parse, and
+    it only ever adds a sentence to a retry prompt that a failure already
+    triggered. A miss costs nothing; a false positive costs one line of context,
+    which is why keywords are excluded and Python (no harness at all) is exempt
+    rather than approximated.
+    """
+    if not spec.preamble and not spec.epilogue:
+        return ""
+
+    # The tests count as part of the file, and they are where the likeliest
+    # collision lives: a C++ tail calls `pc_tests()` without defining it, so a
+    # writer reading the shape defines one, and the redefinition is against the
+    # test snippet rather than against the harness. A forward declaration
+    # (`int add(int,int);`) has no block and so cannot collide with the
+    # implementation it declares.
+    already = spec.preamble + "\n" + spec.epilogue + "\n" + tests
+    clashes = sorted(_block_definitions(code) & _block_definitions(already))
+    # The helper belongs to the harness and to the tests. An implementation
+    # naming it at all is either asserting or redefining, and the writer prompt
+    # already forbids the first.
+    if spec.check_call and spec.check_call in code:
+        clashes.append(spec.check_call)
+    if not clashes:
+        return ""
+
+    names = ", ".join(repr(n) for n in clashes)
+    return (f"\n\nNote: your implementation defines or uses {names}, which the "
+            f"file it is pasted into already provides -- the harness supplies "
+            f"the check helper and the entry point. Remove it and output only "
+            f"the implementation.")
+
+
 # ---- test-quality gate: "who tests the tester" --------------------------
 
 def public_names(code: str):
@@ -671,6 +730,9 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         hint = error_hint(error) if error_hint else ""
         if hint and verbose:
             print(f"[docs] {hint.splitlines()[0]}")
+        # Added to the same slot and for the same reason: a hint offered only
+        # after the toolchain has already refused, never a gate of its own.
+        hint += harness_collision(spec, code, full)
         # The tests are shown so the model knows what it must satisfy, but
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run

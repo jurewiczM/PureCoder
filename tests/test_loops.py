@@ -394,6 +394,33 @@ def test_the_stdlib_constraint_survives_a_later_unrelated_failure():
         "the constraint was dropped by a later rebuild"
 
 
+def test_a_duplicate_entry_point_is_explained_not_just_reported():
+    """The other half of the writer demand. A linker saying "multiple
+    definition of `main'" is about the assembled file, and the writer only ever
+    sees its own output -- so the retry prompt names what the harness already
+    provides rather than leaving the model to infer it."""
+    import pytest
+
+    from purecoder.languages import get
+
+    spec = get("c++")
+    ok, why = spec.available()
+    if not ok:
+        pytest.skip(why)
+
+    tests = ("int add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); }")
+    with_main = ("int add(int a,int b){return a+b;}\n"
+                 "int main() { return 0; }\n")
+    clean = "int add(int a,int b){return a+b;}\n"
+    pc = FakeModel(code_outputs=[with_main, clean], completions=[tests])
+    res = generate_validated_python(pc, "add two numbers", spec=spec,
+                                    tests=tests, max_retries=3, verbose=False,
+                                    timeout=60)
+    assert res["ok"], res["error"]
+    assert "main" in pc.prompts[-1]
+    assert "already provides" in pc.prompts[-1]
+
+
 def test_the_loop_stops_when_the_same_failure_repeats():
     """Observed live: 5x "API endpoint is unreachable", 4x an identical
     AttributeError, 3x an identical KeyError -- twelve model calls spent after
