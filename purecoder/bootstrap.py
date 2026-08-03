@@ -24,6 +24,25 @@ from .languages import BUILTIN_NAMES, LanguageSpec, get, register
 # probe asks whether an error reaches the fix loop at all.
 SYNTAX_GARBAGE = "\n@@@ purecoder syntax probe @@@\n"
 
+# A fence marker with its optional language tag, wherever it appears.
+_FENCE = re.compile(r"```[A-Za-z0-9_+-]*")
+
+
+def unfence(text: str) -> str:
+    """Remove every fence marker, not only a well-formed surrounding pair.
+
+    `strip_fences` handles the normal case: a fence alone on the first and last
+    lines. Drafting hits three shapes it cannot -- a fence per section inside a
+    multi-part answer, a closing fence welded to the last statement (`;;` and
+    the backticks on one line), and an opening tag with no close. All three were
+    observed live on OCaml, and each one reached the compiler as a syntax error
+    pointing at the fence rather than at anything the model got wrong.
+
+    Safe because a triple backtick is not valid syntax in any language the
+    executor can run -- if it appears, it is markup.
+    """
+    return _FENCE.sub("", text).strip()
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -120,8 +139,8 @@ def draft_preamble(pc, name: str, context: str) -> str:
         f"expression; on failure print \"CHECK FAILED: \" plus the expression "
         f"to standard error and exit with status 1; on success increment the "
         f"counter. Output only that code.")
-    return strip_fences(pc.complete(system=system, user=user, grammar=None,
-                                    n_predict=512)["text"])
+    return unfence(pc.complete(system=system, user=user, grammar=None,
+                               n_predict=512)["text"])
 
 
 def draft_check_call(pc, name: str, preamble: str) -> str:
@@ -137,14 +156,25 @@ def draft_check_call(pc, name: str, preamble: str) -> str:
     line = strip_fences(pc.complete(system=system, user=user, grammar=None,
                                     n_predict=64)["text"]).strip()
 
-    match = re.search(r"[A-Za-z_][A-Za-z0-9_]*!?", line)
-    if not match:
-        raise ValueError(f"no call form found in {line!r}")
-    call = match.group(0)
-    if call.rstrip("!") not in preamble:
-        raise ValueError(f"the drafted call {call!r} names a helper the "
-                         f"preamble never defines")
-    return call
+    # The first identifier on the line is not necessarily the call: OCaml came
+    # back with `if pc_check (1 = 1) then ...` and the leading token was `if`.
+    # Nor does "appears in the preamble" separate them -- `if` occurs in the
+    # preamble too, as part of the helper's own body.
+    #
+    # What does separate them is that the drafting prompt DICTATED the name. So
+    # the helper is recognised by name first, in whatever case and with whatever
+    # sigil the language attaches (Rust's is `pc_check!`), and the preamble is
+    # the fallback for a model that renamed it anyway.
+    candidates = [m.group(0) for m in
+                  re.finditer(r"[A-Za-z_][A-Za-z0-9_]*!?", line)]
+    for call in candidates:
+        if re.fullmatch(r"pc_?check!?", call, re.IGNORECASE):
+            return call
+    for call in candidates:
+        if re.search(rf"\b{re.escape(call.rstrip('!'))}\b", preamble):
+            return call
+    raise ValueError(f"no call in {line!r} names a helper the preamble "
+                     f"defines -- the harness and its invocation disagree")
 
 
 def draft_epilogue(pc, name: str, preamble: str, context: str) -> str:
@@ -160,27 +190,42 @@ def draft_epilogue(pc, name: str, preamble: str, context: str) -> str:
         f"run:\n\n{worked_examples('epilogue')}\n\n"
         f"Reference documentation for {name}:\n\n{context}\n\n"
         f"This helper is already defined above it:\n\n{preamble}\n\n"
-        f"Write the equivalent tail for {name}. It must run the tests, then, if "
-        f"the counter is still zero, print \"no checks ran\" to standard error "
-        f"and exit with status 2. Output only that code.")
-    return strip_fences(pc.complete(system=system, user=user, grammar=None,
-                                    n_predict=512)["text"])
+        f"Write the equivalent tail for {name}. The tests are already placed "
+        f"between that helper and your tail. If {name} needs an entry point "
+        f"before any code runs, your tail must provide it and call the tests; "
+        f"if {name} runs top-level statements in order, the tests have already "
+        f"run by the time your tail is reached, so do not call them again. "
+        f"Then, if the counter is still zero, print \"no checks ran\" to "
+        f"standard error and exit with status 2. Use fully qualified names for "
+        f"anything you did not define. Output only that code.")
+    return unfence(pc.complete(system=system, user=user, grammar=None,
+                               n_predict=512)["text"])
 
 
 _SECTIONS = ("WRONG", "TESTS", "EMPTY", "ALWAYS_FAILS")
 
 
-def draft_fixture(pc, name: str, preamble: str, check_call: str) -> Fixture:
+def draft_fixture(pc, name: str, preamble: str, epilogue: str,
+                  check_call: str) -> Fixture:
     """The five snippets the probes run.
 
     Delimited rather than parsed: we do not have a parser for this language and
     are not about to write one.
+
+    The epilogue is shown, not just the preamble. It is the code that RUNS the
+    tests, and the two have to agree on shape -- observed live on OCaml, where
+    the tail called `pc_tests ()` while the tests were written as top-level
+    statements, so the harness could not compile no matter how good either half
+    was on its own.
     """
     system = (f"You output only {name} source code and the exact separator "
               f"lines you are given. No prose, no explanation, no fences.")
     user = (
         f"A test harness for {name} defines this:\n\n{preamble}\n\n"
-        f"Checks are written {check_call}(expression).\n\n"
+        f"and ends with this, which runs the tests:\n\n{epilogue}\n\n"
+        f"Checks are written {check_call}(expression). Your snippets sit "
+        f"between those two parts, so they must define whatever the ending "
+        f"above calls.\n\n"
         f"Write five snippets, separated by the exact lines shown:\n"
         f"1. a correct `add` function returning the sum of two integers\n"
         f"@@WRONG@@\n"
@@ -189,13 +234,14 @@ def draft_fixture(pc, name: str, preamble: str, check_call: str) -> Fixture:
         f"3. a test body containing exactly three checks: add(1,2) is 3, "
         f"add(0,0) is 0, add(-1,1) is 0\n"
         f"@@EMPTY@@\n"
-        f"4. the same test body with no checks in it at all\n"
+        f"4. the same test body with no checks in it at all -- still valid "
+        f"code that the ending above can call, just doing nothing\n"
         f"@@ALWAYS_FAILS@@\n"
         f"5. a test body containing exactly one check that must fail\n\n"
         f"Output the five snippets in that order, with the separator lines "
         f"between them and nothing else.")
-    text = strip_fences(pc.complete(system=system, user=user, grammar=None,
-                                    n_predict=768)["text"])
+    text = pc.complete(system=system, user=user, grammar=None,
+                       n_predict=768)["text"]
 
     parts = [text]
     for marker in _SECTIONS:
@@ -204,7 +250,11 @@ def draft_fixture(pc, name: str, preamble: str, check_call: str) -> Fixture:
             raise ValueError(f"the drafted fixture has no @@{marker}@@ section")
         parts[-1] = head
         parts.append(tail)
-    return Fixture(*(p.strip() for p in parts))
+    # Per section, not once over the whole response. The model fences each
+    # snippet separately, so stripping the outermost pair leaves the inner ```
+    # markers embedded mid-fixture -- observed live, where OCaml then failed to
+    # parse and the diagnostic pointed at the syntax error rather than the cause.
+    return Fixture(*(unfence(p) for p in parts))
 
 
 def test_system_for(name: str, check_call: str) -> str:
@@ -299,7 +349,18 @@ def draft_commands(pc, name: str, extension: str, context: str):
     if not any("{src}" in a or "{bin}" in a for a in run):
         raise ValueError("the run command names neither {src} nor {bin}, so it "
                          "would not run the candidate at all")
-    return build, run, toolchain
+    return _strip_dot_slash(build), _strip_dot_slash(run), toolchain
+
+
+def _strip_dot_slash(argv: tuple) -> tuple:
+    """`./{bin}` -> `{bin}`.
+
+    The habit is near-universal and the placeholder expands to an absolute
+    path, so the `./` resolves it against the working directory instead and the
+    run fails. Refusing would be the wrong call for something with exactly one
+    correct reading -- observed live, where two of four OCaml drafts wrote it.
+    """
+    return tuple(a[2:] if a.startswith("./{") else a for a in argv)
 
 
 def confirm_commands(build, run, ask=input) -> bool:
@@ -362,7 +423,7 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
         preamble = draft_preamble(pc, name, retrieve(QUERIES["helper"]))
         check_call = draft_check_call(pc, name, preamble)
         epilogue = draft_epilogue(pc, name, preamble, retrieve(QUERIES["entry"]))
-        fixture = draft_fixture(pc, name, preamble, check_call)
+        fixture = draft_fixture(pc, name, preamble, epilogue, check_call)
         build, run, toolchain = draft_commands(pc, name, extension,
                                                retrieve(QUERIES["commands"]))
     except ValueError as e:
