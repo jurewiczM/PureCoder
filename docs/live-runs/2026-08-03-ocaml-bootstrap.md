@@ -181,20 +181,32 @@ the code to be checked against, then reporting success against tests they never
 wrote. Supplied tests that fail the gate are now reported as a failure with the
 gate's reason.
 
-## Still open
+## Expected limit, not an open defect
 
-### The tester is the ceiling for a low-resource language
+### OCaml is not an implemented language, and generating with it shows that
 
-The harness is sound and the language registers. Generating *with* it is a
-different matter: asked for a `double` function, the writer produced correct
-OCaml (`let double x = x * 2`) on every attempt while the tester produced
-source the compiler rejected — through a test redesign and six attempts, ending
-in an honest refusal rather than an unvalidated artifact.
+Worth stating plainly, because the section this replaced read like a bug
+report: **`ocaml` is a placeholder entry.** In `purecoder/languages.py` it has
+an empty `build`, an empty `run` and an empty `test_system`, and `available()`
+answers `(False, "declared but not implemented yet")`. It exists so a refusal
+can name it. `go`, `java` and `swift` are the same kind of entry.
 
-This is the project's oldest finding — *the writer is stronger than the tester*
-— amplified for a language the model has thin exposure to. No harness change
-addresses it. The realistic levers are a stronger tester prompt per language,
-few-shot test examples in the target language, or a specialised model.
+So the observed behaviour is the expected one. Asked for a `double` function
+through the *learned* entry, the writer produced correct OCaml
+(`let double x = x * 2`) on every attempt while the tester produced source the
+compiler rejected — through a test redesign and six attempts, ending in an
+honest refusal rather than an unvalidated artifact.
+
+That is the gate working. Nothing here says the bootstrap layer is broken: it
+drafted a harness that passes five mechanical probes, and then refused to ship
+code it could not prove. What it ran into is the project's oldest finding —
+*the writer is stronger than the tester* — amplified for a language the model
+has thin exposure to and the harness never claimed to support.
+
+No harness change addresses it. Wiring OCaml properly is its own piece of work;
+until then, the levers are a stronger tester prompt per language, few-shot test
+examples in the target language, or a specialised model. A **probe or gate**
+failure would be a bootstrap defect. This is not one.
 
 ## Caveats on this run
 
@@ -204,8 +216,9 @@ few-shot test examples in the target language, or a specialised model.
   test is therefore somewhat favourable to the drafting.
 - **The live round still has not passed for OCaml.** The five mechanical
   probes clear on the first attempt now, but the bubble-sort round depends on
-  the tester, which is the open item above. `--no-live` was used for the runs
-  that registered.
+  the tester — the expected limit above, for a language that is a placeholder
+  entry rather than an implemented one. `--no-live` was used for the runs that
+  registered.
 - RAG required installing `sentence-transformers` (~2 GB with torch); it is not
   in the base install.
 

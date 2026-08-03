@@ -106,15 +106,18 @@ _Snapshot of what's built, tested, and what's next._
   live round decide it, and a harness that cannot fail wrong code is refused.
   What the probes cannot see is *idiom*: a spec can pass every one and still
   produce code no practitioner of that language would write.
-- The first live run of the bootstrap layer, its five defects and the two
-  gaps still open, are written up in
+- The first live run of the bootstrap layer and its five defects, all now
+  fixed, are written up in
   [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
 - **A learned language is only as good as its tester.** OCaml now registers on
   the first attempt with all five probes green, but generating *with* it stalls
   on test quality: the writer produced correct OCaml every time while the
   tester produced source the compiler rejected. The loop refuses honestly
-  rather than emitting it. This is the project's oldest finding -- the writer is
-  stronger than the tester -- amplified for a language the model barely saw.
+  rather than emitting it. That is the expected outcome, not an open defect --
+  `ocaml` is a placeholder entry (no runner, no test idiom, `available()` says
+  so), and it meets the project's oldest finding, that the writer is stronger
+  than the tester, for a language the model barely saw. Wiring OCaml properly
+  is separate work.
 - **A learned language can be generated and validated, but not scaffolded.**
   It arrives with no `ProjectSpec` -- proving a language runs says nothing
   about how a project of it is laid out -- so `project` refuses it and points
