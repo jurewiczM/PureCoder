@@ -145,7 +145,11 @@ _Snapshot of what's built, tested, and what's next._
   correct code the docs had no reason to mention. What it can do is answer *did
   you mean* once the toolchain has already rejected a name, which needs no
   completeness. That inversion is the whole design of `purecoder/symbols.py`,
-  and there is deliberately no function in it that takes code.
+  and there is deliberately no function in it that takes code. It would not
+  have helped either recorded OCaml failure — both were `Syntax error` from the
+  tester's output, and the one name error was `Unbound value pc_tests`, a
+  harness name no documentation contains. Its value is `ask` over a real
+  library's docs, which is not the case that motivated writing it.
 - **Measured, and the result is weaker than the motivation.** Run over this
   repo (7128 chunks, real bge-small embeddings) on six queries — five exact
   symbols and one prose control — the lexical signal changed the ranking in
