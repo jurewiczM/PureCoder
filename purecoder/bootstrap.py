@@ -95,9 +95,10 @@ def probe_language(spec, fixture: Fixture, timeout: int = 60):
 EXAMPLE_LANGUAGES = ("c++", "javascript", "rust")
 
 
-def worked_examples(field: str, names=EXAMPLE_LANGUAGES) -> str:
+def worked_examples(field: str) -> str:
     """The same field, as written for languages we already run."""
-    return "\n\n".join(f"--- {n} ---\n{getattr(get(n), field)}" for n in names)
+    return "\n\n".join(f"--- {n} ---\n{getattr(get(n), field)}"
+                       for n in EXAMPLE_LANGUAGES)
 
 
 def draft_preamble(pc, name: str, context: str) -> str:
@@ -331,7 +332,7 @@ BUBBLE_SORT = ("a function that takes an array of integers and returns them "
 
 
 def _failed(error, probes=()):
-    return {"ok": False, "spec": None, "probes": list(probes), "error": error}
+    return {"ok": False, "probes": list(probes), "error": error}
 
 
 def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
@@ -339,8 +340,9 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
                    timeout=60):
     """Draft a language entry, prove it, and save it.
 
-    -> {ok, spec, probes, error}. Nothing is registered unless every probe
-    passes: a drafted spec is a claim until the toolchain says otherwise.
+    -> {ok, probes, error}. Nothing is registered unless every probe passes:
+    a drafted spec is a claim until the toolchain says otherwise. On success the
+    spec is in the registry, so it is not repeated here.
 
     `retrieve` takes a query and returns context, injected so the drafting path
     is testable without an embedding model.
@@ -400,4 +402,4 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
     path = save(spec, docs_dir=str(docs_dir) if docs_dir else "")
     register(spec)
     log(f"[learn] registered {name} -> {path}")
-    return {"ok": True, "spec": spec, "probes": probes, "error": ""}
+    return {"ok": True, "probes": probes, "error": ""}
