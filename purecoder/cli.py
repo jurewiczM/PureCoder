@@ -25,6 +25,12 @@ from .client import PureCoder
 from .execute import generate_validated_python, unsupported_language
 from .validate import generate_validated
 
+# Where `ingest` writes and `ask` reads when nothing else says otherwise.
+# `--store` defaults to None rather than this, so that "the user named an
+# index" stays distinguishable from "use whatever is appropriate" -- which is
+# what lets a learned language supply its own.
+DEFAULT_STORE = "docstore"
+
 
 def resolve_language(args):
     """The LanguageSpec for this run, or None if we must not proceed.
@@ -86,13 +92,67 @@ def _print_result(res, show_tests=False):
         print(f"error: {res['error']}")
 
 
+def open_docs(path, device, required=False):
+    """Load an index, or explain why generation will go on without one.
+
+    Retrieval is an optional install and an index is a file on disk, so every
+    way this fails is ordinary. A learned language must still be usable on a
+    machine with no `sentence-transformers` and no index -- the harness is what
+    proves its output, and that needs neither. `required` is for `ask`, whose
+    whole purpose is the documentation.
+    """
+    from .rag import DocStore, Embedder, MissingRetrieval
+
+    missing = [p for p in (path + ".npy", path + ".json")
+               if not os.path.exists(p)]
+    if missing:
+        if required:
+            print(f"no index at {path} ({', '.join(missing)} missing).\n"
+                  f"  purecoder ingest <docs_dir> --store {path}")
+        return None
+    try:
+        return DocStore(Embedder(device=device), path=path).load()
+    except MissingRetrieval as e:
+        print(f"{e}\n  -- generating without the documentation")
+        return None
+    except ValueError as e:          # StoreError: present, but not trustworthy
+        print(f"cannot use the index at {path}: {e}"
+              f"\n  -- generating without the documentation")
+        return None
+
+
+def ground_in_docs(args, spec, task):
+    """(task, error_hint) with a learned language's own documentation applied.
+
+    This is what `learn` keeping its index buys: `--lang zig code "..."` reads
+    the docs zig was learned from, with no second ingest and no --store to
+    remember. A hand-written language has none and is unaffected.
+    """
+    if getattr(args, "no_docs", False) or not spec.docs_store:
+        return task, None
+    from .langstore import docs_index_path
+    from .rag import retrieve_context
+    from .symbols import did_you_mean
+
+    store = open_docs(str(docs_index_path(spec.docs_store)), args.device)
+    if store is None:
+        return task, None
+    ctx = retrieve_context(store, task)
+    if ctx:
+        print(f"[rag] {len(ctx)} chars from the {spec.name} docs")
+    return (f"{ctx}\n\n{task}" if ctx else task,
+            lambda err: did_you_mean(err, store.symbols))
+
+
 def cmd_code(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
+    task, hint = ground_in_docs(args, spec, args.spec)
     _print_result(generate_validated_python(
-        pc, args.spec, max_retries=args.retries, spec=spec,
-        use_contract=resolve_contract(args, default=False)),
+        pc, task, max_retries=args.retries, spec=spec,
+        use_contract=resolve_contract(args, default=False),
+        error_hint=hint),
         show_tests=args.show_tests)
 
 
@@ -170,7 +230,8 @@ def cmd_ingest(pc, args):
         return 1
 
     try:
-        store = DocStore(Embedder(device=args.device), path=args.store)
+        store = DocStore(Embedder(device=args.device),
+                         path=args.store or DEFAULT_STORE)
         n = store.ingest_plan(plan)
         store.save()
     except MissingRetrieval as e:
@@ -179,7 +240,8 @@ def cmd_ingest(pc, args):
     except ValueError as e:      # StoreError included -- it is a ValueError
         print(f"nothing indexed: {e}")
         return 1
-    print(f"indexed {n} chunks -> {args.store}.npy / .json")
+    print(f"indexed {n} chunks -> {args.store or DEFAULT_STORE}"
+          f".npy / .json")
 
 
 def cmd_ask(pc, args):
@@ -190,24 +252,20 @@ def cmd_ask(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
-    from .rag import DocStore, Embedder, MissingRetrieval, retrieve_context
-    # Checked before the Embedder is built: forgetting to ingest is the common
-    # mistake, and it should not cost a multi-second model load to be told so.
-    missing = [p for p in (args.store + ".npy", args.store + ".json")
-               if not os.path.exists(p)]
-    if missing:
-        print(f"no index at {args.store} ({', '.join(missing)} missing).\n"
-              f"  purecoder ingest <docs_dir> --store {args.store}")
+    from .langstore import docs_index_path
+    from .rag import retrieve_context
+
+    # An explicit --store wins; otherwise a learned language answers out of the
+    # documentation it was learned from, which is the whole point of `learn`
+    # keeping that index. Only if neither exists is this the old error.
+    path = args.store
+    if path is None and spec.docs_store:
+        path = str(docs_index_path(spec.docs_store))
+        print(f"[rag] using the {spec.name} docs from `learn`")
+    store = open_docs(path or DEFAULT_STORE, args.device, required=True)
+    if store is None:
         return 1
-    try:
-        store = DocStore(Embedder(device=args.device), path=args.store).load()
-        ctx = retrieve_context(store, args.spec)
-    except MissingRetrieval as e:
-        print(e)
-        return 1
-    except ValueError as e:      # StoreError: present, but not to be trusted
-        print(f"cannot use the index: {e}")
-        return 1
+    ctx = retrieve_context(store, args.spec)
     if ctx:
         print(f"[rag] injected {len(ctx)} chars of context")
     else:
@@ -290,7 +348,11 @@ def main():
                    help="llama-server base URL")
     p.add_argument("--retries", type=int, default=3)
     p.add_argument("--device", default="cuda", help="embedding device (cuda/cpu)")
-    p.add_argument("--store", default="docstore", help="RAG index path")
+    p.add_argument("--store", default=None, metavar="PATH",
+                   help=f"RAG index path (default: the index a learned "
+                        f"language kept, else {DEFAULT_STORE})")
+    p.add_argument("--no-docs", action="store_true",
+                   help="ignore a learned language's own documentation")
     p.add_argument("--show-tests", action="store_true")
     p.add_argument("--lang", default="python", metavar="LANG",
                    help=f"language to generate and validate "

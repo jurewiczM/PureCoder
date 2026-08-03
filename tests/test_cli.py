@@ -127,6 +127,93 @@ def test_ask_without_an_index_names_the_missing_files(capsys, tmp_path):
     assert "purecoder ingest" in out
 
 
+# ---- a learned language's own documentation ------------------------------
+
+class DocArgs(LangArgs):
+    def __init__(self, lang="python", spec="", **kw):
+        super().__init__(lang, spec)
+        self.device, self.store, self.no_docs = "cpu", None, False
+        self.retries, self.show_tests = 1, False
+        self.__dict__.update(kw)
+
+
+def test_a_hand_written_language_is_left_alone():
+    """C++ was not learned from anything. Grounding must be something a
+    learned entry opts into, not a cost every language pays."""
+    from purecoder.cli import ground_in_docs
+    from purecoder.languages import get
+
+    task, hint = ground_in_docs(DocArgs(), get("python"), "add two numbers")
+    assert task == "add two numbers" and hint is None
+
+
+def test_no_docs_turns_it_off():
+    from purecoder.cli import ground_in_docs
+    from purecoder.languages import LanguageSpec
+
+    spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
+    task, hint = ground_in_docs(DocArgs(no_docs=True), spec, "a thing")
+    assert task == "a thing" and hint is None
+
+
+def test_a_missing_index_does_not_stop_generation(capsys, store):
+    """The harness is what proves a learned language's output, and it needs
+    neither an index nor sentence-transformers. Losing the docs must cost the
+    grounding, not the command."""
+    from purecoder.cli import ground_in_docs
+    from purecoder.languages import LanguageSpec
+
+    spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
+    task, hint = ground_in_docs(DocArgs(), spec, "a thing")
+    assert task == "a thing" and hint is None
+    assert "Traceback" not in capsys.readouterr().out
+
+
+def test_an_unreadable_index_is_reported_and_stepped_over(capsys, tmp_path):
+    """`load` refuses an index it cannot trust. For `code` that is a downgrade
+    to ungrounded generation, not a failure -- said out loud either way."""
+    from purecoder.cli import open_docs
+
+    (tmp_path / "idx.npy").write_bytes(b"not an array")
+    (tmp_path / "idx.json").write_text("{}")
+    assert open_docs(str(tmp_path / "idx"), "cpu") is None
+    assert "generating without the documentation" in capsys.readouterr().out
+
+
+def test_ask_prefers_an_index_the_user_named_over_the_language(capsys, store):
+    """--store is explicit. A learned language's own docs are the fallback for
+    when nothing was named, never an override of what was.
+
+    Both indexes are absent, so the message names which one it went looking
+    for -- and it gets there before any model is loaded, which is what lets
+    this run without sentence-transformers.
+    """
+    from purecoder.cli import cmd_ask
+    from purecoder.languages import LanguageSpec, register
+
+    # The `store` fixture points PURECODER_HOME here AND restores the registry;
+    # registering a language without it leaks into every later test.
+    register(LanguageSpec(name="ziglike", extension=".zig", docs_store="ziglike",
+                          run=("true",), test_system="x", probe=("true",)))
+    named = str(store.parent / "mine")
+
+    assert cmd_ask(None, DocArgs("ziglike", "a thing", store=named)) == 1
+    assert "no index at " + named in capsys.readouterr().out
+
+
+def test_ask_falls_back_to_the_language_index_when_none_is_named(capsys, store):
+    from purecoder.cli import cmd_ask
+    from purecoder.languages import LanguageSpec, register
+
+    register(LanguageSpec(name="ziglike", extension=".zig", docs_store="ziglike",
+                          run=("true",), test_system="x", probe=("true",)))
+
+    assert cmd_ask(None, DocArgs("ziglike", "a thing")) == 1
+    out = capsys.readouterr().out
+    assert "using the ziglike docs from `learn`" in out
+    assert str(store.parent / "docs" / "ziglike") in out
+
+
 # ---- the ingest review ---------------------------------------------------
 
 class _Plan:
