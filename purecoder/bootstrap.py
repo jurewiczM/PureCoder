@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from .client import strip_fences
 from .execute import generate_validated_python, run_candidate
-from .languages import BUILTIN_NAMES, LanguageSpec, get, register
+from .languages import RESERVED_NAMES, LanguageSpec, get, register
 
 # Appended to a correct implementation to produce one that cannot possibly build
 # or parse, in any language. Deliberately not a language-specific mistake: this
@@ -414,9 +414,10 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
         if verbose:
             print(message)
 
-    if name in BUILTIN_NAMES:
-        return _failed(f"{name!r} is a built-in language -- a drafted spec may "
-                       f"not replace a hand-written one")
+    if name in RESERVED_NAMES:
+        return _failed(f"{name!r} is a reserved language -- it is either wired "
+                       f"already or refused on purpose, and a drafted spec may "
+                       f"not replace either")
 
     log(f"[learn] drafting a {name} harness")
     try:

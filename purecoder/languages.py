@@ -415,7 +415,24 @@ register(LanguageSpec(
 # than declared-and-broken.
 
 
-# Snapshot taken before any bootstrapped entry can be loaded. A drafted spec may
-# never shadow one of these: the hand-written entries are the reference, and
-# silently overriding `python` with an approximation has no upside.
-BUILTIN_NAMES = frozenset(REGISTRY)
+# Snapshot taken before any bootstrapped entry can be loaded. Kept as specs
+# rather than names because `register` replaces entries in place: once a learned
+# `ocaml` lands, the placeholder it replaced is no longer in REGISTRY to consult.
+BUILTIN_SPECS: dict[str, LanguageSpec] = dict(REGISTRY)
+BUILTIN_NAMES = frozenset(BUILTIN_SPECS)
+
+# Which of those a drafted spec may not take. Two different questions were being
+# answered by one set: "was this hand-written?" and "may it be replaced?"
+#
+# A wired entry is the reference implementation and overriding `python` with an
+# approximation has no upside. A permanently unvalidatable one is a standing
+# refusal, and learning it would be a way around the refusal.
+#
+# But `go`, `java`, `swift` and `ocaml` are placeholders: declared so a refusal
+# can name them, wired to nothing. Reserving those meant `learn` refused the
+# exact four languages it exists to enable -- found the first time it was run
+# against a real model.
+RESERVED_NAMES = frozenset(
+    name for name, spec in BUILTIN_SPECS.items()
+    if (spec.run and spec.test_system) or spec.unvalidatable
+)

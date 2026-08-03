@@ -296,12 +296,25 @@ def test_declining_the_commands_stops_before_anything_runs(store):
     assert not (store / "cpplike.json").exists()
 
 
-def test_a_built_in_name_is_refused_before_any_model_call(store):
+@pytest.mark.parametrize("name", ["python", "powerquery"])
+def test_a_reserved_name_is_refused_before_any_model_call(store, name):
+    """A wired entry is the reference implementation; a permanent refusal is a
+    standing decision. Neither may be replaced by a draft."""
     pc = FakeModel(completions=DRAFTS)
-    res = _learn(pc, store, name="python")
+    res = _learn(pc, store, name=name)
     assert not res["ok"]
-    assert "built-in" in res["error"]
+    assert "reserved" in res["error"]
     assert pc.prompts == [], "a refused name must cost no model call"
+
+
+def test_a_placeholder_name_is_accepted(store):
+    """`learn ocaml` was refused because the placeholder that exists so a
+    refusal can name the language also reserved it -- found on the first live
+    run, and worked around with the name `ocaml5`."""
+    _cpp()
+    res = _learn(FakeModel(completions=DRAFTS), store, name="ocaml")
+    assert res["ok"], res["error"]
+    assert (store / "ocaml.json").is_file()
 
 
 def test_a_draft_that_does_not_parse_is_reported_not_raised(store):

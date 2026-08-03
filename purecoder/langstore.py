@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from .languages import BUILTIN_NAMES, LanguageSpec, ProjectSpec, register
+from .languages import RESERVED_NAMES, LanguageSpec, ProjectSpec, register
 
 # JSON has no tuple, and a LanguageSpec is frozen and compared by value -- a
 # list where a tuple belongs makes every equality check quietly false.
@@ -60,9 +60,10 @@ def from_json(data: dict) -> LanguageSpec:
 
 def save(spec: LanguageSpec, **provenance) -> Path:
     """Write one language to the store. -> the path written."""
-    if spec.name in BUILTIN_NAMES:
-        raise ValueError(f"{spec.name!r} is a built-in language -- a drafted "
-                         f"spec may not replace a hand-written one")
+    if spec.name in RESERVED_NAMES:
+        raise ValueError(f"{spec.name!r} is a reserved language -- a drafted "
+                         f"spec may not replace a wired entry or a standing "
+                         f"refusal")
     directory = store_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{spec.name}.json"
@@ -89,7 +90,7 @@ def load_all() -> list:
             continue
         # The shadow guard holds here as well as in save(): the file is
         # editable by hand, so checking only on the way in checks the wrong end.
-        if not isinstance(data, dict) or data.get("name") in BUILTIN_NAMES:
+        if not isinstance(data, dict) or data.get("name") in RESERVED_NAMES:
             continue
         try:
             spec = from_json(data)

@@ -34,7 +34,7 @@ def test_provenance_is_recorded_and_does_not_break_the_round_trip():
 
 
 def test_the_built_in_names_are_reserved():
-    assert {"python", "c++", "rust", "powerquery"} <= BUILTIN_NAMES
+    assert {"python", "c++", "rust", "powerquery", "go", "ocaml"} <= BUILTIN_NAMES
 
 
 def test_a_project_spec_round_trips_field_for_field():
@@ -66,9 +66,22 @@ def test_saving_then_loading_restores_the_spec(store):
     assert REGISTRY["zig"] == CANDIDATE
 
 
-def test_saving_a_built_in_name_is_refused(store):
-    with pytest.raises(ValueError, match="built-in"):
-        langstore.save(dataclasses.replace(CANDIDATE, name="python"))
+def test_saving_a_reserved_name_is_refused(store):
+    for name in ("python", "powerquery"):
+        with pytest.raises(ValueError, match="reserved"):
+            langstore.save(dataclasses.replace(CANDIDATE, name=name))
+
+
+def test_a_placeholder_name_can_be_learned(store):
+    """`go`, `java`, `swift` and `ocaml` are declared so a refusal can name
+    them, and wired to nothing. A learned entry is exactly what they are
+    waiting for."""
+    from purecoder.languages import REGISTRY
+
+    langstore.save(dataclasses.replace(CANDIDATE, name="ocaml"))
+    REGISTRY.pop("ocaml", None)
+    assert [s.name for s in langstore.load_all()] == ["ocaml"]
+    assert REGISTRY["ocaml"].run == CANDIDATE.run
 
 
 def test_a_file_claiming_a_built_in_name_is_ignored(store):
