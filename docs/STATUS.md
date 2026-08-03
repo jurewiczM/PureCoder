@@ -139,6 +139,16 @@ _Snapshot of what's built, tested, and what's next._
   with a cosine of zero. A token in every chunk weighs nothing, so stopwords
   cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
   that decide this, and neither is tuned against a benchmark — there isn't one.
+- **Measured, and the result is weaker than the motivation.** Run over this
+  repo (7128 chunks, real bge-small embeddings) on six queries — five exact
+  symbols and one prose control — the lexical signal changed the ranking in
+  four, but it never *rescued* a query: cosine already put a chunk containing
+  the symbol first, and every query cleared the gate on cosine alone. So the
+  guarantee this buys ("the page defining the symbol cannot be ranked out by a
+  page merely about it") is real, but on this corpus it was not yet needed.
+  Related, and more interesting: bge-small's cosine floor is high enough that
+  `min_score=0.3` almost never fires. The gate is looser in practice than the
+  number suggests.
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
 - **An index is refused rather than half-trusted.** The vectors and the chunk
   metadata are two files, and `search` pairs them by row index, so a count
