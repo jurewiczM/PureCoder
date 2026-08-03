@@ -160,6 +160,40 @@ prompt is templated for the same reason — a model writing its own instructions
 is precisely the technique that measured worst — and the file extension is
 asked for on the command line rather than inferred.
 
+**The writer gets a demand too, and it is derived rather than drafted.** A
+learned language used to leave `writer_system` empty, so a harness that needs a
+*shape* had no way to say so: the writer emitted a wrapper or its own entry
+point, the assembled file did not build, and the fix loop was handed a linker
+error about `main` for logic that was correct. The demand is now filled in from
+two things the probes already established — the helper's name, which
+`draft_check_call` matched against the preamble, and whether the drafted tail is
+the thing that runs the tests (a tail that calls a name the test snippets define
+is an entry point; one that calls nothing of theirs is reached *after* the tests
+have run). Nothing is asked of the model, and the claim it makes is about
+`assemble()`, not about the language: four pieces really are pasted into one
+file in that order.
+
+The asymmetry with the hand-written entries is deliberate. A built-in leaves
+this field empty when a person read the harness and judged nothing extra was
+needed; C# is the one that needed it. A drafted entry has had nobody read
+anything.
+
+It is narrower than C#'s hand-written demand, which also forbids `using`
+directives — that is a fact about C#, not about `assemble()`, and banning
+imports outright would break a language whose implementation needs one. It also
+applies only to languages learned from here on: an entry already on disk keeps
+the field empty, because filling it needs the drafted fixture, which is not
+stored.
+
+**And when the demand is ignored anyway, the retry says what collided.**
+`harness_collision` compares block definitions in the implementation against
+those in the rest of the assembled file — preamble, tail *and* the tests, which
+is where the likeliest collision lives, since a C++ tail calls `pc_tests()`
+without defining it — and names the overlap, plus the check helper if the
+implementation touches it at all. It is a hint on an already-failed attempt --
+the same slot and the same discipline as the documentation hint -- never a gate,
+because it is textual across languages this project does not parse.
+
 **The gate is the point.** A drafted spec is a claim; six probes turn it into a
 fact. Five are mechanical, run against a trivial `add(a, b)`: a correct
 implementation passes, a wrong one fails, an empty suite reports "no checks

@@ -169,7 +169,13 @@ What the model drafts from those docs: the check helper, the harness tail that
 fails a run where no check executed, and the build/run commands (shown to you as
 argv, confirmed before anything is executed). What it does **not** draft is the
 tester's own instructions — those are templated, because a model writing its own
-instructions is the technique that measured worst.
+instructions is the technique that measured worst. The writer's extra demand is
+templated too, but from the drafted harness rather than from prose: it is told
+that the file already defines the check helper, and either supplies the entry
+point or runs statements at top level, so it should write neither and wrap
+nothing. Without it a writer that emits its own `main` produces a link error
+about a file it never saw; with it, and when it happens anyway, the retry names
+what collided.
 
 Then the gate. Five mechanical probes must pass before anything is registered:
 correct code passes, **wrong code fails**, an empty suite fails, a suite that
@@ -241,7 +247,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           398 tests (no GPU, no server; toolchain ones self-skip)
+tests/           410 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

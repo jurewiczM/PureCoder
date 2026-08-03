@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-398 tests, all green, none of them needing a GPU or a running server
+410 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -28,6 +28,7 @@ _Snapshot of what's built, tested, and what's next._
 | 8 | hybrid ranking + reviewed ingest | ✅ tested | exact-name signal decides where cosine is blind; nothing embedded before the user accepts |
 | 8 | drafted project layout + its probe | ✅ tested | two-sided against real make; a recipe that touches nothing is rejected |
 | 8 | a learned language keeps its docs | ✅ tested | `code --lang X` grounded with no second ingest; every failure path degrades instead of stopping |
+| 8 | the writer's shape demand, derived | ✅ tested | templated from the proven helper and tail shape, carried to the live round and through the store |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
@@ -137,9 +138,35 @@ _Snapshot of what's built, tested, and what's next._
   sounds: for a one-file project `make test` builds and runs the file rather
   than running a suite, exactly as the hand-written C++ and JavaScript entries
   do. `make install` is never run, so it is trusted rather than proven.
-  A learned language still has no `writer_system`, so one whose harness needs a
-  shape constraint (C#'s "no class wrapper, no Main" is the built-in example)
-  has no way to express it.
+  A learned language now gets a `writer_system`, but see the boundary below for
+  what that is and is not evidence of.
+- **The writer's demand is derived and exercised; nothing proves it was
+  needed.** A drafted entry now tells the writer that the file already defines
+  the check helper and either supplies the entry point or runs at top level, and
+  that it should add no wrapper. Both facts come from artifacts the probes
+  proved, and the live bubble-sort round exercises the demand end to end -- but
+  that round only shows the writer can work *with* it. There is no mechanical
+  two-sided probe of *necessity* here, and the obvious one does not work:
+  pasting the tail into the implementation slot to see whether duplication
+  breaks the build fails a top-level-statement language for the wrong reason
+  (two tails, so the counter check runs before the tests, so "no checks ran"),
+  which would manufacture a constraint for a language that needed none. The
+  hand-written entries stay asymmetric on purpose -- a built-in is empty because
+  a person judged it unnecessary; a drafted one is filled because nobody judged
+  anything. Two further limits. It is *narrower than C#'s hand-written demand*,
+  which also forbids `using` directives: that is a fact about C#, not about
+  `assemble()`, and a derived demand that banned imports outright would break a
+  language whose implementation legitimately needs one. And it applies to
+  languages learned from here on -- an entry already saved under
+  `$PURECODER_HOME` keeps the field empty, since filling it needs the fixture,
+  which is not stored. Re-running `learn` is the only way to backfill.
+- **A collision is explained after the fact, not prevented by a gate.** When a
+  failed attempt defines something the harness already provides, the retry
+  prompt names it -- the toolchain reports that as "multiple definition of
+  `main'" in a file the writer has never seen. The check is textual (it runs for
+  languages with no parser here), so it can miss, and it is deliberately only a
+  hint on an already-failed run: a false positive would cost a line of context
+  and point the model at code that is fine.
 - **Drafted commands reach the machine two ways, and they are not equally
   narrow.** Build and run are argv, and shell syntax is refused outright. A
   project recipe cannot be argv -- `g++ ... && ./main` needs `&&` -- so it is a
@@ -208,23 +235,18 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **`writer_system` for a learned language.** The last field `learn` cannot
-   produce. A language whose harness demands a shape -- C#'s "no class wrapper,
-   no Main" is the built-in example -- has no way to say so, and the failure is
-   silent: the writer emits something the harness cannot assemble, and the fix
-   loop sees only a compile error it cannot act on.
-2. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
+1. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
    runner is free, but SQL has no `assert`, and the check idiom every other
    language gets from its harness needs real design rather than a `1/0` trick.
-3. **Measure the contract layer** — does grounding actually reduce
+2. **Measure the contract layer** — does grounding actually reduce
    spec-divergence, or only make it visible? Needs a small task set with
    known-ambiguous specs. This is the claim the whole layer rests on and it
    is still unmeasured.
-4. **A dependency story for the executor** — today anything outside the
+3. **A dependency story for the executor** — today anything outside the
    stdlib is unvalidatable. A per-run venv, or declaring allowed packages in
    the spec, would widen execution validation past its current ceiling.
-5. **tree-sitter chunking** — multi-language code retrieval.
-6. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
+4. **tree-sitter chunking** — multi-language code retrieval.
+5. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
 
 Done since the last snapshot: the reachability false green (runtime check
@@ -239,3 +261,9 @@ no longer inject a heading with no documentation under it; `ingest` prunes
 caches and shows what it will index before embedding anything; ranking gained
 an exact-name signal; the lexical index was inverted (400-500x on a large
 corpus); and a learned language keeps the docs it was learned from.
+
+Done in the bootstrap pass after that: a learned language now tells its writer
+what its harness already provides -- derived from the helper name and the shape
+of the drafted tail, never asked of the model -- and a failed attempt that
+collides with the harness anyway is told which name collided instead of being
+handed a linker error about a file it never saw.
