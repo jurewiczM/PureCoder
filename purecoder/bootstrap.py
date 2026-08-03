@@ -388,8 +388,10 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
     # and the tester can actually work inside it, which is a different claim.
     if live_check:
         log("[learn] one live round: bubble sort")
+        # The same timeout the probes used. Defaulting to 10 here would reject a
+        # spec that had just passed five probes at 60, on a slow toolchain.
         result = generate_validated_python(pc, BUBBLE_SORT, spec=spec,
-                                           verbose=verbose)
+                                           verbose=verbose, timeout=timeout)
         if not result["ok"]:
             return _failed(f"the harness runs, but the writer and tester could "
                            f"not work inside it: {result['error']}",

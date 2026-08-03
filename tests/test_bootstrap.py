@@ -321,3 +321,99 @@ def test_a_draft_that_does_not_parse_is_reported_not_raised(store):
                  store)
     assert not res["ok"]
     assert "drafting failed" in res["error"]
+
+
+# ---- the live round ------------------------------------------------------
+
+class ScriptedWriter(Scripted):
+    """Scripted, plus the `code` call the fix loop makes. Without this the live
+    round is the one branch no test reaches -- and the CLI takes it by default."""
+
+    def __init__(self, *completions, code_outputs=()):
+        super().__init__(*completions)
+        self.code_outputs = list(code_outputs)
+        self.code_kwargs = []
+
+    def code(self, description, language="python", **kw):
+        self.code_kwargs.append({"language": language, **kw})
+        return {"text": self.code_outputs.pop(0) if len(self.code_outputs) > 1
+                else self.code_outputs[0],
+                "truncated": False, "tokens": 1, "raw": {}}
+
+
+BUBBLE_CPP = ("#include <vector>\nstd::vector<int> bubble_sort(std::vector<int> v)"
+              "{ for (size_t i=0;i<v.size();i++) for (size_t j=0;j+1<v.size();j++)"
+              " if (v[j]>v[j+1]) std::swap(v[j],v[j+1]); return v; }")
+BUBBLE_TESTS = (
+    "#include <vector>\nstd::vector<int> bubble_sort(std::vector<int>);\n"
+    "void pc_tests(){ std::vector<int> a{3,1,2}; std::vector<int> b{1,2,3};\n"
+    "  PC_CHECK(bubble_sort(a)==b); PC_CHECK(bubble_sort({}).empty());\n"
+    "  std::vector<int> c{5}; PC_CHECK(bubble_sort(c)==c); }")
+
+
+def test_the_live_round_runs_and_can_pass(store):
+    """The default CLI path. It compiles a real bubble sort with g++."""
+    _cpp()
+    pc = ScriptedWriter(*DRAFTS[:4], DRAFTS[4], BUBBLE_TESTS,
+                        code_outputs=[BUBBLE_CPP])
+    res = bootstrap.learn_language(
+        pc, "cpplike", ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
+        confirm=lambda b, r: True, verbose=False, live_check=True)
+    assert res["ok"], res["error"]
+    assert pc.code_kwargs[0]["language"] == "cpplike"
+
+
+def test_the_live_round_uses_the_same_timeout_as_the_probes(store):
+    """A spec that passed five probes at 60s must not be failed by a 10s live
+    round on a slow toolchain."""
+    _cpp()
+    seen = {}
+    pc = ScriptedWriter(*DRAFTS[:4], DRAFTS[4], BUBBLE_TESTS,
+                        code_outputs=[BUBBLE_CPP])
+
+    import purecoder.bootstrap as B
+    real = B.generate_validated_python
+
+    def spy(*a, **kw):
+        seen["timeout"] = kw.get("timeout")
+        return real(*a, **kw)
+
+    B.generate_validated_python = spy
+    try:
+        bootstrap.learn_language(pc, "cpplike", ".cpp", docs_dir=None,
+                                 retrieve=lambda q: "DOCS",
+                                 confirm=lambda b, r: True, verbose=False,
+                                 live_check=True, timeout=45)
+    finally:
+        B.generate_validated_python = real
+    assert seen["timeout"] == 45
+
+
+def test_a_harness_the_writer_cannot_work_in_is_not_saved(store):
+    """The probes and the live round are different claims: this harness passes
+    every probe and still fails, because the writer's output never converges."""
+    _cpp()
+    pc = ScriptedWriter(*DRAFTS[:4], DRAFTS[4], BUBBLE_TESTS,
+                        code_outputs=["int not_bubble_sort(){return 0;}"])
+    res = bootstrap.learn_language(
+        pc, "cpplike", ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
+        confirm=lambda b, r: True, verbose=False, live_check=True)
+    assert not res["ok"]
+    assert "could not work inside it" in res["error"]
+    assert not (store / "cpplike.json").exists()
+
+
+def test_a_learned_language_refuses_to_scaffold_rather_than_crashing(store):
+    """A learned spec proves it can be run; it says nothing about project
+    layout, so it arrives with no ProjectSpec. Scaffolding used to read .entry
+    off None."""
+    _cpp()
+    from purecoder.scaffold import scaffold_project
+
+    assert _learn(Scripted(*DRAFTS), store)["ok"]
+    out = store.parent / "proj"
+    res = scaffold_project(None, "x", "y", outdir=str(out),
+                           spec=L.get("cpplike"), verbose=False)
+    assert not res["ok"]
+    assert "no project layout" in res["error"]
+    assert not out.exists()
