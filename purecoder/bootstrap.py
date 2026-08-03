@@ -406,6 +406,47 @@ def draft_harness(pc, name: str, retrieve, feedback: str = "") -> Harness:
     return Harness(preamble, check_call, epilogue, fixture)
 
 
+# An identifier applied to arguments, with whatever follows the closing paren.
+# A definition is followed by a block (`int main() {`, `fn main() {`); a call is
+# not (`pc_tests ();`). Without that distinction the tail's own entry point
+# looks like something it failed to define.
+_APPLIED = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*(\{)?")
+
+
+def dangling_calls(harness) -> list:
+    """Names the tail calls that nothing else defines.
+
+    Two harness shapes exist. A language needing an entry point has the tail
+    provide it and call the tests; a language that runs top-level statements in
+    order has the tests already run by the time the tail is reached. Two of the
+    three worked examples are the first kind, so the model generalises that
+    shape onto languages of the second -- OCaml got a tail calling `pc_tests ()`
+    with the tests written as bare statements, three drafts running.
+
+    Feeding back "Unbound value pc_tests" was not enough: the model reads it as
+    "define pc_tests" rather than "stop calling it". Naming the contradiction
+    is what makes the choice explicit.
+    """
+    defined = harness.preamble + harness.fixture.tests + harness.fixture.empty
+    return sorted({
+        name for name, opens_block in _APPLIED.findall(harness.epilogue)
+        if not opens_block and not re.search(rf"\b{re.escape(name)}\b", defined)
+    })
+
+
+def shape_feedback(harness) -> str:
+    """The hint that turns a repeated dangling call into a decision."""
+    dangling = dangling_calls(harness)
+    if not dangling:
+        return ""
+    names = ", ".join(repr(n) for n in dangling)
+    return (f"\n\nSpecifically: your ending calls {names}, which nothing else "
+            f"defines. Either the test snippets must define it, or -- if this "
+            f"language runs top-level statements in order, so the tests have "
+            f"already run before the ending is reached -- the ending must not "
+            f"call it at all. Choose one and be consistent.")
+
+
 def probe_feedback(probes, max_lines: int = 8) -> str:
     """What the toolchain said, shaped for the next drafting prompt.
 
@@ -515,7 +556,9 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
         # run reached four of five probes on a single malformed snippet.
         log(f"[learn] {failed} -> redrafting with the diagnostic")
         try:
-            harness = draft_harness(pc, name, retrieve, probe_feedback(probes))
+            harness = draft_harness(
+                pc, name, retrieve,
+                probe_feedback(probes) + shape_feedback(harness))
         except ValueError as e:
             return _failed(f"redrafting failed: {e}", probes=probes)
 

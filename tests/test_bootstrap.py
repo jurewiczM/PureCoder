@@ -584,3 +584,34 @@ def test_feedback_says_so_when_a_probe_failed_by_succeeding():
     text = bootstrap.probe_feedback(
         [bootstrap.Probe("wrong implementation fails", False, "")])
     assert "succeeded when it should have failed" in text
+
+
+def test_a_tail_calling_something_nothing_defines_is_named():
+    """OCaml's tail called `pc_tests ()` while the tests were bare top-level
+    statements. Feeding back "Unbound value pc_tests" was not enough -- the
+    model read it as "define pc_tests" rather than "stop calling it"."""
+    harness = bootstrap.Harness(
+        preamble="let pc_checks = ref 0", check_call="pc_check",
+        epilogue="let () =\n  pc_tests ();\n  if !pc_checks < 1 then exit 2",
+        fixture=bootstrap.Fixture("let add x y = x+y", "let add x y = x-y",
+                                  "pc_check (add 1 2 = 3);", "()",
+                                  "pc_check false"))
+    assert bootstrap.dangling_calls(harness) == ["pc_tests"]
+    hint = bootstrap.shape_feedback(harness)
+    assert "'pc_tests'" in hint
+    assert "top-level statements in order" in hint
+
+
+def test_a_coherent_harness_gets_no_shape_hint():
+    """C++ genuinely needs the indirection, and its tests define pc_tests. The
+    hint must not fire on the shape that is correct."""
+    harness = bootstrap.Harness(
+        preamble="static int pc_checks = 0;\n#define PC_CHECK(x) do {} while (0)",
+        check_call="PC_CHECK",
+        epilogue="int main() { pc_tests(); return 0; }",
+        fixture=bootstrap.Fixture("int add(int,int);", "int add(int,int);",
+                                  "void pc_tests(){ PC_CHECK(1); }",
+                                  "void pc_tests(){ }",
+                                  "void pc_tests(){ PC_CHECK(0); }"))
+    assert bootstrap.dangling_calls(harness) == []
+    assert bootstrap.shape_feedback(harness) == ""
