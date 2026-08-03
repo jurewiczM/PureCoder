@@ -413,3 +413,9 @@ register(LanguageSpec(
 # SQL has no assertion form, so the check idiom every other language gets for
 # free needs real design here rather than a `1/0` trick. Left undeclared rather
 # than declared-and-broken.
+
+
+# Snapshot taken before any bootstrapped entry can be loaded. A drafted spec may
+# never shadow one of these: the hand-written entries are the reference, and
+# silently overriding `python` with an approximation has no upside.
+BUILTIN_NAMES = frozenset(REGISTRY)

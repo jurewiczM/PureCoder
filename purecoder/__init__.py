@@ -13,10 +13,20 @@ from .execute import (
     run_candidate,
     run_python,
 )
+from .langstore import load_all as _load_bootstrapped_languages
 from .languages import PYTHON, LanguageSpec
 from .scaffold import scaffold_project
 from .status import print_status
 from .validate import generate_validated, validate_env, validate_makefile, validate_python
+
+# Saved languages join the registry at import, so `--lang zig` works in the CLI
+# and in library use alike. A failure here must never stop the package loading:
+# a bootstrapped language is a feature, and nothing else in the pipeline depends
+# on one being present.
+try:
+    _load_bootstrapped_languages()
+except Exception:                                        # noqa: BLE001
+    pass
 
 __version__ = "0.1.0"
 
