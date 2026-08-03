@@ -149,6 +149,31 @@ def cmd_ask(pc, args):
         show_tests=args.show_tests)
 
 
+def cmd_learn(pc, args):
+    from .bootstrap import learn_language
+    from .rag import DocStore, Embedder, retrieve_context
+
+    store = DocStore(Embedder(device=args.device), path=args.store)
+    try:
+        store.ingest_dir(args.docs_dir)
+    except ValueError as e:
+        # The chunker reads .py/.md/.markdown/.txt/.rst. A docs directory of
+        # .html or .adoc is a plausible mistake and deserves a sentence, not a
+        # traceback out of the middle of an ingest.
+        print(f"no documentation to read: {e}")
+        return 1
+
+    res = learn_language(pc, args.name, args.ext, args.docs_dir,
+                         retrieve=lambda q: retrieve_context(store, q),
+                         live_check=not args.no_live)
+    if not res["ok"]:
+        print(f"\nnot registered: {res['error']}")
+        return 1
+    print(f"\n{args.name} is registered. It is a drafted entry, proven by "
+          f"probe rather than written by hand -- try it on something small "
+          f"first:\n  purecoder --lang {args.name} code \"...\"")
+
+
 def cmd_status(pc, args):
     from .status import print_status
     print_status(pc)
@@ -180,6 +205,13 @@ def main():
     sp.add_argument("spec")
     sp.add_argument("outdir", nargs="?")
     sub.add_parser("ingest").add_argument("docs_dir")
+    sl = sub.add_parser("learn")
+    sl.add_argument("name")
+    sl.add_argument("docs_dir")
+    sl.add_argument("--ext", required=True,
+                    help="source file extension, e.g. .zig")
+    sl.add_argument("--no-live", action="store_true",
+                    help="skip the live generation round (probes only)")
     sub.add_parser("status")
 
     args = p.parse_args()
@@ -188,7 +220,7 @@ def main():
     return {
         "code": cmd_code, "env": cmd_env, "make": cmd_make,
         "project": cmd_project, "ingest": cmd_ingest, "ask": cmd_ask,
-        "status": cmd_status,
+        "learn": cmd_learn, "status": cmd_status,
     }[args.cmd](pc, args)
 
 

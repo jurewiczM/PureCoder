@@ -235,3 +235,89 @@ def test_anything_but_yes_declines(answer):
 def test_yes_in_any_case_confirms(answer):
     assert bootstrap.confirm_commands(("a",), ("b",),
                                       ask=lambda _: answer) is True
+
+
+# ---- the orchestrator ----------------------------------------------------
+
+# The drafts are the real C++ harness under another name, so the probes run g++
+# for real: the orchestrator is tested end to end with only the model faked.
+DRAFTS = [
+    "#include <cstdio>\n#include <cstdlib>\nstatic int pc_checks = 0;\n"
+    "#define PC_CHECK(x) do { if (!(x)) { std::fprintf(stderr, "
+    "\"CHECK FAILED: %s\\n\", #x); std::exit(1); } pc_checks++; } while (0)\n",
+    "PC_CHECK(1 == 1);",
+    "int main() { pc_tests(); if (pc_checks < 1) { std::fprintf(stderr, "
+    "\"no checks ran\\n\"); return 2; } return 0; }\n",
+    "int add(int a,int b){return a+b;}\n"
+    "@@WRONG@@\nint add(int a,int b){return a-b;}\n"
+    "@@TESTS@@\nint add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); "
+    "PC_CHECK(add(0,0)==0); PC_CHECK(add(-1,1)==0); }\n"
+    "@@EMPTY@@\nvoid pc_tests(){ }\n"
+    "@@ALWAYS_FAILS@@\nvoid pc_tests(){ PC_CHECK(1==2); }",
+    "BUILD: g++ -std=c++17 -w {src} -o {bin}\nRUN: {bin}\nTOOLCHAIN: g++",
+]
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    """A private store, and a registry left exactly as it was found."""
+    monkeypatch.setenv("PURECODER_HOME", str(tmp_path))
+    before = dict(L.REGISTRY)
+    yield tmp_path / "languages"
+    L.REGISTRY.clear()
+    L.REGISTRY.update(before)
+
+
+def _learn(pc, store, name="cpplike", **kw):
+    return bootstrap.learn_language(
+        pc, name, ".cpp", docs_dir=None, retrieve=lambda q: "DOCS",
+        confirm=lambda b, r: True, verbose=False, live_check=False, **kw)
+
+
+def test_a_language_that_passes_every_probe_is_saved(store):
+    _cpp()
+    res = _learn(Scripted(*DRAFTS), store)
+    assert res["ok"], res["error"]
+    assert (store / "cpplike.json").is_file()
+    assert L.get("cpplike").check_call == "PC_CHECK"
+    assert L.get("cpplike").probe == ("g++", "--version")
+
+
+def test_a_language_that_fails_a_probe_is_not_saved(store):
+    """A helper that counts but never fails: compiles, runs, reports success on
+    wrong code. It must not reach the store."""
+    _cpp()
+    drafts = list(DRAFTS)
+    drafts[0] = ("#include <cstdio>\nstatic int pc_checks = 0;\n"
+                 "#define PC_CHECK(x) do { pc_checks++; } while (0)\n")
+    res = _learn(Scripted(*drafts), store)
+    assert not res["ok"]
+    assert "wrong implementation fails" in res["error"]
+    assert not (store / "cpplike.json").exists()
+    assert "cpplike" not in L.REGISTRY
+
+
+def test_declining_the_commands_stops_before_anything_runs(store):
+    res = bootstrap.learn_language(
+        Scripted(*DRAFTS), "cpplike", ".cpp", docs_dir=None,
+        retrieve=lambda q: "DOCS", confirm=lambda b, r: False, verbose=False,
+        live_check=False)
+    assert not res["ok"]
+    assert "declined" in res["error"]
+    assert not (store / "cpplike.json").exists()
+
+
+def test_a_built_in_name_is_refused_before_any_model_call(store):
+    pc = Scripted(*DRAFTS)
+    res = _learn(pc, store, name="python")
+    assert not res["ok"]
+    assert "built-in" in res["error"]
+    assert pc.prompts == [], "a refused name must cost no model call"
+
+
+def test_a_draft_that_does_not_parse_is_reported_not_raised(store):
+    res = _learn(Scripted("PRE PC_CHECK", "PC_CHECK(1==1);", "POST",
+                          "no separators here at all", "BUILD: none\nRUN: x"),
+                 store)
+    assert not res["ok"]
+    assert "drafting failed" in res["error"]

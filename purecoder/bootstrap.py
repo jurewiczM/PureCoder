@@ -16,8 +16,8 @@ import shlex
 from dataclasses import dataclass
 
 from .client import strip_fences
-from .execute import run_candidate
-from .languages import get
+from .execute import generate_validated_python, run_candidate
+from .languages import BUILTIN_NAMES, LanguageSpec, get, register
 
 # Appended to a correct implementation to produce one that cannot possibly build
 # or parse, in any language. Deliberately not a language-specific mistake: this
@@ -312,3 +312,90 @@ def confirm_commands(build, run, ask=input) -> bool:
     print(f"  build : {' '.join(build) if build else '(none)'}")
     print(f"  run   : {' '.join(run)}")
     return ask("Run these? [y/N] ").strip().lower() in ("y", "yes")
+
+
+# ---- the orchestrator ----------------------------------------------------
+
+# Asked of the docs, once each. Retrieval is per-question rather than one broad
+# query because the answers live on different pages: how a language prints to
+# stderr is rarely documented beside how to compile it.
+QUERIES = {
+    "helper": "print to standard error, exit with a status code, define a "
+              "macro or function taking a boolean",
+    "entry": "program entry point, main function, top-level statements",
+    "commands": "compile and run a single source file from the command line",
+}
+
+BUBBLE_SORT = ("a function that takes an array of integers and returns them "
+               "sorted in ascending order using bubble sort")
+
+
+def _failed(error, probes=()):
+    return {"ok": False, "spec": None, "probes": list(probes), "error": error}
+
+
+def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
+                   confirm=confirm_commands, verbose=True, live_check=True,
+                   timeout=60):
+    """Draft a language entry, prove it, and save it.
+
+    -> {ok, spec, probes, error}. Nothing is registered unless every probe
+    passes: a drafted spec is a claim until the toolchain says otherwise.
+
+    `retrieve` takes a query and returns context, injected so the drafting path
+    is testable without an embedding model.
+    """
+    from .langstore import save
+
+    def log(message):
+        if verbose:
+            print(message)
+
+    if name in BUILTIN_NAMES:
+        return _failed(f"{name!r} is a built-in language -- a drafted spec may "
+                       f"not replace a hand-written one")
+
+    log(f"[learn] drafting a {name} harness")
+    try:
+        preamble = draft_preamble(pc, name, retrieve(QUERIES["helper"]))
+        check_call = draft_check_call(pc, name, preamble)
+        epilogue = draft_epilogue(pc, name, preamble, retrieve(QUERIES["entry"]))
+        fixture = draft_fixture(pc, name, preamble, check_call)
+        build, run, toolchain = draft_commands(pc, name, extension,
+                                               retrieve(QUERIES["commands"]))
+    except ValueError as e:
+        return _failed(f"drafting failed: {e}")
+
+    if not confirm(build, run):
+        return _failed("declined: the drafted commands were not confirmed, so "
+                       "nothing was run and nothing was saved")
+
+    spec = LanguageSpec(
+        name=name, extension=extension, probe=(toolchain, "--version"),
+        build=build, run=run, preamble=preamble, epilogue=epilogue,
+        test_system=test_system_for(name, check_call), check_call=check_call,
+    )
+
+    log("[learn] probing the candidate")
+    ok, probes = probe_language(spec, fixture, timeout=timeout)
+    for probe in probes:
+        log(f"[learn]   {'pass' if probe.ok else 'FAIL'}  {probe.name}")
+    if not ok:
+        failed = ", ".join(p.name for p in probes if not p.ok)
+        return _failed(f"the candidate failed a probe: {failed}", probes=probes)
+
+    # The probes prove the harness can fail wrong code. This proves the writer
+    # and the tester can actually work inside it, which is a different claim.
+    if live_check:
+        log("[learn] one live round: bubble sort")
+        result = generate_validated_python(pc, BUBBLE_SORT, spec=spec,
+                                           verbose=verbose)
+        if not result["ok"]:
+            return _failed(f"the harness runs, but the writer and tester could "
+                           f"not work inside it: {result['error']}",
+                           probes=probes)
+
+    path = save(spec, docs_dir=str(docs_dir) if docs_dir else "")
+    register(spec)
+    log(f"[learn] registered {name} -> {path}")
+    return {"ok": True, "spec": spec, "probes": probes, "error": ""}
