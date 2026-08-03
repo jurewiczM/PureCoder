@@ -349,6 +349,12 @@ def test_ingest_indexes_identical_text_once(tmp_path, capsys):
     assert len(s.chunks) == 1
     assert "dropped 1 duplicate chunks" in capsys.readouterr().out
 
+    # Dedupe shortens the list before it is embedded, so chunks and vectors
+    # must still agree. This is exactly the drift `load` refuses, checked on
+    # the one path that now shortens anything.
+    s.save()
+    assert DocStore(FakeEmbedder(), path=s.path).load().chunks == s.chunks
+
 
 def test_an_empty_query_matches_nothing(store):
     assert store.search("   ") == []
