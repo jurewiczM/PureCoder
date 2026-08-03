@@ -65,10 +65,17 @@ def test_every_spec_is_internally_consistent(name):
         assert spec.check_call, f"{name} must name its check helper"
         # check_call is the INVOCATION form, which is what the gate counts.
         # Rust's is `pc_check!`, while the definition reads `macro_rules!
-        # pc_check {` -- so compare on the bare name.
-        assert spec.check_call.rstrip("!") in spec.preamble, \
+        # pc_check {`; SQL's is `INSERT INTO pc_checks`, and what the preamble
+        # defines is the table at the end of it -- so compare on the last bare
+        # name either way.
+        helper = spec.check_call.rstrip("!").split()[-1]
+        assert helper in spec.preamble, \
             f"{name} names a check helper its preamble never defines"
-        assert spec.epilogue, f"{name} cannot prove a check ran"
+        # The proof that a check ran must be in the SPEC. For four languages
+        # that is the tail; for SQL the tail cannot express it and the runner
+        # does, which is legitimate because that runner is ours.
+        assert "no checks ran" in spec.epilogue + " ".join(spec.run), \
+            f"{name} cannot prove a check ran"
 
 
 @pytest.mark.parametrize("name", ["c++", "javascript", "rust", "c#"])
@@ -95,6 +102,45 @@ def test_a_language_needing_nothing_extra_says_nothing_extra():
     for name in ("python", "c++", "javascript", "rust"):
         assert L.get(name).writer_system == "", \
             f"{name} restates what the writer prompt already says"
+
+
+def test_sql_proves_a_check_ran_from_its_runner_not_its_tail():
+    """The one wired language whose proof is not in the epilogue. SQLite's
+    RAISE takes a literal, so a failing check cannot name itself from inside
+    SQL, and there is no statement that reliably ends a script non-zero. The
+    driver is ours -- unlike g++ or node -- so the verdict lives there, and the
+    invariant is that the SPEC proves it, not that the tail does."""
+    spec = L.get("sql")
+    assert "no checks ran" not in spec.epilogue
+    assert "no checks ran" in " ".join(spec.run)
+
+
+def test_a_failing_sql_check_says_which_one():
+    """A verdict with no label is a fix loop with nothing to act on -- the
+    reason the check table carries one."""
+    spec = _skip_unless("sql")
+    ok, err = run_candidate(
+        spec, "CREATE VIEW added AS SELECT 1 + 2 AS total;",
+        "INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 3, 'sum');\n"
+        "INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 9, 'wrong');",
+        timeout=30, require_checks=1)
+    assert not ok
+    assert "wrong" in err
+    assert "sum" not in err, "a passing check must not be reported as failing"
+
+
+def test_sql_can_be_generated_but_not_scaffolded():
+    """Two claims, and only the first holds. A one-file SQL "project" would
+    need a Makefile recipe that reproduces the driver, so `project` refuses
+    with a reason rather than writing a layout nothing proves."""
+    assert L.get("sql").project is None
+    assert L.get("sql").available()[0]
+
+
+def test_sql_tells_the_writer_whose_table_that_is():
+    """The harness creates `pc_checks` and the tests insert into it. An
+    implementation that creates or drops it breaks every check in the file."""
+    assert "pc_checks" in L.get("sql").writer_system
 
 
 def test_a_permanently_unvalidatable_language_refuses_with_a_reason():
@@ -182,6 +228,15 @@ CASES = {
         "fn add(a:i32,b:i32)->i32{a-b}",
         "fn pc_tests(){ pc_check!(add(1,2)==3); }",
         "fn pc_tests(){ }",
+    ),
+    # SQL has no function to call, so the thing under test is a view. The
+    # checks are rows: a boolean and a label, inserted into a table the
+    # harness created.
+    "sql": (
+        "CREATE VIEW added AS SELECT 1 + 2 AS total;",
+        "CREATE VIEW added AS SELECT 1 - 2 AS total;",
+        "INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 3, 'add');",
+        "",
     ),
 }
 
