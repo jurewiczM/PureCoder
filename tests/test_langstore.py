@@ -38,6 +38,16 @@ def test_a_docs_store_survives_the_round_trip():
     assert langstore.from_json(langstore.to_json(spec)).docs_store == "zig"
 
 
+def test_the_writers_demand_survives_the_round_trip():
+    """A drafted `writer_system` that the store dropped would be a no-op the
+    moment the process exited: the harness probes would pass, the entry would
+    save, and the next run's writer would be told nothing."""
+    spec = LanguageSpec(name="zig", extension=".zig",
+                        writer_system="write no entry point")
+    got = langstore.from_json(langstore.to_json(spec))
+    assert got.writer_system == "write no entry point"
+
+
 def test_an_entry_written_before_the_field_existed_still_loads():
     """Real files predate it. A missing key is an old entry, not a broken one."""
     data = langstore.to_json(LanguageSpec(name="zig", extension=".zig"))

@@ -156,6 +156,50 @@ def test_the_tester_prompt_is_templated_not_drafted():
     assert "no prose, no fences" in text.lower()
 
 
+def test_the_writer_prompt_is_templated_too():
+    """The last field `learn` could not produce. It is filled in from what the
+    probes already proved -- the helper's name and the shape of the tail -- for
+    the same reason the tester prompt is: a model writing its own instructions
+    measured worst."""
+    text = bootstrap.writer_system_for("PC_CHECK", tail_entry=True)
+    assert "PC_CHECK" in text
+    assert "wrapper class" in text
+
+
+def test_a_tail_that_runs_the_tests_is_the_entry_point_the_writer_must_not_write():
+    """C++'s tail is `int main() { pc_tests(); ... }` -- an entry point that
+    calls a name the tests define. A writer that emits its own main breaks the
+    assembly, and the fix loop sees only a linker error."""
+    harness = bootstrap.Harness(
+        preamble="static int pc_checks = 0;",
+        check_call="PC_CHECK",
+        epilogue="int main() { pc_tests(); return 0; }",
+        fixture=bootstrap.Fixture("int add(int,int);", "int add(int,int);",
+                                  "void pc_tests(){ PC_CHECK(1); }",
+                                  "void pc_tests(){ }",
+                                  "void pc_tests(){ PC_CHECK(0); }"))
+    assert bootstrap.tail_provides_the_entry_point(harness)
+    assert "entry point" in bootstrap.writer_system_for("PC_CHECK",
+                                                        tail_entry=True)
+
+
+def test_a_top_level_harness_says_so_instead():
+    """JavaScript's tail calls nothing the tests define -- the statements have
+    already run. The demand is the same shape, but the reason differs, and
+    telling the writer the tail will call it would be a lie."""
+    harness = bootstrap.Harness(
+        preamble="let pcChecks = 0;",
+        check_call="PC_CHECK",
+        epilogue="if (pcChecks < 1) { process.exit(2); }",
+        fixture=bootstrap.Fixture("function add(a,b){return a+b;}",
+                                  "function add(a,b){return a-b;}",
+                                  "PC_CHECK(add(1,2)===3, 'add');", "",
+                                  "PC_CHECK(false, 'x');"))
+    assert not bootstrap.tail_provides_the_entry_point(harness)
+    assert "top level" in bootstrap.writer_system_for("PC_CHECK",
+                                                      tail_entry=False)
+
+
 # ---- the trust boundary --------------------------------------------------
 
 def test_commands_are_parsed_into_argv_not_a_shell_string():
@@ -287,6 +331,17 @@ def test_a_learned_language_records_the_docs_it_came_from(store):
     assert L.get("cpplike").docs_store == "cpplike"
 
 
+def test_a_learned_language_tells_the_writer_what_its_harness_defines(store):
+    """The field `learn` used to leave empty. A hand-written entry gets one
+    when a person judged it necessary; a drafted entry gets one because nobody
+    judged anything, and the failure it prevents is silent."""
+    _cpp()
+    assert _learn(FakeModel(completions=DRAFTS), store)["ok"]
+    demand = L.get("cpplike").writer_system
+    assert "PC_CHECK" in demand
+    assert "entry point" in demand
+
+
 def test_a_language_learned_without_an_index_points_at_nothing(store):
     """The caller owns the index. A run that never built one must not leave a
     spec claiming there is one."""
@@ -370,6 +425,10 @@ def test_the_live_round_runs_and_can_pass(store):
         confirm=lambda b, r, p=None: True, verbose=False, live_check=True)
     assert res["ok"], res["error"]
     assert pc.code_kwargs[0]["language"] == "cpplike"
+    # The demand is not merely stored on the spec: the live round is the first
+    # thing that writes code in this language, and it is where a shape the
+    # harness cannot assemble would first appear.
+    assert "PC_CHECK" in pc.code_kwargs[0]["writer_system"]
 
 
 def test_the_live_round_uses_the_same_timeout_as_the_probes(store):

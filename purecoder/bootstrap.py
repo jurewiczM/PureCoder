@@ -286,6 +286,48 @@ def test_system_for(name: str, check_call: str) -> str:
         f"Assume the thing under test is already defined in the same file.")
 
 
+def writer_system_for(check_call: str, tail_entry: bool) -> str:
+    """The writer's extra demand, filled in from what the probes proved.
+
+    Templated for the same reason the tester prompt is, and asymmetric with the
+    hand-written entries on purpose. A built-in leaves this empty when a person
+    read the harness and judged nothing extra was needed -- C# is the one that
+    needed it. A drafted entry has had nobody read anything, and the failure it
+    guards is silent: the writer emits a wrapper or a second entry point, the
+    assembled file does not build, and the fix loop is handed a linker error
+    about `main` for code whose logic was correct.
+
+    Both facts here come from artifacts the probes already ran: `check_call` is
+    the helper `draft_check_call` matched against the preamble, and `tail_entry`
+    is read off the drafted tail. The concatenation claim is not a claim about
+    the language at all -- `LanguageSpec.assemble` really does paste four pieces
+    into one file, in that order.
+    """
+    tail = ("and, below it, the entry point that runs the tests"
+            if tail_entry else
+            "and runs its statements in order at top level")
+    return (f"Your implementation is pasted into a file that already defines "
+            f"{check_call} {tail} -- write neither, and put no wrapper class or "
+            f"module around your code")
+
+
+def tail_provides_the_entry_point(harness) -> bool:
+    """Whether the drafted tail is the thing that runs the tests.
+
+    Two harness shapes, the same distinction `dangling_calls` draws: a tail
+    that calls a name the test snippets define is an entry point (C++'s
+    `int main() { pc_tests(); ... }`), and one that calls nothing of theirs is
+    reached after the tests have already run (JavaScript's counter check).
+
+    Read from the drafted text rather than asked of the model, because the
+    answer is already written down by the time this is needed.
+    """
+    called = {name for name, opens_block in _APPLIED.findall(harness.epilogue)
+              if not opens_block}
+    defined = harness.fixture.tests + "\n" + harness.fixture.empty
+    return any(re.search(rf"\b{re.escape(name)}\b", defined) for name in called)
+
+
 # ---- the trust boundary --------------------------------------------------
 #
 # Every hand-written entry's build and run commands were written by a person.
@@ -767,6 +809,8 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
             build=build, run=run, preamble=harness.preamble,
             epilogue=harness.epilogue, check_call=harness.check_call,
             test_system=test_system_for(name, harness.check_call),
+            writer_system=writer_system_for(
+                harness.check_call, tail_provides_the_entry_point(harness)),
             docs_store=docs_store,
         )
 
