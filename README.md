@@ -155,6 +155,35 @@ otherwise flagged 45 pieces of correct code in the measurement that settled it
 — but once the compiler has rejected a name, it answers *did you mean* from the
 real API instead of leaving the fix loop guessing.
 
+## Teaching it a language it has never run
+
+Five languages exist because someone wrote five registry entries. `learn` points
+the pipeline at a language's own documentation and has it draft the sixth:
+
+```bash
+purecoder learn zig ./zig-docs --ext .zig
+purecoder --lang zig code "a function add(a, b) returning their sum"
+```
+
+What the model drafts from those docs: the check helper, the harness tail that
+fails a run where no check executed, and the build/run commands (shown to you as
+argv, confirmed before anything is executed). What it does **not** draft is the
+tester's own instructions — those are templated, because a model writing its own
+instructions is the technique that measured worst.
+
+Then the gate. Five mechanical probes must pass before anything is registered:
+correct code passes, **wrong code fails**, an empty suite fails, a suite that
+never runs a check fails. A harness that cannot fail wrong code is a rubber
+stamp, not a language entry, and is refused with the compiler's own message.
+Plus one live round — a real generate-and-validate cycle — unless you pass
+`--no-live`.
+
+A learned language **keeps the index of its documentation**, so the second
+command above is doc-grounded automatically: no second `ingest`, no `--store` to
+remember, and once the toolchain rejects a name, the docs answer *did you mean*.
+`--no-docs` opts out. Registered languages live as one JSON file each under
+`$PURECODER_HOME` (or XDG), so a bad entry is removable with `rm`.
+
 ## Commands
 
 | command | what it does |
@@ -163,10 +192,14 @@ real API instead of leaving the fix loop guessing.
 | `env "<spec>"`     | grammar-valid `.env` |
 | `make "<spec>"`    | validated Makefile |
 | `project <name> "<spec>" [dir]` | scaffold a whole project (code + Makefile + .env + README) |
-| `ingest <dir>`     | build a RAG index over docs/code |
+| `ingest <dir>`     | build a RAG index over docs/code, after showing you what it will index |
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
-| `learn <name> <docs>` | draft a language entry from its docs, and probe it |
+| `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
 | `status`           | live system status |
+
+Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
+(otherwise a learned language uses its own); `--no-docs` ignores it; `-y` skips
+the ingest review; `--exclude GLOB` leaves paths out of an index.
 
 `project` derives a spec contract by default; `code` does not. Add
 `--contract` to opt in, `--no-contract` to opt out, or set
@@ -186,11 +219,11 @@ purecoder/
   symbols.py     the names the docs use, and what they can honestly decide
   status.py      live system probe
   bootstrap.py   draft a language entry from its docs, then probe it
-  langstore.py   where a learned language lives between runs
+  langstore.py   where a learned language and its docs live between runs
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           365 tests (no GPU, no server; toolchain ones self-skip)
+tests/           377 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

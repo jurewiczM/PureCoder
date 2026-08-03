@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-365 tests, all green, none of them needing a GPU or a running server
+377 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -25,6 +25,8 @@ _Snapshot of what's built, tested, and what's next._
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
 | 7 | `learn` drafting + CLI | ✅ tested | drafts scripted; probes run g++ end to end |
+| 8 | hybrid ranking + reviewed ingest | ✅ tested | exact-name signal decides where cosine is blind; nothing embedded before the user accepts |
+| 8 | a learned language keeps its docs | ✅ tested | `code --lang X` grounded with no second ingest; every failure path degrades instead of stopping |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
@@ -118,6 +120,12 @@ _Snapshot of what's built, tested, and what's next._
   so), and it meets the project's oldest finding, that the writer is stronger
   than the tester, for a language the model barely saw. Wiring OCaml properly
   is separate work.
+- **A learned language carries its own documentation, and `project` still
+  cannot use it.** `learn` keeps the index it built, so `code --lang X` is
+  doc-grounded with no second ingest. `project` is not: the scaffolder takes a
+  description straight through to `generate_validated_python`, so the grounding
+  seam is in the CLI where `project` does not pass. Deliberate scope, not an
+  oversight -- doc-grounded scaffolding is the first item under Next steps.
 - **A learned language can be generated and validated, but not scaffolded.**
   It arrives with no `ProjectSpec` -- proving a language runs says nothing
   about how a project of it is laid out -- so `project` refuses it and points
@@ -187,7 +195,10 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **Wire RAG into the scaffolder** — doc-grounded whole projects.
+1. **Wire RAG into the scaffolder** — doc-grounded whole projects. `code` and
+   `ask` now ground themselves in a learned language's own docs; `project`
+   still does not, because the seam sits in the CLI and the scaffolder is
+   called past it.
 2. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
    runner is free, but SQL has no `assert`, and the check idiom every other
    language gets from its harness needs real design rather than a `1/0` trick.
@@ -207,3 +218,10 @@ instrumentation), the `.env` guard (grammar bound plus a looser validator),
 test leakage into the implementation (`lint_implementation`), the discarded
 gate verdict, dependency thrash (one stdlib retry then stop), and sandbox
 process-group cleanup.
+
+Done in the retrieval pass after that: an index that could pair a chunk with
+another chunk's source is now refused rather than answered from; the gate can
+no longer inject a heading with no documentation under it; `ingest` prunes
+caches and shows what it will index before embedding anything; ranking gained
+an exact-name signal; the lexical index was inverted (400-500x on a large
+corpus); and a learned language keeps the docs it was learned from.

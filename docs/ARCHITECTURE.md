@@ -130,6 +130,26 @@ Five languages exist because a human wrote five entries. `purecoder learn`
 points the pipeline at a language's own documentation and has it draft the
 sixth: check helper, harness tail, tester prompt, build and run commands.
 
+```
+docs dir ──ingest──▶ index ──retrieve──▶ draft harness + commands
+                       │                          │
+                       │                     confirm argv
+                       │                          ▼
+                       │                   5 probes + 1 live round
+                       │                          │  (nothing registers until they pass)
+                       └──────── kept ────────────┴──▶ LanguageSpec + its index
+                                                              │
+                        purecoder --lang X code "..." ────────┘
+                          docs retrieved, harness assembled,
+                          tests designed fresh per request
+```
+
+Worth being precise about what is stored and what is not. The **harness** and
+the **tester's instructions** live on the spec, so they are written once. The
+**tests for your feature** are not: they are designed per request, code-blind
+from the spec or contract, and never cached — a stored test suite would be a
+test that stopped tracking what it was asked to check.
+
 **What is drafted and what is not, and why.** The drafting prompts carry the
 existing C++, JavaScript and Rust entries as *worked examples* rather than a
 prose description of what a harness should look like. That is measured, not
@@ -164,6 +184,33 @@ confirms explicitly before the first execution. Silence is a no.
 registered at import, recording where it was drafted from. It can never shadow
 a built-in entry — that guard holds at save time *and* at load time, since the
 file is editable by hand.
+
+**The docs are kept, not consumed.** The index built to draft the harness used
+to be discarded, so getting that documentation back at generation time meant
+`ingest`ing the same directory again into a store nothing connected to the
+language. It is now written beside the saved language and named on the spec, so
+the whole flow is one command then the next:
+
+```
+purecoder learn zig ./zig-docs --ext .zig   # index -> draft -> probe -> keep both
+purecoder --lang zig code "..."             # reads those docs, no --store
+```
+
+The spec stores a *stem*, never a path — the location follows
+`PURECODER_HOME`, and an absolute path baked into a saved language breaks the
+moment that moves. The index is written only after the probes pass: a failed
+run must not leave files belonging to a language that was never registered.
+`ask` uses the same index when no `--store` is given; an explicit `--store`
+still wins, which is why that flag defaults to `None` rather than a string.
+
+Every way this can fail is ordinary, and none of them stop a generation.
+Retrieval is an optional install, and an index can be absent, unreadable, or
+built by a different embedding model. For `code` each prints a line and
+continues ungrounded — **the harness is what proves a learned language's
+output, and it needs neither an index nor `sentence-transformers`.** For `ask`,
+whose whole purpose is the documentation, a missing index is still an error.
+`--no-docs` opts out; a hand-written language has no `docs_store` and is
+untouched.
 
 **Boundary.** The probes check that the harness works. They cannot check
 *idiom*: a spec can pass every probe and still produce code no practitioner of

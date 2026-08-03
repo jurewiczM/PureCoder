@@ -11,9 +11,13 @@ Usage:
     purecoder env    "<spec>"                 # grammar-valid .env
     purecoder make   "<spec>"                 # validated Makefile
     purecoder project <name> "<spec>" [dir]   # scaffold a whole project
-    purecoder ingest <docs_dir> [--store S]   # build a RAG index
-    purecoder ask    "<spec>" [--store S]      # code, doc-grounded via RAG
+    purecoder ingest <docs_dir> [--store S]   # build a RAG index, reviewed
+    purecoder ask    "<spec>" [--store S]     # code, doc-grounded via RAG
+    purecoder learn  <name> <docs_dir>        # draft a language, prove it, keep its docs
     purecoder status                          # print system status
+
+A language learned by `learn` keeps the index of its own documentation, so
+`code --lang <name>` is doc-grounded with no second ingest and no --store.
 """
 
 import argparse
