@@ -955,6 +955,8 @@ def draft_commands(pc, name: str, extension: str, context: str):
         f"needs no compilation step\n"
         f"RUN: the command that runs it, using {{bin}} if you compiled one, "
         f"otherwise {{src}}\n"
+        f"TOOLCHAIN: the name of the binary that must be installed for either "
+        f"line to work, on its own\n"
         f"Use no shell features: no pipes, no redirection, no &&.")
     text = strip_fences(pc.complete(system=system, user=user, grammar=None,
                                     n_predict=128)["text"])
@@ -1353,12 +1355,13 @@ Task 7's docs, and are deliberately not built.
 returns tuples, which is what `LanguageSpec.build`/`.run` require and what
 `_TUPLE_FIELDS` restores from JSON in Task 1.
 
-**Known risk, flagged not solved.** `learn_language` builds `probe=(run[0],)`
-only when `run[0]` has no placeholder — a language whose runner is the built
-binary gets no availability probe, so `available()` returns True on a machine
-without the toolchain and the failure surfaces at build time instead. That
-matches how `c++` behaves today (its probe is `g++`, its run is `{bin}`) only
-because the C++ entry was hand-written to probe the compiler. Task 6 cannot
-infer that. Accept it, or extend Task 5's prompt to ask for the toolchain
-binary name explicitly — the second is one more line in the draft and worth
-doing if the first bootstrapped language turns out to need it.
+**Resolved during review.** An earlier draft inferred the availability probe
+from `run[0]`, which is `{bin}` for every compiled language — so `probe=()`,
+`available()` returns True unconditionally, and `--lang zig` is accepted on a
+machine with no zig. `draft_commands` now asks for the toolchain binary as a
+third line and returns it, and Task 6 builds `probe=(toolchain, "--version")`.
+
+**Accepted risk.** The live round is a veto: a spec that passes all five probes
+is still discarded if the writer and tester cannot converge on a bubble sort.
+That is what was asked for, and `--no-live` exists for when the toolchain is
+slow enough that the round costs more than it proves.
