@@ -111,16 +111,21 @@ class PureCoder:
             **kw,
         )
 
-    def code(self, description, language="python", **kw) -> dict:
+    def code(self, description, language="python", writer_system="", **kw) -> dict:
         out = self.complete(
             # The fix loop shows the model the tests its last attempt failed,
             # and left to itself it copies them into the implementation --
             # observed live, and they then run twice, since the real tests are
             # appended after the code.
+            #
+            # writer_system is the language's own extra demand, appended
+            # verbatim. Most languages need none; C#'s harness is a file-based
+            # app, so "no class wrapper, no Main" is what makes it assemble.
             system=f"You output only {language} code: the implementation and "
                    f"nothing else. No explanation, no markdown, no fences. "
                    f"Never include tests, assertions, example calls, print "
-                   f"statements at module level, or a __main__ block.",
+                   f"statements at module level, or a __main__ block."
+                   + (f" {writer_system}." if writer_system else ""),
             user=description,
             grammar=None,
             **kw,
