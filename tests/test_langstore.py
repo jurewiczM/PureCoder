@@ -54,18 +54,6 @@ CANDIDATE = LanguageSpec(
 )
 
 
-@pytest.fixture
-def store(tmp_path, monkeypatch):
-    """A private store, and a registry left exactly as it was found."""
-    from purecoder.languages import REGISTRY
-
-    monkeypatch.setenv("PURECODER_HOME", str(tmp_path))
-    before = dict(REGISTRY)
-    yield tmp_path / "languages"
-    REGISTRY.clear()
-    REGISTRY.update(before)
-
-
 def test_saving_then_loading_restores_the_spec(store):
     from purecoder.languages import REGISTRY
 
