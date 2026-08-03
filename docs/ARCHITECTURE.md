@@ -106,9 +106,25 @@ know nothing else about it. A compile failure is ordinary fix-loop feedback —
 it is exactly what the writer needs — so C++, Rust and C# get a check Python
 never had.
 
+**SQL is the entry that had to be designed rather than translated.** The four
+compiled/interpreted harnesses all say the same thing in their own syntax: `if
+(!cond) { print; exit 1; }`. SQL has no `if`, no `exit`, and no assertion —
+SQLite's `RAISE` lives only inside a trigger and takes a literal, so a failing
+check cannot name itself, and the `SELECT 1/0` trick returns NULL. So a check is
+a **row**: the preamble creates `pc_checks(ok, label)`, a check is an `INSERT`
+of a boolean and a label, and the stdlib `sqlite3` driver reads the table back
+afterwards — no rows is "no checks ran", any row with `ok <> 1` is a failure
+that prints its own label. The verdict therefore lives in `run` rather than in
+`epilogue`, which is a genuine asymmetry, allowed because that driver is ours
+and not a third-party interpreter. The invariant the registry enforces is
+stated in those terms: the *spec* must prove a check ran. One side effect is
+better than the others manage — every failing check is reported, where an
+`exit 1` helper stops at the first.
+
 Non-Python languages are not parsed. Each harness injects its own assertion
-helper (`PC_CHECK`, `pc_check!`) and the tester prompt names it, which buys the
-gate an assertion count without a parser per language, and buys the run a way
+helper (`PC_CHECK`, `pc_check!`, `INSERT INTO pc_checks`) and the tester prompt
+names it, which buys the gate an assertion count without a parser per language,
+and buys the run a way
 to **prove** a check executed instead of inferring it from exit code 0. That
 last guarantee took the Python path a session of false greens to earn; the
 newer languages have it from the first commit.
