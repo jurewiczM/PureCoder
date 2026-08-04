@@ -158,8 +158,13 @@ CODE_LANGUAGES = {
 # `function_definition`, JavaScript `function_declaration`, Rust
 # `function_item`, OCaml `value_definition` -- and a per-language table would
 # be the per-language surface this whole design exists to avoid.
-_DEFINITION_SUFFIXES = ("_definition", "_declaration", "_item", "_specifier",
-                        "_binding")
+# `_specification` is here because of a live run: OCaml `.mli` files -- an
+# interface file is nothing BUT declarations -- parse every `val` as
+# `value_specification`, so leaving it out sent all sixteen of `option.mli`'s
+# entries to the prose fallback and produced chunks like `()] otherwise. *)`.
+# The chunker was useless on exactly the corpus it was written for.
+_DEFINITION_SUFFIXES = ("_definition", "_declaration", "_specification",
+                        "_item", "_specifier", "_binding")
 
 
 def _ts_parser(lang: str):
@@ -177,8 +182,12 @@ def _ts_parser(lang: str):
 
 
 # What the various grammars call an identifier.
+# `type_constructor` is OCaml's name for the name in `type 'a t = ...`. Without
+# it the walk reached `None` in the variant declaration first and labelled the
+# type after its own first constructor -- also from the live run.
 _NAME_TYPES = ("identifier", "type_identifier", "field_identifier",
-               "property_identifier", "value_name", "constructor_name")
+               "property_identifier", "value_name", "constructor_name",
+               "type_constructor")
 
 
 def _ts_name(node, source: bytes, max_depth: int = 4) -> str:

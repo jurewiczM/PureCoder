@@ -658,3 +658,47 @@ def test_ingest_sees_the_code_files_it_can_now_chunk(tmp_path):
     plan = plan_ingest(str(tmp_path))
     names = {os.path.basename(src) for src in plan.sources}
     assert {"lib.ml", "demo.cpp", "notes.md"} <= names, names
+
+
+OCAML_INTERFACE = '''\
+(** Option values. *)
+
+type 'a t = 'a option = None | Some of 'a
+
+(** [none] is [None]. *)
+val none : 'a option
+
+(** [some v] is [Some v]. *)
+val some : 'a -> 'a option
+'''
+
+
+def test_an_ocaml_interface_is_chunked_by_declaration():
+    """Found live against the real stdlib .mli files. `val` declarations parse
+    as `value_specification`, which the suffix list did not carry -- so all
+    sixteen of them fell into the preamble and were cut into prose fragments
+    like `()] otherwise. *)`. An interface file is nothing BUT declarations,
+    which made the chunker useless on exactly the corpus it was built for."""
+    pytest.importorskip("tree_sitter_language_pack")
+    chunks = rag.chunk_code(OCAML_INTERFACE, "option.mli", "ocaml")
+    labels = _labels(chunks)
+    assert any("none" in label for label in labels), labels
+    assert any("some" in label for label in labels), labels
+
+
+def test_a_declaration_keeps_the_doc_comment_above_it():
+    """In an interface file the comment IS the documentation -- losing it
+    leaves a signature with nothing to retrieve on."""
+    pytest.importorskip("tree_sitter_language_pack")
+    chunks = rag.chunk_code(OCAML_INTERFACE, "option.mli", "ocaml")
+    body = next(c[0] for c in chunks if "none" in c[0].splitlines()[0])
+    assert "[none] is [None]" in body
+
+
+def test_a_type_is_labelled_by_its_own_name_not_its_first_constructor():
+    """`type 'a t = ... None | Some of 'a` was labelled `None`: the walk found
+    a constructor before the type constructor, because `type_constructor` was
+    not counted as a name."""
+    pytest.importorskip("tree_sitter_language_pack")
+    labels = _labels(rag.chunk_code(OCAML_INTERFACE, "option.mli", "ocaml"))
+    assert any(label.endswith("t in option.mli") for label in labels), labels
