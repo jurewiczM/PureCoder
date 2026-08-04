@@ -403,7 +403,34 @@ def _parse_command(label: str, line: str) -> tuple:
         raise ValueError(f"the {label} command does not parse: {e}") from e
 
 
-def draft_commands(pc, name: str, extension: str, context: str):
+def draft_commands_with_retry(pc, name: str, extension: str, context: str,
+                              max_retries: int = 2):
+    """`draft_commands`, with the refusal fed back. -> (build, run, toolchain).
+
+    The harness has been redrafted with its probe diagnostics since the first
+    live run; the commands were not, and a single bad sample ended the whole
+    run. Observed live: `ocamlc {src}` with no `-o {bin}` -- rejected correctly
+    by a check that exists because a build writing nowhere leaves the run
+    command with no binary -- on a machine where the previous run had drafted
+    the same command correctly. The checks are strict on purpose, which is
+    exactly why one sample should not be the verdict.
+
+    The last refusal is raised unchanged when the attempts run out, so a
+    language that genuinely cannot be described still fails with the reason.
+    """
+    feedback = ""
+    for attempt in range(1, max(1, max_retries) + 1):
+        try:
+            return draft_commands(pc, name, extension, context, feedback)
+        except ValueError as e:
+            if attempt >= max_retries:
+                raise
+            feedback = (f"\n\nYour previous answer was rejected: {e}. "
+                        f"Correct it and output the three lines again.")
+
+
+def draft_commands(pc, name: str, extension: str, context: str,
+                   feedback: str = ""):
     """How this language compiles and runs ONE file. -> (build, run, toolchain).
 
     Placeholders are `{src}`, `{bin}` and `{python}`, filled in by the executor.
@@ -423,7 +450,7 @@ def draft_commands(pc, name: str, extension: str, context: str):
         f"otherwise {{src}}\n"
         f"TOOLCHAIN: the name of the binary that must be installed for those "
         f"commands to work, on its own\n"
-        f"Use no shell features: no pipes, no redirection, no &&.")
+        f"Use no shell features: no pipes, no redirection, no &&.{feedback}")
     text = strip_fences(pc.complete(system=system, user=user, grammar=None,
                                     n_predict=128)["text"])
 
@@ -813,8 +840,9 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
     log(f"[learn] drafting a {name} harness")
     try:
         harness = draft_harness(pc, name, retrieve)
-        build, run, toolchain = draft_commands(pc, name, extension,
-                                               retrieve(QUERIES["commands"]))
+        build, run, toolchain = draft_commands_with_retry(
+            pc, name, extension, retrieve(QUERIES["commands"]),
+            max_retries=max_retries)
     except ValueError as e:
         return _failed(f"drafting failed: {e}")
 

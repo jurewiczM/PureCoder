@@ -925,3 +925,30 @@ def test_code_and_comments_survive(line):
     """A filter that eats code is far worse than the prose it removes -- the
     harness would fail a probe for a line nobody can see."""
     assert line in bootstrap.strip_prose(line)
+
+
+def test_a_rejected_command_draft_is_retried_with_the_reason():
+    """Live gap. The harness is redrafted with its probe diagnostics, but a
+    command draft that failed a structural check killed the whole run -- and
+    these checks are strict by design, so one bad sample was fatal. Observed:
+    `ocamlc {src}` with no `-o {bin}`, after a previous run had drafted the
+    same command correctly."""
+    pc = FakeModel(completions=[
+        "BUILD: ocamlc {src}\nRUN: {bin}\nTOOLCHAIN: ocamlc",       # rejected
+        "BUILD: ocamlc -o {bin} {src}\nRUN: {bin}\nTOOLCHAIN: ocamlc",
+    ])
+    build, run, toolchain = bootstrap.draft_commands_with_retry(
+        pc, "ocaml", ".ml", "DOCS", max_retries=2)
+    assert build == ("ocamlc", "-o", "{bin}", "{src}")
+    assert toolchain == "ocamlc"
+    assert "{bin}" in pc.calls[1][1], "the retry never saw why it was rejected"
+
+
+def test_a_command_draft_that_never_improves_still_gives_up():
+    """The retry must not turn a refusal into a loop. Two attempts, then the
+    same ValueError the single-shot path raised."""
+    pc = FakeModel(completions=["BUILD: ocamlc {src}\nRUN: {bin}\n"
+                                "TOOLCHAIN: ocamlc"])
+    with pytest.raises(ValueError, match="{bin}"):
+        bootstrap.draft_commands_with_retry(pc, "ocaml", ".ml", "DOCS",
+                                            max_retries=2)
