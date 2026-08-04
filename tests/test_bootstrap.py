@@ -952,3 +952,45 @@ def test_a_command_draft_that_never_improves_still_gives_up():
     with pytest.raises(ValueError, match="{bin}"):
         bootstrap.draft_commands_with_retry(pc, "ocaml", ".ml", "DOCS",
                                             max_retries=2)
+
+
+def test_the_helper_name_bends_to_the_language_naming_rules():
+    """Live finding, and the prompt was causing it. The drafting prompt
+    dictated a helper "named PC_CHECK", every worked example is uppercase, and
+    OCaml reserves capitalised identifiers for constructors -- so the model
+    wrote `let PC_CHECK cond =` and ocamlc said `Unbound constructor
+    PC_CHECK`. Four drafting attempts, all failing the same way, because the
+    instruction itself was invalid in the target language.
+
+    `draft_check_call` already matches the name case-insensitively, so nothing
+    downstream needed the capitals."""
+    pc = FakeModel(completions=["let pc_check cond = ..."])
+    bootstrap.draft_preamble(pc, "ocaml", "DOCS")
+    _system, user = pc.calls[0]
+    assert "naming rules" in user or "lower-case" in user.lower()
+    assert "pc_check" in user, "no lower-case alternative offered"
+
+
+def test_a_line_echoed_from_the_prompt_is_removed():
+    """Live finding, after the prose filter. The model copied a line of its own
+    instructions into the fixture -- "and ends with this, which runs the
+    tests:" -- and ocamlc failed on it. Too short for the prose filter (8
+    words) and it carries no code punctuation, so the exact test is the honest
+    one: this line was in the request."""
+    prompt = ("A test harness for ocaml defines this:\n\nPREAMBLE\n\n"
+              "and ends with this, which runs the tests:\n\nEPILOGUE\n")
+    answer = ("let add a b = a + b\n"
+              "and ends with this, which runs the tests:\n"
+              "let sub a b = a - b\n")
+    cleaned = bootstrap.strip_echo(answer, prompt)
+    assert "and ends with this" not in cleaned
+    assert "let add a b = a + b" in cleaned
+    assert "let sub a b = a - b" in cleaned
+
+
+def test_code_the_prompt_also_contains_is_kept():
+    """The worked examples ARE the prompt, so a filter that dropped anything
+    appearing there would delete the harness it asked for."""
+    prompt = "static int pc_checks = 0;\nlet pc_check cond = exit 1\n"
+    answer = "static int pc_checks = 0;\nlet pc_check cond = exit 1\n"
+    assert bootstrap.strip_echo(answer, prompt) == answer.strip()

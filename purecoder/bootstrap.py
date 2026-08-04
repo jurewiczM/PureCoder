@@ -74,6 +74,32 @@ def strip_prose(text: str) -> str:
     return "\n".join(ln for ln in text.splitlines() if not _is_prose(ln))
 
 
+def strip_echo(text: str, prompt: str) -> str:
+    """Drop lines the model copied out of its own instructions.
+
+    Observed live, after the prose filter was already in place: a fixture came
+    back containing "and ends with this, which runs the tests:" -- a line of the
+    drafting prompt -- and ocamlc failed on it. Eight words, no code
+    punctuation, so it sits under the prose filter's threshold, and lowering
+    that threshold would start eating real comments.
+
+    This test is exact instead of statistical: the line was in the request. It
+    only fires on lines that also look like instructions rather than code, so
+    the worked examples -- which are real harness source, quoted in the prompt
+    precisely so the model can copy them -- survive.
+    """
+    request = prompt.lower()
+    keep = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        wordy = len(re.findall(r"[A-Za-z_]+", stripped)) >= 5
+        if (len(stripped) >= 20 and wordy and not _CODE_PUNCT & set(stripped)
+                and stripped.lower() in request):
+            continue
+        keep.append(line)
+    return "\n".join(keep).strip()
+
+
 # A fence marker with its optional language tag, wherever it appears.
 _FENCE = re.compile(r"```[A-Za-z0-9_+-]*")
 
@@ -194,9 +220,20 @@ def draft_preamble(pc, name: str, context: str, feedback: str = "") -> str:
         f"at zero; define a helper named PC_CHECK taking one boolean "
         f"expression; on failure print \"CHECK FAILED: \" plus the expression "
         f"to standard error and exit with status 1; on success increment the "
-        f"counter. Output only that code.{feedback}")
-    return unfence(pc.complete(system=system, user=user, grammar=None,
-                               n_predict=512)["text"])
+        f"counter.\n"
+        # The name is a request, not a rule, and saying so is the fix for a
+        # live failure: OCaml reserves capitalised identifiers for
+        # constructors, so `let PC_CHECK cond =` is `Unbound constructor
+        # PC_CHECK`, and four drafting attempts failed on an instruction that
+        # could not be followed. `draft_check_call` matches the name case
+        # -insensitively, so nothing downstream ever needed the capitals.
+        f"If {name}'s naming rules forbid that spelling -- some languages "
+        f"reserve capitalised identifiers -- use the closest legal form, such "
+        f"as pc_check, and keep it consistent.\n"
+        f"Output only that code.{feedback}")
+    return strip_echo(unfence(pc.complete(system=system, user=user,
+                                          grammar=None,
+                                          n_predict=512)["text"]), user)
 
 
 def draft_check_call(pc, name: str, preamble: str) -> str:
@@ -255,8 +292,9 @@ def draft_epilogue(pc, name: str, preamble: str, context: str,
         f"Then, if the counter is still zero, print \"no checks ran\" to "
         f"standard error and exit with status 2. Use fully qualified names for "
         f"anything you did not define. Output only that code.{feedback}")
-    return unfence(pc.complete(system=system, user=user, grammar=None,
-                               n_predict=512)["text"])
+    return strip_echo(unfence(pc.complete(system=system, user=user,
+                                          grammar=None,
+                                          n_predict=512)["text"]), user)
 
 
 _SECTIONS = ("WRONG", "TESTS", "EMPTY", "ALWAYS_FAILS")
@@ -297,8 +335,8 @@ def draft_fixture(pc, name: str, preamble: str, epilogue: str,
         f"5. a test body containing exactly one check that must fail\n\n"
         f"Output the five snippets in that order, with the separator lines "
         f"between them and nothing else.{feedback}")
-    text = pc.complete(system=system, user=user, grammar=None,
-                       n_predict=768)["text"]
+    text = strip_echo(pc.complete(system=system, user=user, grammar=None,
+                                  n_predict=768)["text"], user)
 
     parts = [text]
     for marker in _SECTIONS:
