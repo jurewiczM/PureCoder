@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-450 tests, all green, none of them needing a GPU or a running server
+472 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -144,6 +144,39 @@ _Snapshot of what's built, tested, and what's next._
 - The first live run of the bootstrap layer and its five defects, all now
   fixed, are written up in
   [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
+- **A second live run, over everything built since, found three more** --
+  [docs/live-runs/2026-08-04-five-steps.md](live-runs/2026-08-04-five-steps.md).
+  SQL's writer was never told the database starts empty (and saying so in
+  `writer_system` did not fix it -- the mechanical hint on the failed run did);
+  Python's tester, alone among the five, was never told to keep its assertions
+  out of a function nobody calls; and the tree-sitter chunker lost every
+  declaration in a real OCaml `.mli`, because `val` parses as
+  `value_specification` and the suffix list said `_specifier`. All three were
+  invisible to 450 passing tests and were found by pointing the pipeline at
+  real input. Note the run used Q5_K_M at 20/29 layers offloaded, not the
+  Q4_K_M every earlier finding here assumes.
+- **The bootstrap's own prompts were three of its four failure modes.** Six
+  `learn ocaml` runs against real stdlib `.mli` files produced: a model
+  explanation compiled as source (`unfence` strips fences, not prose); a
+  structural command check with no retry, where one bad sample ended the run;
+  a prompt demanding `PC_CHECK` when OCaml reserves capitalised identifiers for
+  constructors, so four redrafts failed an instruction that cannot be followed;
+  and the model copying a line of its own prompt into the fixture. Fixed, the
+  harness went from three of five probes -- failing identically across four
+  redrafts -- to five of five, then failed the live round on tester type
+  errors, which is the older documented boundary. Two later runs got three of
+  five again: **bootstrap on this model is possible and unreliable, where
+  before it was impossible.** Nothing registered in any of the six runs, which
+  is the gate's whole claim.
+- **`purecoder measure` has been run, and it could not measure what it exists
+  to measure.** Zero divergence in both arms across two full passes; nine of
+  ten arms ended in the loop refusing, eight of those blaming the test
+  designer. Spec-divergence only exists downstream of a passing run, so a
+  pipeline that fails closed on these specs gives the instrument nothing to
+  see. The first pass was also confounded by the tester-wrapping defect above
+  and was discarded rather than published. What the run does give is the first
+  quantitative form of finding 1: the tester is the bottleneck, in eight of ten
+  arms.
 - **A learned language is only as good as its tester.** OCaml now registers on
   the first attempt with all five probes green, but generating *with* it stalls
   on test quality: the writer produced correct OCaml every time while the
