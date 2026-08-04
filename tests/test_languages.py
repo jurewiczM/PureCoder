@@ -368,3 +368,24 @@ def test_an_interpreted_language_needs_no_entry_stub():
     assert L.get("python").project.entry_stub == ""
     assert L.get("javascript").project.entry_stub == ""
     assert "main" in L.get("c++").project.entry_stub
+
+
+def test_sql_tells_the_writer_the_database_starts_empty():
+    """Live finding. Asked for "a view over a table orders", the writer emitted
+    a correct view and no table, the run died on `no such table: main.orders`
+    three attempts running, and the loop then blamed the tests. Every other
+    language hands the writer an environment that already exists; SQL hands it
+    an empty database, and nothing said so."""
+    demand = L.get("sql").writer_system
+    assert "empty" in demand.lower()
+    assert "CREATE TABLE" in demand
+
+
+def test_the_python_tester_is_told_not_to_wrap_its_asserts():
+    """Live finding, and an old one seen again: the designer wrapped every
+    assertion in `def test_mean_of():` that nothing calls, so the run exited 0
+    with no check executed. The runtime instrumentation caught it and refused
+    honestly -- three times, at full generation cost. The four non-Python
+    prompts all forbid a wrapper; Python's never did."""
+    text = L.PYTHON.test_system
+    assert "no test function" in text.lower() or "do not wrap" in text.lower()

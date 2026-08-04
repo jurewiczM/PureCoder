@@ -131,7 +131,9 @@ PYTHON = LanguageSpec(
         "call it inside 'try', then 'except ThatError: pass', then 'else: "
         "assert False'. Never put 'assert False' inside the try -- your own "
         "except would catch it and the test would pass on code that raised "
-        "nothing."
+        "nothing. Write every assertion at module level: no test function, no "
+        "def, no class. Assertions inside a function nobody calls never "
+        "execute, and the run is refused for having proved nothing."
     ),
     project=ProjectSpec(
         entry="main.py",
@@ -440,9 +442,16 @@ register(LanguageSpec(
         "database."
     ),
     writer_system=(
-        "You output only SQLite DDL and DML -- CREATE TABLE, CREATE VIEW, "
-        "INSERT of your own seed data. The file already creates the pc_checks "
-        "table the tests use, so never create, drop or read it"
+        # The "starts EMPTY" half is from a live run. Asked for a view over a
+        # table `orders`, the model wrote a correct view and no table, and the
+        # run died three times on `no such table: main.orders`. Every other
+        # language hands the writer an environment that exists -- a compiler, a
+        # runtime, a standard library -- and SQL hands it an empty database,
+        # which nothing said out loud.
+        "You output only SQLite DDL and DML. The database starts EMPTY, so you "
+        "must CREATE TABLE and INSERT the data your statements read -- a view "
+        "over a table nobody created cannot run. The file already creates the "
+        "pc_checks table the tests use, so never create, drop or read that one"
     ),
     check_call="INSERT INTO pc_checks",
     aliases=("sqlite", "sqlite3"),
