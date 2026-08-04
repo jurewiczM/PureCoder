@@ -36,6 +36,44 @@ from .languages import (
 # probe asks whether an error reaches the fix loop at all.
 SYNTAX_GARBAGE = "\n@@@ purecoder syntax probe @@@\n"
 
+# English function words that are ordinary in a sentence and rare as bare
+# tokens in code. `if`, `not` and `then` are deliberately absent -- they are
+# OCaml.
+_ENGLISH = frozenset(("the", "a", "an", "of", "this", "which", "its", "these",
+                      "that", "it", "is", "are", "was", "will"))
+
+# Punctuation a line of code almost always carries and a sentence does not.
+_CODE_PUNCT = set("={};")
+
+
+def _is_prose(line: str) -> bool:
+    words = re.findall(r"[A-Za-z_]+", line)
+    if len(words) < 10 or _CODE_PUNCT & set(line):
+        return False
+    return sum(1 for w in words if w.lower() in _ENGLISH) >= 3
+
+
+def strip_prose(text: str) -> str:
+    """Drop the explanation a drafting model wrote around its code.
+
+    Observed live: every drafting prompt says "output only source code, no
+    prose", and the model appended a paragraph beginning "This OCaml code
+    declares a mutable reference..." anyway. `unfence` removes fence markers
+    only, so the paragraph reached `ocamlc` as `Error: Syntax error` at line
+    14. Two probes failed for it, and the redraft was handed the compiler
+    complaining about the model's own English -- which it did not read as an
+    instruction to stop writing English.
+
+    The test is conservative in the direction that matters: a filter that eats
+    code would fail a probe for a line nobody can see, which is far worse than
+    the prose it removes. So a line must be long, carry none of `= { } ;`, and
+    use several English function words that are rare as bare tokens in code.
+    A comment stays -- it is short, or it carries punctuation, and either way
+    the compiler does not mind it.
+    """
+    return "\n".join(ln for ln in text.splitlines() if not _is_prose(ln))
+
+
 # A fence marker with its optional language tag, wherever it appears.
 _FENCE = re.compile(r"```[A-Za-z0-9_+-]*")
 
@@ -52,8 +90,14 @@ def unfence(text: str) -> str:
 
     Safe because a triple backtick is not valid syntax in any language the
     executor can run -- if it appears, it is markup.
+
+    It also removes an explanation paragraph, for the same reason and from the
+    same live run: markup and prose both reach the compiler as a syntax error
+    about something the model did not get wrong. Everything that cleans a
+    drafted snippet goes through here, so a new drafting call cannot forget one
+    of the two.
     """
-    return _FENCE.sub("", text).strip()
+    return strip_prose(_FENCE.sub("", text)).strip()
 
 
 @dataclass(frozen=True)

@@ -882,3 +882,46 @@ def test_the_layout_prompt_asks_its_own_question():
     reusing the commands context would be convenience, not design."""
     assert "Makefile" in bootstrap.QUERIES["layout"]
     assert bootstrap.QUERIES["layout"] != bootstrap.QUERIES["commands"]
+
+
+# ---- prose that reached the compiler -------------------------------------
+
+OBSERVED = (
+    "let pc_checks = ref 0\n"
+    "let pc_check cond =\n"
+    "  if not cond then begin\n"
+    "    prerr_endline \"CHECK FAILED\";\n"
+    "    exit 1\n"
+    "  end else incr pc_checks\n"
+    "\n"
+    "This OCaml code declares a mutable reference `pc_checks` initialized to "
+    "zero. The function `pc_check` takes a boolean expression as an argument. "
+    "If the expression evaluates to false, it prints \"CHECK FAILED:\" "
+    "followed by the string representation of the condition.\n"
+)
+
+
+def test_an_explanation_appended_to_drafted_code_is_removed():
+    """Observed live. Every drafting prompt says "no prose", and the model
+    wrote its explanation anyway; `unfence` strips fences only, so the
+    paragraph reached ocamlc as `Error: Syntax error` on line 14. Two probes
+    failed for it, the redraft was handed the compiler's complaint about its
+    own English, and the language did not register."""
+    cleaned = bootstrap.strip_prose(OBSERVED)
+    assert "This OCaml code declares" not in cleaned
+    assert "let pc_check cond =" in cleaned
+    assert "incr pc_checks" in cleaned
+
+
+@pytest.mark.parametrize("line", [
+    "let () = if !pc_checks < 1 then (prerr_endline \"no checks ran\"; exit 2)",
+    "#define PC_CHECK(x) do { if (!(x)) { std::exit(1); } } while (0)",
+    "    return a + b;",
+    "// adds two numbers and returns the result",
+    "(* the number of checks that have run so far *)",
+    "macro_rules! pc_check {",
+])
+def test_code_and_comments_survive(line):
+    """A filter that eats code is far worse than the prose it removes -- the
+    harness would fail a probe for a line nobody can see."""
+    assert line in bootstrap.strip_prose(line)
