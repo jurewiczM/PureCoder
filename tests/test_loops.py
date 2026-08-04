@@ -492,3 +492,64 @@ def test_supplied_tests_that_pass_the_gate_are_used_as_given():
                                     verbose=False)
     assert res["ok"]
     assert res["tests"] == GOOD_TESTS
+
+
+# ---- declared packages ---------------------------------------------------
+
+def test_a_package_the_sandbox_lacks_is_refused_before_any_model_call():
+    """Three attempts of correct code against a package that is not installed
+    is the most expensive route to "cannot validate". The refusal names the
+    package and the command that would fix it."""
+    pc = FakeModel()          # an empty queue: any model call would raise
+    res = generate_validated_python(pc, "read a CSV", verbose=False,
+                                    packages=("definitely_not_a_real_pkg",))
+    assert not res["ok"]
+    assert "definitely_not_a_real_pkg" in res["error"]
+    assert "pip install" in res["error"]
+    assert pc.prompts == [], "the model was asked before the sandbox was checked"
+
+
+def test_a_declared_package_reaches_the_writer_and_the_tester():
+    """A writer allowed numpy and a tester that is not produces assertions
+    that cannot run. Both prompts carry the same permission or neither does."""
+    code = "import numpy\n\ndef mean(xs):\n    return float(numpy.mean(xs))\n"
+    tests = ("assert mean([1, 2, 3]) == 2.0\n"
+             "assert mean([0, 4]) == 2.0\n"
+             "assert mean([5]) == 5.0\n")
+    pc = FakeModel(code_outputs=[code], completions=[tests])
+    res = generate_validated_python(pc, "the mean of a list", verbose=False,
+                                    packages=("numpy",))
+    assert res["ok"], res["error"]
+    designer_prompt, writer_prompt = pc.prompts[0], pc.prompts[1]
+    assert "numpy" in designer_prompt
+    assert "numpy" in writer_prompt
+
+
+def test_the_stdlib_nudge_keeps_the_declared_packages():
+    """Observed shape: a numpy run that hits a DIFFERENT missing import used to
+    be told to use only the standard library, dropping the package the caller
+    explicitly allowed."""
+    importer = ("import numpy, definitely_not_a_real_pkg\n\n"
+                "def mean(xs):\n    return 1.0\n")
+    fixed = "import numpy\n\ndef mean(xs):\n    return float(numpy.mean(xs))\n"
+    tests = ("assert mean([1, 2, 3]) == 2.0\n"
+             "assert mean([0, 4]) == 2.0\n"
+             "assert mean([5]) == 5.0\n")
+    pc = FakeModel(code_outputs=[importer, fixed], completions=[tests])
+    res = generate_validated_python(pc, "the mean of a list", max_retries=3,
+                                    verbose=False, packages=("numpy",))
+    assert res["ok"], res["error"]
+    nudge = next(p for p in pc.prompts if "HARD CONSTRAINT" in p)
+    assert "numpy" in nudge, "the nudge dropped the package the caller allowed"
+
+
+def test_declaring_a_package_for_a_language_that_has_no_such_notion_is_refused():
+    """`--with numpy` for C++ is a request the pipeline cannot honour. Silently
+    ignoring it would generate code under a permission that was never real."""
+    from purecoder.languages import get
+
+    res = generate_validated_python(FakeModel(), "add two numbers",
+                                    verbose=False, spec=get("c++"),
+                                    packages=("numpy",))
+    assert not res["ok"]
+    assert "c++" in res["error"]
