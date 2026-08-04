@@ -182,7 +182,10 @@ def cmd_code(pc, args):
     _print_result(generate_validated_python(
         pc, _grounded(context, args.spec), max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
-        error_hint=hint),
+        error_hint=hint,
+        # `--with` lives on this subcommand alone, so `getattr` is the honest
+        # read rather than a default nobody set.
+        packages=tuple(getattr(args, "packages", None) or ())),
         show_tests=args.show_tests)
 
 
@@ -408,7 +411,14 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     for name in ("code", "env", "make", "ask"):
-        sub.add_parser(name).add_argument("spec")
+        parser = sub.add_parser(name)
+        parser.add_argument("spec")
+        if name == "code":
+            parser.add_argument(
+                "--with", dest="packages", action="append", metavar="PKG",
+                help="a third-party package the code may import (repeatable). "
+                     "Verified importable in the sandbox before anything is "
+                     "generated; python only")
     sp = sub.add_parser("project")
     sp.add_argument("name")
     sp.add_argument("spec")

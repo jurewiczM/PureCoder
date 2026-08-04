@@ -429,3 +429,34 @@ def test_measure_is_routed_and_reports_without_a_server():
                          max_retries=1, verbose=False)["rows"]
     assert {r["verdict"] for r in rows} == {"no code"}
     assert hasattr(cli, "cmd_measure")
+
+
+def test_declared_packages_reach_the_loop_and_default_to_none():
+    """`--with` is on `code` alone. A global flag that `project` ignored would
+    generate under a permission that was never real."""
+    from purecoder import cli
+
+    class Args:
+        spec = "the mean of a list"
+        lang = "python"
+        retries = 1
+        contract = False
+        show_tests = False
+        store = None
+        no_docs = True
+        packages = ["numpy"]
+
+    seen = {}
+
+    def spy(pc, description, **kw):
+        seen.update(kw)
+        return {"ok": True, "text": "", "tests": "", "contract": None,
+                "attempts": 1, "error": ""}
+
+    real = cli.generate_validated_python
+    cli.generate_validated_python = spy
+    try:
+        cli.cmd_code(None, Args())
+    finally:
+        cli.generate_validated_python = real
+    assert seen["packages"] == ("numpy",)
