@@ -5,11 +5,13 @@ download -- a deterministic fake stands in for sentence-transformers.
 """
 
 import json
+import os
 
 import numpy as np
 import pytest
 from conftest import FakeEmbedder
 
+from purecoder import rag
 from purecoder.rag import (
     DocStore,
     StoreError,
@@ -534,3 +536,125 @@ def test_a_pruned_directory_can_be_asked_for_explicitly(tmp_path):
     s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
     s.ingest_dir(str(d), verbose=False, skip_dirs=frozenset())
     assert s.chunks
+
+
+# ---- multi-language chunking (tree-sitter) -------------------------------
+
+CPP_SOURCE = """\
+#include <vector>
+
+// adds two numbers
+int add(int a, int b) {
+    return a + b;
+}
+
+class Counter {
+  public:
+    void bump() { n++; }
+    int value() const { return n; }
+  private:
+    int n = 0;
+};
+"""
+
+RUST_SOURCE = """\
+use std::collections::HashMap;
+
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+struct Counter { n: i32 }
+"""
+
+OCAML_SOURCE = """\
+let add a b = a + b
+
+let rec fact n = if n <= 1 then 1 else n * fact (n - 1)
+"""
+
+
+def _labels(chunks):
+    return [c[0].splitlines()[0] for c in chunks]
+
+
+def test_a_cpp_function_becomes_its_own_chunk():
+    """The gap this closes: a language's own code samples used to be chunked as
+    prose, so retrieval over C++ docs cut functions in half at 800 characters."""
+    pytest.importorskip("tree_sitter_language_pack")
+    chunks = rag.chunk_code(CPP_SOURCE, "demo.cpp", "cpp")
+    assert any("add" in label for label in _labels(chunks))
+    body = next(c[0] for c in chunks if "add" in c[0].splitlines()[0])
+    assert "return a + b;" in body
+    assert "// adds two numbers" in body, "the comment above it is context"
+
+
+def test_a_cpp_class_keeps_its_methods_together_when_small():
+    pytest.importorskip("tree_sitter_language_pack")
+    chunks = rag.chunk_code(CPP_SOURCE, "demo.cpp", "cpp")
+    counter = [c for c in chunks if "Counter" in c[0].splitlines()[0]]
+    assert counter, _labels(chunks)
+    assert "bump" in counter[0][0] and "value" in counter[0][0]
+
+
+def test_a_large_class_splits_into_methods():
+    """Same rule the Python chunker follows: a class over the budget is worth
+    more as one chunk per method than as one truncated chunk."""
+    pytest.importorskip("tree_sitter_language_pack")
+    filler = "\n".join(f"    void m{i}() {{ /* {'x' * 60} */ }}" for i in range(20))
+    src = "class Big {\n  public:\n" + filler + "\n};\n"
+    labels = _labels(rag.chunk_code(src, "big.cpp", "cpp", max_chars=400))
+    assert any("m0" in label for label in labels), labels
+    assert any("m19" in label for label in labels), labels
+
+
+def test_top_level_statements_group_into_a_preamble():
+    pytest.importorskip("tree_sitter_language_pack")
+    chunks = rag.chunk_code(RUST_SOURCE, "demo.rs", "rust")
+    assert any("use std::collections::HashMap;" in c[0] for c in chunks)
+
+
+def test_ocaml_is_chunked_by_definition_not_by_paragraph():
+    """The case that motivated it. OCaml is what `learn` was first run on, and
+    its docs are exactly where prose chunking hurt most."""
+    pytest.importorskip("tree_sitter_language_pack")
+    labels = _labels(rag.chunk_code(OCAML_SOURCE, "demo.ml", "ocaml"))
+    assert any("add" in label for label in labels), labels
+    assert any("fact" in label for label in labels), labels
+
+
+def test_source_that_does_not_parse_still_produces_chunks():
+    """tree-sitter recovers from errors rather than raising, but a file that is
+    mostly garbage must still be retrievable rather than dropped."""
+    pytest.importorskip("tree_sitter_language_pack")
+    chunks = rag.chunk_code("int add(int a, int b) { return a + ", "x.cpp", "cpp")
+    assert chunks and any("add" in c[0] for c in chunks)
+
+
+def test_a_grammar_nobody_carries_falls_back_to_prose():
+    """A missing grammar must cost prose chunks, never a failed ingest. (The
+    pack turns out to carry Zig, which is why this asks for a name nobody
+    has.)"""
+    assert rag.chunk_code("some text\n", "x.xyz", "not-a-real-language") == \
+        rag.chunk_markdown("some text\n", "x.xyz")
+
+
+def test_chunk_file_routes_a_code_extension_to_its_grammar():
+    pytest.importorskip("tree_sitter_language_pack")
+    labels = _labels(rag.chunk_file("demo.cpp", CPP_SOURCE))
+    assert any("add" in label for label in labels), labels
+    # Python keeps its own AST chunker: it is stdlib, exact, and already tested.
+    py = rag.chunk_file("demo.py", "def add(a, b):\n    return a + b\n")
+    assert "function add" in py[0][0]
+
+
+def test_ingest_sees_the_code_files_it_can_now_chunk(tmp_path):
+    """The wiring that would have made the chunker pointless: `ingest` only
+    matched .py/.md/.txt/.rst, so an OCaml docs directory full of .ml samples
+    was skipped entirely before anything could chunk it."""
+    (tmp_path / "lib.ml").write_text("let add a b = a + b\n")
+    (tmp_path / "demo.cpp").write_text("int add(int a, int b) { return a + b; }\n")
+    (tmp_path / "notes.md").write_text("# Notes\nprose\n")
+    plan = plan_ingest(str(tmp_path))
+    names = {os.path.basename(src) for src in plan.sources}
+    assert {"lib.ml", "demo.cpp", "notes.md"} <= names, names

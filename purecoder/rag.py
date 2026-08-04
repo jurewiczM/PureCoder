@@ -130,10 +130,179 @@ def chunk_python(source, filename, max_chars=1200):
     return chunks
 
 
+# ---- every other language (tree-sitter) ---------------------------------
+#
+# Python is chunked by its own AST: stdlib, exact, and the only language whose
+# parser this project can assume. Everything else was chunked as PROSE, which
+# is the wrong shape by definition -- a paragraph break has nothing to do with
+# where a function ends, so an 800-character window cut C++ and OCaml samples
+# in half. That mattered most exactly where the project cares most: a learned
+# language's documentation is full of code in a language nothing here parses.
+#
+# tree-sitter is an optional install for the same reason retrieval is: it is
+# only needed by `ingest`, and a missing grammar degrades to the prose chunker
+# rather than failing the run.
+
+# Extension -> grammar name in tree-sitter-language-pack. `.py` is absent on
+# purpose: the AST chunker above is better and costs no dependency.
+CODE_LANGUAGES = {
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".h": "cpp",
+    ".js": "javascript", ".mjs": "javascript", ".jsx": "javascript",
+    ".ts": "typescript", ".rs": "rust", ".cs": "csharp", ".go": "go",
+    ".java": "java", ".ml": "ocaml", ".mli": "ocaml", ".sql": "sql",
+    ".rb": "ruby", ".swift": "swift", ".c": "c",
+}
+
+# A node worth its own chunk. Matched on a SUFFIX rather than a fixed list of
+# node types, because every grammar names these differently -- C++ has
+# `function_definition`, JavaScript `function_declaration`, Rust
+# `function_item`, OCaml `value_definition` -- and a per-language table would
+# be the per-language surface this whole design exists to avoid.
+_DEFINITION_SUFFIXES = ("_definition", "_declaration", "_item", "_specifier",
+                        "_binding")
+
+
+def _ts_parser(lang: str):
+    """A parser for one grammar, or None if it is not installed."""
+    try:
+        from tree_sitter_language_pack import get_parser
+    except ImportError:
+        return None
+    try:
+        return get_parser(lang)
+    except Exception:
+        # The pack raises its own download/lookup errors for a grammar it does
+        # not carry. Not knowing a language is an ordinary outcome here.
+        return None
+
+
+# What the various grammars call an identifier.
+_NAME_TYPES = ("identifier", "type_identifier", "field_identifier",
+               "property_identifier", "value_name", "constructor_name")
+
+
+def _ts_name(node, source: bytes, max_depth: int = 4) -> str:
+    """The identifier a definition declares, as best the grammar will say.
+
+    Breadth-first, so the SHALLOWEST identifier wins: C++ buries `add` one
+    level down in a `function_declarator` whose next sibling is the parameter
+    list, and a depth-first walk would happily return a parameter's name.
+    Bodies are skipped for the same reason -- the first identifier inside a
+    function is a local, not the function.
+
+    Generic on purpose. `name`, `declarator` and `pattern` are three different
+    fields for the same idea across C++, OCaml and Rust, and a per-language
+    table is the surface this design exists to avoid. A definition whose name
+    cannot be found still becomes a chunk: the label is worth less, the text is
+    worth the same.
+    """
+    queue = [(node, 0)]
+    while queue:
+        current, depth = queue.pop(0)
+        if depth and current.type in _NAME_TYPES:
+            return source[current.start_byte:current.end_byte].decode(
+                "utf8", "replace")
+        if depth >= max_depth:
+            continue
+        for child in current.named_children:
+            if child.type == "comment" or child.type.endswith(("_body", "block")):
+                continue
+            queue.append((child, depth + 1))
+    return ""
+
+
+def _ts_definitions(node):
+    """Direct children of `node` that are definitions worth a chunk."""
+    return [c for c in node.named_children
+            if c.type.endswith(_DEFINITION_SUFFIXES)]
+
+
+def chunk_code(source, filename, lang, max_chars=1200):
+    """Split code into definition-sized chunks with tree-sitter.
+
+    Same shape as `chunk_python`: one chunk per top-level definition, a large
+    one split into its own inner definitions, and everything else gathered into
+    a preamble. Falls back to the prose chunker when the grammar is missing --
+    the point is better chunks where a parser exists, never a failed ingest
+    where one does not.
+    """
+    parser = _ts_parser(lang)
+    if parser is None:
+        return chunk_markdown(source, filename, max_chars=max_chars)
+
+    data = source.encode("utf8")
+    root = parser.parse(data).root_node
+    chunks, preamble = [], []
+
+    def text_of(node):
+        return data[node.start_byte:node.end_byte].decode("utf8", "replace")
+
+    def emit(text, label):
+        text = text.strip()
+        if text:
+            chunks.append((f"# {label}\n{text}", filename))
+
+    # A comment is a top-level node of its own, so without this the docstring
+    # above a function lands in the preamble and the function loses the only
+    # prose written about it -- the same rule the Python chunker follows with
+    # its leading-comment scan, expressed in the grammar's own terms.
+    pending_comments = []
+
+    for node in root.named_children:
+        if node.type == "comment":
+            pending_comments.append(text_of(node))
+            continue
+        if not node.type.endswith(_DEFINITION_SUFFIXES):
+            preamble.extend(pending_comments)
+            pending_comments = []
+            preamble.append(text_of(node))
+            continue
+
+        name = _ts_name(node, data) or node.type
+        body = text_of(node)
+        if pending_comments:
+            body = "\n".join(pending_comments) + "\n" + body
+            pending_comments = []
+
+        inner = [c for c in _ts_definitions(node)
+                 if c.type.endswith(("_definition", "_declaration", "_item"))]
+        # A class-like node also nests its members under a body node, which is
+        # where C++ and C# keep their methods.
+        for child in node.named_children:
+            if child.type.endswith(("_body", "_list", "block")):
+                inner += _ts_definitions(child)
+
+        if len(body) <= max_chars or not inner:
+            emit(body, f"{node.type} {name} in {filename}".strip())
+            continue
+
+        header_end = min(c.start_byte for c in inner)
+        emit(data[node.start_byte:header_end].decode("utf8", "replace"),
+             f"{node.type} {name} (header) in {filename}")
+        for member in inner:
+            emit(text_of(member),
+                 f"member {name}.{_ts_name(member, data) or member.type} "
+                 f"in {filename}")
+
+    preamble.extend(pending_comments)
+    if preamble:
+        pre = "\n".join(preamble).strip()
+        if len(pre) <= max_chars:
+            emit(pre, f"top-level of {filename}")
+        else:
+            chunks += chunk_markdown(pre, filename, max_chars=max_chars)
+    return chunks
+
+
 def chunk_file(path, source, max_chars_code=1200, max_chars_docs=800):
-    """Route by extension: .py -> code chunker, else markdown chunker."""
-    if os.path.splitext(path)[1].lower() == ".py":
+    """Route by extension: .py -> the AST chunker, a known grammar ->
+    tree-sitter, everything else -> markdown."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".py":
         return chunk_python(source, path, max_chars=max_chars_code)
+    if ext in CODE_LANGUAGES:
+        return chunk_code(source, path, CODE_LANGUAGES[ext],
+                          max_chars=max_chars_code)
     return chunk_markdown(source, path, max_chars=max_chars_docs)
 
 
@@ -255,7 +424,17 @@ class IngestPlan:
         return Counter(self.sources).most_common()
 
 
-def plan_ingest(docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
+# Prose, Python, and every extension the tree-sitter chunker can parse.
+# Before the chunker existed there was no reason to index a .ml or a .cpp
+# -- they would have been cut into paragraphs -- and an OCaml docs
+# directory full of samples was skipped entirely, which is the shape of
+# gap this project keeps finding between a capability and its wiring.
+INGEST_PATTERN = (r".*\.(py|md|markdown|txt|rst|"
+                  + "|".join(sorted(e.lstrip(".") for e in CODE_LANGUAGES))
+                  + r")$")
+
+
+def plan_ingest(docs_dir, pattern=INGEST_PATTERN,
                 skip_dirs=SKIP_DIRS, exclude=()):
     pairs, rx, skipped, binaries, dropped = [], re.compile(pattern), [], [], []
     for root, dirs, files in os.walk(docs_dir):
@@ -383,7 +562,7 @@ class DocStore:
             print(f"[rag] ingested {len(self.chunks)} chunks from {plan.root}")
         return len(self.chunks)
 
-    def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
+    def ingest_dir(self, docs_dir, pattern=INGEST_PATTERN,
                    verbose=True, skip_dirs=SKIP_DIRS, exclude=()):
         """Plan and embed in one step, for callers with nobody to ask."""
         plan = plan_ingest(docs_dir, pattern=pattern, skip_dirs=skip_dirs,
