@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-433 tests, all green, none of them needing a GPU or a running server
+441 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -111,16 +111,30 @@ _Snapshot of what's built, tested, and what's next._
   gets in exchange is that every failing check is reported, not just the first.
   There is no project layout -- a Makefile recipe would have to reproduce the
   driver -- so `project --lang sql` refuses and `code` is unaffected.
-- **Standard-library-only, whatever the language.**
-  Three hard limits, each confirmed repeatedly against a live server on a
-  "small web app that graphs random numbers" spec: the sandbox has no
-  third-party packages, so anything importing `matplotlib`/`flask`/`PIL`
-  cannot be validated no matter how correct it is; a server that calls
-  `serve_forever()` never returns, so the timeout is the only possible
-  verdict; and successive binds hit `TIME_WAIT`, so even a stdlib
+- **The sandbox has whatever this environment has, and now says which.** The
+  earlier text here claimed the sandbox had no third-party packages at all.
+  That was wrong, and a one-line probe disproves it: the executor runs
+  `sys.executable`, so it inherits the venv PureCoder itself runs in, where
+  `import numpy` succeeds and validates. What was true is that nothing
+  *declared* or *verified* anything -- the pipeline discovered a package's
+  absence by failing three attempts deep. `code --with numpy` now declares it,
+  the import is probed in the interpreter the executor will really use before a
+  single model call, and a package that is missing is refused with the exact
+  `pip install` line. The permission goes into the shared task text so the test
+  designer gets it too -- a writer allowed numpy and a tester that is not
+  produces assertions that cannot run -- and the stdlib-only nudge no longer
+  takes the permission back. What is deliberately NOT built: a per-run venv
+  that pip-installs on demand. It needs the network, CI cannot exercise it, and
+  a flaky install mid-run is a "generated but unchecked" tier by another name.
+  `--with` is python-only and refuses for any other language rather than being
+  silently ignored.
+- **Two live limits that are still real**, both confirmed repeatedly against a
+  live server on a "small web app that graphs random numbers" spec: a server
+  that calls `serve_forever()` never returns, so the timeout is the only
+  possible verdict; and successive binds hit `TIME_WAIT`, so even a stdlib
   `http.server` answer fails to rebind on the next attempt. A missing import
-  now triggers one stdlib-only retry and then stops, rather than burning the
-  whole budget. Function-shaped, stdlib-only specs pass on the first attempt.
+  triggers one stdlib-only retry and then stops, rather than burning the whole
+  budget. Function-shaped specs pass on the first attempt.
 - **A learned language is proven, not trusted.** Five mechanical probes plus a
   live round decide it, and a harness that cannot fail wrong code is refused.
   What the probes cannot see is *idiom*: a spec can pass every one and still
@@ -272,9 +286,11 @@ _Snapshot of what's built, tested, and what's next._
    measure`); the numbers do not. It needs a live llama-server, and one pass
    over five tasks in two arms is ~10 model rounds. Until it is run, the
    layer's central claim stays argued rather than measured.
-3. **A dependency story for the executor** — today anything outside the
-   stdlib is unvalidatable. A per-run venv, or declaring allowed packages in
-   the spec, would widen execution validation past its current ceiling.
+3. **A per-run venv, if the declaration ever needs to install anything.**
+   `--with` covers what the environment already has; anything else is still a
+   manual `pip install`. Doing it automatically means network access inside a
+   run and a failure mode CI cannot exercise, which is why it was left out
+   rather than half-built.
 4. **tree-sitter chunking** — multi-language code retrieval.
 5. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
