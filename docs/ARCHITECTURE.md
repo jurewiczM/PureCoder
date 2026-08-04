@@ -154,6 +154,18 @@ on demand is deliberately absent: it needs the network inside a run, CI cannot
 exercise it, and a half-installed environment is the "generated but unchecked"
 tier under another name.
 
+**Chunking is per grammar, not per paragraph.** Python is split by its own AST
+— stdlib, exact, no dependency. Everything else used to be chunked as prose,
+which is the wrong shape by construction: a paragraph break has nothing to do
+with where a function ends, and an 800-character window cut samples in half.
+tree-sitter now splits C++, Rust, OCaml, JavaScript, C#, Go, Java and SQL by
+definition, matching node types on a suffix (`_definition`, `_item`,
+`_binding`) rather than a per-language table — the same reason the registry
+keeps languages as data. It is an optional install: without it, code degrades
+to prose chunking rather than failing an ingest. And `ingest`'s file pattern is
+derived from the chunker's own extension table, because the previous hardcoded
+one skipped every file the chunker exists for.
+
 **Design line:** if it cannot be executed, it is not emitted. A missing
 toolchain is refused with the binary named; Power Query M is refused
 permanently, because it runs only inside Excel and Power BI. There is no

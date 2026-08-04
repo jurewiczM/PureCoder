@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-441 tests, all green, none of them needing a GPU or a running server
+450 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -23,6 +23,8 @@ _Snapshot of what's built, tested, and what's next._
 | 6 | C++ / JavaScript / Rust / C# execution | ✅ tested | correct passes, wrong fails, no-checks fails -- in each language |
 | 9 | SQL (SQLite) execution | ✅ tested | same three probes; a check is a row, a failing one names itself |
 | 9 | `bench.py` contract measurement | ✅ built, ⬜ unrun | instrument calibrated hermetically; no live numbers collected yet |
+| 9 | declared packages (`code --with`) | ✅ tested | probed in the sandbox interpreter before any model call; refusals name the install |
+| 9 | tree-sitter chunking | ✅ tested | C++/Rust/OCaml chunked by definition; ingest now sees those files at all |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -205,9 +207,25 @@ _Snapshot of what's built, tested, and what's next._
   layouts and a test keeps it there. The user confirms both before anything
   runs, and `make install` is never run at all. That is a closed door, not a
   sandbox — the executor's isolation is still a temp dir and a process group.
-- The doc chunker is Python-and-markdown only, so a language's own code samples
-  are chunked as prose. tree-sitter chunking remains the real fix, and it
-  matters more here than anywhere else in the pipeline.
+- **Code is chunked by its own grammar now, where one is installed.** The
+  chunker was Python-and-markdown only, so a learned language's samples were
+  cut at paragraph boundaries -- worst exactly where this project cares most.
+  tree-sitter splits C++, Rust, OCaml, JavaScript, C#, Go, Java, SQL and the
+  rest by definition instead, with the same shape the Python AST chunker
+  already used: one chunk per definition, a large class split into members, the
+  comment above a definition kept with it, everything else in a preamble. Two
+  limits worth stating. The node types are matched by SUFFIX (`_definition`,
+  `_item`, `_binding`) rather than a per-language table, so an unusual grammar
+  may drop a definition into the preamble rather than naming it -- degraded, not
+  wrong. And the name on a chunk's label is found by a bounded breadth-first
+  walk, so a grammar that nests its identifier deeper than four levels yields a
+  chunk labelled by node type. The package is an optional extra; without it,
+  code degrades to prose chunking exactly as before.
+- **A capability and its wiring are two things.** `ingest` matched only
+  `.py/.md/.txt/.rst`, so the files the new chunker exists for were never
+  offered to it -- an OCaml docs directory of `.ml` samples was skipped whole.
+  The pattern is now derived from the chunker's own extension table, which is
+  the third time this session that a working feature was reachable by nothing.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
 - **Ranking is two signals, and the gate is shared.** Cosine plus an
   IDF-weighted exact-name score, the latter bounded in `[0,1]` absolutely so it
@@ -291,8 +309,7 @@ _Snapshot of what's built, tested, and what's next._
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-4. **tree-sitter chunking** — multi-language code retrieval.
-5. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
+4. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
 
 Done since the last snapshot: the reachability false green (runtime check
