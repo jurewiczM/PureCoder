@@ -311,6 +311,18 @@ _Snapshot of what's built, tested, and what's next._
    rather than half-built.
 4. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
+   **Planned, not built**, and the plan says why:
+   [docs/superpowers/specs/2026-08-04-specialization-plan.md](superpowers/specs/2026-08-04-specialization-plan.md).
+   It needs the fp16 checkpoint (~15 GB) and GPU hours this machine does not
+   have, and writing the pipeline without running it would ship exactly the
+   unexecuted artifact this project refuses everywhere else. What the plan does
+   fix in advance is the part that is easy to get wrong later: the go/no-go
+   bars, and the rule that specialization is evaluated with the instruments
+   this project already owns -- the 15-task baseline, `purecoder measure`, and
+   an OCaml bootstrap -- rather than a benchmark written to suit the result.
+   The bar that matters most is the test-gate rejection rate: a pruned model
+   that writes the same code and worse tests is a regression here, whatever a
+   code benchmark says.
 
 Done since the last snapshot: the reachability false green (runtime check
 instrumentation), the `.env` guard (grammar bound plus a looser validator),
