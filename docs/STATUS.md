@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-417 tests, all green, none of them needing a GPU or a running server
+433 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -22,6 +22,7 @@ _Snapshot of what's built, tested, and what's next._
 | 6 | `languages.py` registry | ✅ tested | every entry coherent; availability probed, not assumed |
 | 6 | C++ / JavaScript / Rust / C# execution | ✅ tested | correct passes, wrong fails, no-checks fails -- in each language |
 | 9 | SQL (SQLite) execution | ✅ tested | same three probes; a check is a row, a failing one names itself |
+| 9 | `bench.py` contract measurement | ✅ built, ⬜ unrun | instrument calibrated hermetically; no live numbers collected yet |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -241,6 +242,21 @@ _Snapshot of what's built, tested, and what's next._
   it cannot read; `search` refuses a query of the wrong dimension. What it
   cannot detect is an index that is merely *stale* — docs edited since the last
   `ingest` are still answered from the old text.
+- **The contract layer is now measurable, and still unmeasured.** `bench.py`
+  holds five deliberately ambiguous specs, each with a hidden hand-written
+  oracle encoding the intended reading, and runs every task through both arms
+  (`--contract` on and off). Spec-divergence is defined mechanically as *the
+  loop reported success and the oracle disagreed*, with a separate bucket for
+  code the oracle cannot call at all (a `NameError` is not a misreading) and
+  another for tasks the loop never finished (a dead server must not read as a
+  clean run). What it deliberately does NOT measure is visibility -- whether a
+  reader would have caught a wrong contract printed above the code. That needs
+  a person, and the two available proxies are both worse than saying so:
+  evaluating the contract's model-authored example expressions is the mistake
+  that cost this project five false greens and a deleted subsystem, and string-
+  matching them makes `[80, 443]` and `[80,443]` disagree for no reason. One
+  further limit is in the report itself: a contract grounds the writer AND the
+  test designer, so a difference between arms cannot be attributed to either.
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call
@@ -252,10 +268,10 @@ _Snapshot of what's built, tested, and what's next._
 1. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
    runner is free, but SQL has no `assert`, and the check idiom every other
    language gets from its harness needs real design rather than a `1/0` trick.
-2. **Measure the contract layer** — does grounding actually reduce
-   spec-divergence, or only make it visible? Needs a small task set with
-   known-ambiguous specs. This is the claim the whole layer rests on and it
-   is still unmeasured.
+2. **Run the contract measurement.** The instrument exists (`purecoder
+   measure`); the numbers do not. It needs a live llama-server, and one pass
+   over five tasks in two arms is ~10 model rounds. Until it is run, the
+   layer's central claim stays argued rather than measured.
 3. **A dependency story for the executor** — today anything outside the
    stdlib is unvalidatable. A per-run venv, or declaring allowed packages in
    the spec, would widen execution validation past its current ceiling.

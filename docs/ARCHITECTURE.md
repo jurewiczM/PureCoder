@@ -59,6 +59,19 @@ A contract does one thing about that, and it is enough: it makes the shared
 interpretation a single artifact the user can read in seconds, before any code
 exists, instead of an invisible agreement between two generated files.
 
+**Measured, or rather measurable** (`purecoder/bench.py`, `purecoder measure`).
+Every other layer here is validated by a tool that says yes or no. This one's
+claim — grounding reduces spec-divergence — is different in kind, so it needs an
+experiment: five deliberately ambiguous specs, each with a hand-written oracle
+the model never sees, run through both arms. Divergence is defined mechanically
+as *the loop reported success and the oracle disagreed*; code the oracle cannot
+call is a separate bucket, because a `NameError` is not a misreading, and so is
+a task the loop never finished, because a dead server must not read as a clean
+run. The instrument is calibrated in the test suite against a scripted model
+that misreads the spec unless shown a contract — if `measure` cannot see a
+difference that blatant, no live number it produces would mean anything. The
+numbers themselves need a server and have not been collected.
+
 **Boundary, stated plainly:** this does not make the contract correct. A
 confidently wrong contract grounds the writer and the tester in the same wrong
 idea. It makes the wrongness *visible*, which is a weaker and more honest

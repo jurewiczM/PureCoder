@@ -214,6 +214,7 @@ rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
 | `ingest <dir>`     | build a RAG index over docs/code, after showing you what it will index |
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
 | `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
+| `measure`          | run the contract measurement: five ambiguous specs, both arms |
 | `status`           | live system status |
 
 Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
@@ -244,10 +245,11 @@ purecoder/
   status.py      live system probe
   bootstrap.py   draft a language entry from its docs, then probe it
   langstore.py   where a learned language and its docs live between runs
+  bench.py       ambiguous specs + hidden oracles: does grounding help?
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           417 tests (no GPU, no server; toolchain ones self-skip)
+tests/           433 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
