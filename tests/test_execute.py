@@ -9,6 +9,7 @@ from purecoder.execute import (
     lint_implementation,
     lint_tests,
     missing_dependency,
+    missing_relation,
     public_names,
     run_python,
 )
@@ -401,3 +402,40 @@ def test_a_package_the_sandbox_lacks_is_named():
 
 def test_nothing_declared_needs_no_subprocess():
     assert available_packages(()) == (True, [])
+
+
+def test_a_missing_table_is_named_as_something_the_code_should_create():
+    """Live finding, twice over. Asked for a view over `orders`, the writer
+    emitted a correct view and no table; `no such table: main.orders` went back
+    three times unchanged and the loop finally blamed the tests. A stronger
+    writer prompt did not fix it -- the same lesson as the .env comment, where
+    the system prompt was ignored and the mechanical constraint worked."""
+    hint = missing_relation(get("sql"), "sqlite3.OperationalError: no such "
+                                        "table: main.orders")
+    assert "orders" in hint
+    assert "CREATE TABLE" in hint
+
+
+def test_a_missing_view_is_named_too():
+    hint = missing_relation(get("sql"), "sqlite3.OperationalError: no such "
+                                        "view: summary")
+    assert "summary" in hint
+
+
+def test_a_missing_column_is_not_answered_with_a_new_table():
+    """The first version of this hint told the model to `CREATE TABLE id` in
+    answer to `no such column: id`, and it did exactly that. Observed on the
+    live run that was verifying the hint itself."""
+    hint = missing_relation(get("sql"), "sqlite3.OperationalError: no such "
+                                        "column: id")
+    assert "CREATE TABLE id" not in hint
+    assert "column" in hint
+
+
+def test_an_unrelated_sql_error_gets_no_schema_hint():
+    assert missing_relation(get("sql"), "sqlite3.OperationalError: near "
+                                        "\"SELEKT\": syntax error") == ""
+
+
+def test_no_schema_hint_for_a_language_without_a_schema():
+    assert missing_relation(get("python"), "no such table: orders") == ""

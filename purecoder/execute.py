@@ -278,6 +278,46 @@ def available_packages(names, python: str = sys.executable):
     return not missing, missing
 
 
+# SQLite's way of saying the implementation never built its own schema.
+_NO_SUCH = re.compile(r"no such (table|view|column|index): (?:main\.)?"
+                      r"([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def missing_relation(spec, error: str) -> str:
+    """SQL's version of an attribution hint: what the code was meant to create.
+
+    A database starts EMPTY. Every other language hands the writer an
+    environment that already exists, so `no such table: orders` reads to a
+    model like a fact about the machine rather than a job it was given -- and
+    it read that way three attempts running in a live run, after which the
+    loop's no-progress rule blamed the tests, which were fine.
+
+    Saying so in `writer_system` was tried first and did not hold. That is the
+    project's oldest lesson about layers: the `.env` rambling comment ignored a
+    system prompt and yielded to a mechanical constraint. This is the
+    mechanical one -- a hint on an already-failed run, in the same slot as the
+    documentation and harness-collision hints, never a gate.
+    """
+    if spec.name != "sql":
+        return ""
+    match = _NO_SUCH.search(error)
+    if not match:
+        return ""
+    kind, name = match.group(1), match.group(2)
+    # A missing COLUMN is a different mistake from a missing table, and the
+    # first version of this hint did not distinguish them: it answered "no such
+    # column: id" with "CREATE TABLE id", and the model dutifully created a
+    # table called `id`. Observed live, on the run that was verifying this very
+    # hint.
+    if kind == "column":
+        return (f"\n\nNote: nothing declares a column named {name!r}. Add it "
+                f"to the CREATE TABLE that your statements read, or select a "
+                f"column that exists -- do not create a table named {name!r}.")
+    return (f"\n\nNote: the database starts empty and nothing else creates "
+            f"{name!r}. Your output must CREATE TABLE {name} (and INSERT the "
+            f"rows it needs) before any {kind} that reads it.")
+
+
 def lint_implementation(code: str):
     """Reject an implementation that has smuggled its tests inside itself.
 
@@ -793,6 +833,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # Added to the same slot and for the same reason: a hint offered only
         # after the toolchain has already refused, never a gate of its own.
         hint += harness_collision(spec, code, full)
+        hint += missing_relation(spec, error)
         # The tests are shown so the model knows what it must satisfy, but
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run
