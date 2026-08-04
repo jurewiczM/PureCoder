@@ -360,6 +360,25 @@ def cmd_learn(pc, args):
         print(f"  purecoder --lang {args.name} project demo \"...\"")
 
 
+def cmd_measure(pc, args):
+    """Run the contract measurement and print the table.
+
+    Both arms are run here rather than by two invocations: the comparison is
+    the measurement, and a model sampled across two separate runs of the CLI is
+    a different experiment.
+    """
+    from .bench import format_report, measure
+
+    report = measure(pc, repeats=args.repeats, max_retries=args.retries,
+                     timeout=args.timeout)
+    print(format_report(report["summary"]))
+    diverged = report["summary"]
+    # Non-zero when the grounded arm diverged at all: the run succeeded, but
+    # the layer's claim did not hold cleanly, and a CI-style caller should be
+    # able to see that without parsing the table.
+    return 1 if diverged["grounded"]["diverged"] else 0
+
+
 def cmd_status(pc, args):
     from .status import print_status
     print_status(pc)
@@ -412,6 +431,11 @@ def main():
     sl.add_argument("--draft-retries", type=int, default=2, metavar="N",
                     help="drafting attempts before giving up; each redraft "
                          "carries the failing probes' diagnostics (default: 2)")
+    sm = sub.add_parser("measure")
+    sm.add_argument("--repeats", type=int, default=1, metavar="N",
+                    help="passes over the task set, both arms each (default: 1)")
+    sm.add_argument("--timeout", type=int, default=10, metavar="SECONDS",
+                    help="per-run execution timeout (default: 10)")
     sub.add_parser("status")
 
     args = p.parse_args()
@@ -420,7 +444,7 @@ def main():
     return {
         "code": cmd_code, "env": cmd_env, "make": cmd_make,
         "project": cmd_project, "ingest": cmd_ingest, "ask": cmd_ask,
-        "learn": cmd_learn, "status": cmd_status,
+        "learn": cmd_learn, "status": cmd_status, "measure": cmd_measure,
     }[args.cmd](pc, args)
 
 
