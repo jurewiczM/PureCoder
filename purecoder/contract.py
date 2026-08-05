@@ -89,6 +89,18 @@ def validate_contract(obj):
         for side in ("in", "out"):
             if side not in ex or not isinstance(ex[side], str):
                 return False, f"example {i}: missing string {side!r}"
+        # An example that calls nothing. Observed live: `count_words(text)`
+        # came back with `count_words() -> raises ValueError` as its
+        # demonstration of the empty-input case, the test designer implemented
+        # it exactly, and correct code failed the loop three times over a call
+        # that cannot be made. Structural rather than semantic -- a contract
+        # param has a name and a type and no default, so a function with a
+        # declared parameter cannot be invoked with none.
+        if obj["params"] and not ex["in"].strip():
+            return False, (f"example {i} passes no arguments, but "
+                           f"{obj['name']} declares "
+                           f"{', '.join(p['name'] for p in obj['params'])} -- "
+                           f"show the call that produces this outcome")
         # A repeated example is a fair sign the model had nothing further to
         # say about the spec.
         key = (ex["in"].strip(), ex["out"].strip())
