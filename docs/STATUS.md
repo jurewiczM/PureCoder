@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-495 tests, all green, none of them needing a GPU or a running server
+509 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -25,7 +25,8 @@ _Snapshot of what's built, tested, and what's next._
 | 9 | `bench.py` contract measurement | ✅ built, ⬜ unrun | instrument calibrated hermetically; no live numbers collected yet |
 | 9 | declared packages (`code --with`) | ✅ tested | probed in the sandbox interpreter before any model call; refusals name the install |
 | 9 | tree-sitter chunking | ✅ tested | C++/Rust/OCaml chunked by definition; ingest now sees those files at all |
-| 10 | OCaml execution | ✅ tested | hand-written entry; passes the five bootstrap probes; first-attempt generation live |
+| 10 | OCaml execution | ✅ tested | hand-written entry; passes the five bootstrap probes; 4 of 5 live tasks generate and validate |
+| 10 | the fix loop shows its own output | ✅ tested | quoted source around a diagnostic, plus the previous attempt, bounded |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -266,7 +267,22 @@ _Snapshot of what's built, tested, and what's next._
   offered to it -- an OCaml docs directory of `.ml` samples was skipped whole.
   The pattern is now derived from the chunker's own extension table, which is
   the third time this session that a working feature was reachable by nothing.
-- RAG only helps where the model is ignorant (new/obscure/own-project APIs).
+- **RAG only helps where the model is ignorant, and it can actively hurt.**
+  Measured: `sum_list` in OCaml passed on the first attempt ungrounded and
+  failed four attempts with the docs index attached -- the retrieved tutorial
+  text diluted the prompt until the tester reverted to a malformation the
+  prompt's counter-example had been suppressing. That is the bill for a gate
+  that never refuses, and it is why the constraint moved to `test_lint` and
+  `test_fix`, which hold regardless of how much context is in the prompt.
+- **The project now edits model-authored test code, in one narrow place.**
+  `test_fix` rewrites `pc_check ((expr) "label")` to the form that compiles.
+  The justification is that the construct applies a string to a boolean and
+  cannot compile under any reading, so it has exactly one possible intent and
+  the rewrite is meaning-preserving by construction. It is declared per
+  language, tested from both sides, and `test_lint` stays behind it for shapes
+  the repair does not match. Refusing was tried first and ended runs at
+  attempts=0 with the writer never reached. Nothing here infers intent -- a
+  malformation with two possible meanings does not belong in this field.
 - **The gate does not gate, and now there are numbers.** Over 3044 chunks of
   real ocaml.org documentation, `premier league offside rule` scores 1.103 and
   `how do I bake sourdough bread` 0.826, against a `min_score` of 0.3 -- higher
