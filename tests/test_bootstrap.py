@@ -994,3 +994,28 @@ def test_code_the_prompt_also_contains_is_kept():
     prompt = "static int pc_checks = 0;\nlet pc_check cond = exit 1\n"
     answer = "static int pc_checks = 0;\nlet pc_check cond = exit 1\n"
     assert bootstrap.strip_echo(answer, prompt) == answer.strip()
+
+
+@pytest.mark.parametrize("line,want", [
+    ("ocamlc -o {bin} {src}.ml", ("ocamlc", "-o", "{bin}", "{src}")),
+    ("gcc {src}.c -o {bin}", ("gcc", "{src}", "-o", "{bin}")),
+    ("node {src}.js", ("node", "{src}")),
+])
+def test_a_placeholder_with_an_extension_glued_on_is_normalised(line, want):
+    """Live finding. The drafted OCaml build was `ocamlc -o {bin} {src}.ml`,
+    which passes every existing check -- it names {src}, it writes to {bin} --
+    and then asks the compiler for `candidate.ml.ml`, because the executor's
+    file already carries the extension. Two probes failed with `I/O error: no
+    such file`, which tells the redrafting model nothing about the cause.
+
+    Normalised rather than refused, the way `./{bin}` already is: the model
+    glued the suffix back on across three redrafts, and there is no reading of
+    `{src}.ml` that is correct."""
+    assert bootstrap._parse_command("build", line) == want
+
+
+@pytest.mark.parametrize("line", ["g++ -std=c++17 {src} -o {bin}",
+                                  "rustc -o {bin} {src}", "{bin}",
+                                  "dotnet run {src}"])
+def test_an_ordinary_command_is_untouched(line):
+    assert bootstrap._parse_command("build", line)

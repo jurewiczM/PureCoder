@@ -435,6 +435,17 @@ def _parse_command(label: str, line: str) -> tuple:
     if found:
         raise ValueError(f"the {label} command uses shell syntax ({''.join(found)}) "
                          f"and argv is not a shell: {line!r}")
+    # `{src}.ml` passes every other check -- it names {src}, and a build using
+    # it still writes to {bin} -- and then asks the toolchain for
+    # `candidate.ml.ml`, because the executor's file already carries the
+    # extension. Observed live: two probes failed with `I/O error: no such file
+    # or directory`, which tells a redrafting model nothing about the cause.
+    # Normalised rather than refused, like `./{bin}` already is: the model
+    # produced `{src}.ml` on three redrafts running, and a refusal it cannot
+    # act on is just a slower failure. Dropping the suffix is safe because the
+    # placeholder is a complete path -- there is no reading of `{src}.ml` that
+    # is correct.
+    line = re.sub(r"(\{(?:src|bin)\})\.[A-Za-z0-9]+", r"\1", line)
     try:
         return tuple(shlex.split(line))
     except ValueError as e:
