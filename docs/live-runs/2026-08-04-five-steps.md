@@ -229,6 +229,64 @@ distinct failure modes, and not once did a harness that could not prove its own
 correctness end up in the registry — which is the entire claim the bootstrap
 gate makes.
 
+## The grammars and the testers (2026-08-05)
+
+The first sweep never issued an `env`, `make` or `project` command, so two of
+the three grammars had not run at all — only `contract.gbnf`, which derived
+cleanly in every grounded arm of the measurement. Covering them found the worst
+defect of either day.
+
+**Truncation detection had been dead, project-wide.** `purecoder env` for a
+four-key spec returned a thirty-key file cut off mid-comment and reported
+`ok=True`. The loop does check for truncation; the flag it checks had stopped
+existing. llama.cpp now reports `stop_type: "limit"` where older builds set
+`stopped_limit`, so `data.get("stopped_limit", False)` answered "complete" for
+every cut-off generation, and the truncation branch in the config loop, the
+code loop and the contract loop was unreachable. Restored, the same spec
+truncates on attempt 1, retries, and returns exactly the four keys asked for.
+
+Worth noting what hid it: the code path validates by execution and the contract
+path by JSON parsing, so a truncated artifact failed there for other reasons.
+`.env` is validated structurally, and half a config file is structurally
+perfect.
+
+**And what that repair then exposed: `env.gbnf` could not finish.** Its root
+rule was `line*`, unbounded, so a scaffold's `.env` ran to `n_predict` every
+time — three attempts, three truncations, artifact failed. The retry prompt
+asking for "a shorter, complete file" was ignored all three times, which is the
+rambling-comment lesson again: bound the shape in the grammar, where it costs
+nothing and cannot be ignored. `line{0,20}` ends the file, and the model now
+produces a complete twenty-line config instead of an infinite one.
+
+**A contract example that could not be called.** The scaffold's contract for
+`count_words(text)` offered `count_words() -> raises ValueError` as its
+empty-input demonstration. The test designer implemented it exactly, and
+correct code failed the loop three times over a call that takes no arguments
+where one is declared. That is structural — a contract param has a name and a
+type and no default — so `validate_contract` now refuses it, and derivation
+retries into a well-formed example.
+
+**`makefile.gbnf`: clean on the first attempt**, correct tabs and sane targets.
+
+**The testers, which is what the measurement kept blaming.** C++ produced four
+targeted checks on the first attempt, including an overflow case nobody asked
+for, and passed. JavaScript produced four good checks and the loop correctly
+refused the implementation over a real edge case (a trailing separator).
+Neither wrapped its assertions in an uncalled function — their prompts have
+always forbidden a wrapper. Python's, the oldest, did not until this run, which
+is precisely why it was the one that failed that way.
+
+So the picture the measurement painted — *the tester is the bottleneck* — needs
+one qualification: it is the PYTHON tester, and part of what looked like model
+weakness was a prompt that never made the demand its four siblings make.
+
+**The wrong-contract boundary, a third time.** With the no-argument example
+refused, derivation produced `count_words("Python3.8") -> {"python3": 1,
+"8": 1}` — semantically wrong, since stripping punctuation yields `python38`.
+The tester implemented it and correct code failed again. No mechanical check
+catches that; it is the documented cost of grounding, and it stays documented
+rather than patched.
+
 ## Standing caveats on all of the above
 
 - One pass, five tasks, two arms, a sampled model: directional, not

@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-472 tests, all green, none of them needing a GPU or a running server
+479 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -322,6 +322,19 @@ _Snapshot of what's built, tested, and what's next._
   matching them makes `[80, 443]` and `[80,443]` disagree for no reason. One
   further limit is in the report itself: a contract grounds the writer AND the
   test designer, so a difference between arms cannot be attributed to either.
+- **A client-side flag can rot without a single test noticing.** Truncation
+  detection read `stopped_limit`, which current llama.cpp no longer sends (it
+  reports `stop_type: "limit"`), so every truncation retry in the project was
+  unreachable and a `.env` cut off mid-comment validated clean. Nothing in the
+  suite could see it: the fake model sets the flag itself, and the field only
+  exists in a live response. The lesson is narrower than "test more" -- an
+  adapter to someone else's API is exactly where a contract test against a
+  recorded real response earns its place, and there is still none.
+- **A grammar that cannot end is a grammar that always truncates.** `env.gbnf`
+  had an unbounded `line*` root, so a scaffold's `.env` hit `n_predict` on
+  every attempt once truncation was detectable again. Bounded to 20 lines. The
+  same fix as the rambling comment, for the same reason: the prompt asking for
+  brevity was ignored three times in a row.
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call
