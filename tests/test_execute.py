@@ -11,6 +11,7 @@ from purecoder.execute import (
     missing_dependency,
     missing_relation,
     public_names,
+    quoted_source,
     run_python,
 )
 from purecoder.languages import get
@@ -439,3 +440,53 @@ def test_an_unrelated_sql_error_gets_no_schema_hint():
 
 def test_no_schema_hint_for_a_language_without_a_schema():
     assert missing_relation(get("python"), "no such table: orders") == ""
+
+
+# ---- a diagnostic that names a line nobody was shown ---------------------
+
+OCAML_ERROR = ('File "/tmp/tmpx/candidate.ml", line 4, characters 39-40:\n'
+               '4 |         else swap_if_needed (x :: acc) y :: rest\n'
+               '                                           ^\n'
+               "Error: This expression has type 'a but an expression was "
+               "expected of type 'a list")
+
+GCC_ERROR = ("/tmp/tmpx/candidate.cpp:3:14: error: 'foo' was not declared "
+             "in this scope")
+
+
+def test_the_offending_line_is_quoted_back_to_the_writer():
+    """The fix loop showed the model an error saying `line 4, characters
+    39-40` and never showed it line 4. Observed live on an OCaml bubble sort:
+    three attempts, three type errors, no convergence -- the model was being
+    asked to fix source it could not see."""
+    code = "let rec bubble x = x\nlet other = 1\n"
+    tests = 'let () = pc_check (bubble 1 = 1) "b"'
+    out = quoted_source(get("ocaml"), code, tests, OCAML_ERROR)
+    assert ">>    4 |" in out, out
+    assert "the file the toolchain compiled" in out
+
+
+def test_the_quote_covers_the_assembled_file_not_just_the_implementation():
+    """Line numbers are the ASSEMBLED file's -- harness, code, tests, tail --
+    so quoting the implementation alone would point at the wrong line."""
+    code = "let add a b = a + b\n"
+    tests = 'let () = pc_check (add 1 2 = 3) "add"'
+    out = quoted_source(get("ocaml"), code, tests,
+                        'File "x.ml", line 1, characters 0-3:\nError: nope')
+    assert "let pc_checks" in out, "line 1 is the harness, not the code"
+
+
+def test_an_error_naming_no_line_adds_nothing():
+    assert quoted_source(get("ocaml"), "let x = 1", "", "Error: something") == ""
+
+
+def test_a_line_outside_the_file_is_ignored():
+    out = quoted_source(get("ocaml"), "let x = 1", "",
+                        'File "x.ml", line 9999, characters 0-1:\nError: nope')
+    assert out == ""
+
+
+def test_a_gcc_style_diagnostic_is_understood_too():
+    code = "int add(int a,int b){ return foo(a,b); }"
+    out = quoted_source(get("c++"), code, "void pc_tests(){}", GCC_ERROR)
+    assert ">>    3 |" in out, out

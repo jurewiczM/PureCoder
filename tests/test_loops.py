@@ -553,3 +553,29 @@ def test_declaring_a_package_for_a_language_that_has_no_such_notion_is_refused()
                                     packages=("numpy",))
     assert not res["ok"]
     assert "c++" in res["error"]
+
+
+def test_the_retry_shows_the_writer_what_it_wrote_last_time():
+    """A fix loop that cannot see what it is fixing is a regeneration loop.
+    Observed live on an OCaml bubble sort: four attempts, each starting from
+    the spec alone, repeating variants of the same bug -- the failing check
+    named the case (`single_element`) but nothing showed the code that failed
+    it."""
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert BAD_CODE.strip() in pc.prompts[1], "the previous attempt was not shown"
+    assert "your previous implementation" in pc.prompts[1].lower()
+
+
+def test_a_previous_attempt_too_large_to_show_is_left_out():
+    """Context is the scarce resource on this card, and the project's own
+    finding is that feeding full code forward triggers degeneration. A huge
+    implementation is summarised by its error alone rather than pasted."""
+    huge = "def add(a, b):\n" + "    x = 1\n" * 800 + "    return a - b\n"
+    pc = FakeModel(code_outputs=[huge, GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert "x = 1\n    x = 1" not in pc.prompts[1]

@@ -318,6 +318,49 @@ def missing_relation(spec, error: str) -> str:
             f"rows it needs) before any {kind} that reads it.")
 
 
+# Where a toolchain says the problem is. Two shapes cover everything this
+# project runs: `path:12:34: error` (gcc, clang, rustc, node) and
+# `File "x.ml", line 12, characters 3-4` (ocamlc, and Python's own traceback
+# says `line 12` too).
+_LINE_REF = re.compile(r"(?:^|[\s\"])(?:line |[^\s:]+:)(\d+)[:,\s]", re.MULTILINE)
+
+
+def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
+    """The source the diagnostic is pointing at. -> a block to append, or "".
+
+    The fix loop showed the model `line 4, characters 39-40` and never showed it
+    line 4. Observed live on an OCaml bubble sort: three attempts, three type
+    errors, no convergence -- the writer was being asked to correct source it
+    could not see, since its own previous output is not in the retry prompt.
+
+    The numbers refer to the ASSEMBLED file -- harness, implementation, tests,
+    tail -- so that is what gets quoted. A line inside the harness is worth
+    seeing too: it tells the writer the error is about code it did not write.
+
+    Deliberately a few lines rather than the whole file. Feeding full code
+    forward is what this project found triggers degeneration on a small card;
+    a diagnostic needs its own neighbourhood, not the module.
+    """
+    lines = spec.assemble(code, tests).split("\n")
+    wanted = sorted({int(n) for n in _LINE_REF.findall(error)
+                     if 0 < int(n) <= len(lines)})
+    if not wanted:
+        return ""
+
+    shown, out = set(), []
+    for number in wanted:
+        lo = max(1, number - context)
+        hi = min(len(lines), number + context)
+        for i in range(lo, hi + 1):
+            if i not in shown:
+                shown.add(i)
+                marker = ">>" if i == number else "  "
+                out.append(f"{marker} {i:4d} | {lines[i - 1]}")
+    return ("\n\nThose line numbers are the file the toolchain compiled -- "
+            "your code with the test harness around it. Here is what it "
+            "found there:\n" + "\n".join(out))
+
+
 def lint_implementation(code: str):
     """Reject an implementation that has smuggled its tests inside itself.
 
@@ -834,13 +877,28 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # after the toolchain has already refused, never a gate of its own.
         hint += harness_collision(spec, code, full)
         hint += missing_relation(spec, error)
+        # A compiler that says "line 4" is talking about a file the writer has
+        # never seen: its own previous output is not in this prompt, and the
+        # harness around it never was.
+        hint += quoted_source(spec, code, full, error)
         # The tests are shown so the model knows what it must satisfy, but
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run
         # separately.
-        task = (f"{grounded}{constraints}\n\n"
-                f"Your previous implementation failed these tests, which are "
-                f"run separately and must NOT appear in your output:\n{full}\n\n"
+        # Showing the writer its own last attempt is what makes this a FIX loop
+        # rather than a regeneration loop. Without it the model starts from the
+        # spec every time and rediscovers its own bug -- observed live on an
+        # OCaml bubble sort, four attempts, four variants of one mistake, while
+        # the failing check named the case each time.
+        #
+        # Bounded, because the opposite failure is this project's finding 4:
+        # feeding full code forward for coherence triggered degeneration on a
+        # small card. A large implementation is described by its error alone.
+        previous = (f"\n\nYour previous implementation, which failed:\n{code}"
+                    if len(code) <= 2000 else "")
+        task = (f"{grounded}{constraints}{previous}\n\n"
+                f"It failed these tests, which are run separately and must NOT "
+                f"appear in your output:\n{full}\n\n"
                 f"With this error:\n{error}\n"
                 f"{hint}\n\n"
                 f"Output only the corrected implementation, nothing else.")
