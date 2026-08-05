@@ -684,17 +684,31 @@ class DocStore:
         # into a float32 array instead put a full match at 0.99999988, which
         # is harmless against a threshold and needlessly untidy in `explain`.
         scores = np.zeros(len(self.chunks), dtype="float64")
+        # A token the corpus has never seen counts in the DENOMINATOR at the
+        # weight of the rarest token it does know. Dropping it instead was the
+        # bug behind "the gate never refuses": the score became the share of a
+        # query's KNOWN tokens, so `cheapest flights to Lisbon in March` scored
+        # a perfect 1.000 against OCaml documentation -- one incidental token
+        # existed, and failing to explain the other five cost nothing. An
+        # unseen token is as informative as the rarest seen one; not matching
+        # it has to cost something.
+        rarest = max(self._idf.values(), default=0.0)
+        scores_seen = 0.0
         total = 0.0
         for token in tokenize(query):
             weight = self._idf.get(token, 0.0)
             if not weight:
+                total += rarest
                 continue
+            scores_seen += weight
             total += weight
             # Safe as a plain scatter because a chunk contributes each token
             # once: postings are built from a per-chunk token SET, so no index
             # repeats and none of numpy's buffered-duplicate trap applies.
             scores[self._postings[token]] += weight
-        if not total:
+        # A query with nothing the corpus knows scores zero everywhere rather
+        # than dividing by zero -- or, worse, trivially scoring 1.
+        if not total or not scores_seen:
             return np.zeros(len(self.chunks), dtype="float32")
         return (scores / total).astype("float32")
 
@@ -714,15 +728,34 @@ class DocStore:
         lexical = self._lexical(query)
         return cosine + LEXICAL_WEIGHT * lexical, cosine, lexical
 
-    def search(self, query, k=3, min_score=0.3):
+    def search(self, query, k=3, min_score=0.8, min_lexical=0.9):
+        """Top k above the gate. -> [(chunk, source, score)].
+
+        0.8 rather than the 0.3 this inherited from when the score was cosine
+        alone. Measured over 3044 chunks of real documentation with eleven
+        queries, five of them deliberately unrelated: relevant queries land at
+        1.10-1.34 and unrelated ones at 0.50-0.70, so anything in that gap
+        separates them. The separation is the measured part; the exact number
+        is a judgement, and it is set nearer the junk end because a too-tight
+        gate drops documentation the model needed and does it silently.
+
+        `min_lexical` keeps the one thing the higher threshold would otherwise
+        have killed: a chunk containing essentially every rare token of the
+        query is retrieved even with a cosine of zero, which is the case the
+        lexical signal exists for and the case embeddings are worst at. That
+        clause is only safe now -- before unknown tokens counted against a
+        match, an unrelated question scored a perfect 1.0 lexical and would
+        have walked straight through it.
+        """
         # An empty query embeds to something, and that something scores against
         # every chunk. Whatever comes back is not a match for anything.
         if self.vectors is None or not self.chunks or not query.strip():
             return []
-        scores, _, _ = self._scores(query)
+        scores, _, lexical = self._scores(query)
         order = np.argsort(-scores)[:k]
         return [(self.chunks[i], self.sources[i], float(scores[i]))
-                for i in order if scores[i] >= min_score]
+                for i in order
+                if scores[i] >= min_score or lexical[i] >= min_lexical]
 
     def explain(self, query, k=5):
         """Top k with both signals separated -- why a hit ranked where it did.

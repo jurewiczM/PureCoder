@@ -757,3 +757,38 @@ def test_the_overlap_still_overlaps_at_sane_settings():
     shared = [t for t in texts[1:]
               if any(ln in texts[texts.index(t) - 1] for ln in t.splitlines())]
     assert shared, "consecutive chunks share no line at all"
+
+
+def test_one_incidental_token_does_not_make_a_perfect_lexical_match(api_store):
+    """The bug behind "the gate never refuses". The score was the share of the
+    query's KNOWN tokens a chunk holds, so tokens the corpus has never seen
+    were dropped from the denominator rather than counted against the match.
+    Measured on 3044 chunks of OCaml documentation: `cheapest flights to Lisbon
+    in March` scored a perfect 1.000 lexical -- one incidental token existed,
+    and being unable to explain the other five cost nothing."""
+    full = api_store._lexical("Printf.eprintf").max()
+    incidental = api_store._lexical(
+        "Printf.eprintf lisbon flights cheapest march rattling").max()
+    assert full == 1.0
+    assert incidental < 0.5, incidental
+
+
+def test_a_query_of_entirely_unknown_tokens_still_scores_zero(api_store):
+    assert not api_store._lexical("lisbon flights cheapest").any()
+
+
+def test_the_gate_now_refuses_a_query_the_corpus_cannot_answer(api_store):
+    """The gate exists to refuse, and until the lexical fix it could not: every
+    query scored above the threshold. With unknown tokens counted against the
+    match, a question the corpus has nothing to say about falls below it."""
+    assert api_store.search("Printf.eprintf")
+    assert api_store.search("lisbon flights cheapest march") == []
+
+
+def test_the_default_threshold_is_the_calibrated_one():
+    """0.3 was inherited from when the score was cosine alone. The hybrid runs
+    past 1.0, so the old default could not refuse anything."""
+    import inspect
+
+    default = inspect.signature(rag.DocStore.search).parameters["min_score"].default
+    assert default >= 0.8
