@@ -78,7 +78,7 @@ def test_every_spec_is_internally_consistent(name):
             f"{name} cannot prove a check ran"
 
 
-@pytest.mark.parametrize("name", ["c++", "javascript", "rust", "c#"])
+@pytest.mark.parametrize("name", ["c++", "javascript", "rust", "c#", "ocaml"])
 def test_a_wired_language_fails_the_run_when_no_check_executes(name):
     """Every non-Python harness must carry the 'no checks ran' tail. That is
     the guarantee that stops exit code 0 being mistaken for evidence."""
@@ -155,14 +155,17 @@ def test_only_wired_and_refused_names_are_reserved():
     four languages it exists to enable."""
     assert {"python", "c++", "javascript", "rust", "c#"} <= L.RESERVED_NAMES
     assert "powerquery" in L.RESERVED_NAMES, "a standing refusal must stay one"
-    assert not ({"go", "java", "swift", "ocaml"} & L.RESERVED_NAMES)
+    # ocaml joined them: it is wired now, so `learn ocaml` is refused the way
+    # `learn python` always was.
+    assert "ocaml" in L.RESERVED_NAMES
+    assert not ({"go", "java", "swift"} & L.RESERVED_NAMES)
 
 
 def test_a_declared_but_unimplemented_language_refuses():
-    """`ocaml` is installed on some machines. Having the binary is not the
-    same as being wired, and reporting available would trade a clear refusal
-    for a confusing runtime failure."""
-    ok, why = L.get("ocaml").available()
+    """`go` is installed on some machines. Having the binary is not the same as
+    being wired, and reporting available would trade a clear refusal for a
+    confusing runtime failure. (This was OCaml's test until OCaml was wired.)"""
+    ok, why = L.get("go").available()
     assert not ok
     assert "not implemented" in why
 
@@ -184,6 +187,7 @@ def test_python_is_available_without_a_probe():
 
 @pytest.mark.parametrize("name,binary", [
     ("c++", "g++"), ("javascript", "node"), ("rust", "rustc"), ("c#", "dotnet"),
+    ("ocaml", "ocamlc"),
 ])
 def test_availability_matches_the_machine(name, binary):
     ok, _ = L.get(name).available()
@@ -228,6 +232,16 @@ CASES = {
         "fn add(a:i32,b:i32)->i32{a-b}",
         "fn pc_tests(){ pc_check!(add(1,2)==3); }",
         "fn pc_tests(){ }",
+    ),
+    # OCaml runs top-level statements in order, so a check is a statement and
+    # the tests need no wrapper function -- the shape JavaScript and C# use.
+    "ocaml": (
+        "let add a b = a + b",
+        "let add a b = a - b",
+        'let () = pc_check (add 1 2 = 3) "add"\n'
+        'let () = pc_check (add 0 0 = 0) "zero"\n'
+        'let () = pc_check (add (-1) 1 = 0) "negative"',
+        "",
     ),
     # SQL has no function to call, so the thing under test is a view. The
     # checks are rows: a boolean and a label, inserted into a table the

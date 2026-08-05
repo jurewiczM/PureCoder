@@ -458,6 +458,65 @@ register(LanguageSpec(
 ))
 
 
+# ---- OCaml: written by hand, after `learn` could not draft it -------------
+#
+# This is the language the bootstrap layer was built for, and six live runs
+# never registered it: the drafting model wrote `let PC_CHECK cond =` (OCaml
+# reserves capitals for constructors), explained its code in English inside the
+# source, echoed the prompt back, and finally produced `end else`. Each of those
+# is fixed where it belongs, and the entry is still written by a person --
+# because the probes do not care who wrote it, and a language nobody can
+# generate for is worth less than an hour of typing.
+#
+# The shape is JavaScript's rather than C++'s: OCaml runs top-level statements
+# in order, so the tail needs no entry point and the tests need no wrapper.
+
+register(LanguageSpec(
+    name="ocaml",
+    extension=".ml",
+    probe=("ocamlc", "-version"),
+    # -w -a silences warnings, as -w does for g++ and -A warnings for rustc: an
+    # unused binding in generated code is not a reason to fail a run.
+    build=("ocamlc", "-w", "-a", "-o", "{bin}", "{src}"),
+    run=("{bin}",),
+    preamble=(
+        "let pc_checks = ref 0\n"
+        "let pc_check cond label =\n"
+        "  if not cond then begin\n"
+        "    prerr_endline (\"CHECK FAILED: \" ^ label);\n"
+        "    exit 1\n"
+        "  end;\n"
+        "  incr pc_checks\n"
+    ),
+    epilogue=(
+        "let () =\n"
+        "  if !pc_checks < 1 then begin\n"
+        "    prerr_endline \"no checks ran\";\n"
+        "    exit 2\n"
+        "  end\n"
+    ),
+    test_system=(
+        "You write OCaml tests for a described function. Output ONLY top-level "
+        "statements of the form `let () = pc_check (expr) \"label\"`, one per "
+        "check. No test function, no module, no `let () = main`, no opens, no "
+        "prose, no fences. pc_check is already defined and takes a boolean and "
+        "a label: e.g. let () = pc_check (add 1 2 = 3) \"add\". The label goes "
+        "OUTSIDE the parentheses -- `pc_check ((add 1 2 = 3) \"add\")` applies "
+        "the label to a boolean and does not compile. Assume the thing under "
+        "test is already defined above your statements."
+    ),
+    project=ProjectSpec(
+        entry="main.ml",
+        install="@echo nothing to install",
+        run="ocamlc -w -a -o main main.ml && ./main",
+        test="ocamlc -w -a -o main main.ml && ./main",
+        clean="rm -f main *.cmi *.cmo",
+    ),
+    check_call="pc_check",
+    aliases=("ml",),
+))
+
+
 # ---- declared, not yet runnable -----------------------------------------
 #
 # These resolve so the refusal can explain itself, and start working the moment
@@ -467,7 +526,6 @@ for _name, _ext, _bin, _alias in (
     ("go", ".go", "go", ("golang",)),
     ("java", ".java", "javac", ()),
     ("swift", ".swift", "swiftc", ()),
-    ("ocaml", ".ml", "ocaml", ("ml",)),
 ):
     register(LanguageSpec(
         name=_name, extension=_ext, probe=(_bin, "version" if _name == "go"

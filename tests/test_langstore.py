@@ -110,15 +110,15 @@ def test_saving_a_reserved_name_is_refused(store):
 
 
 def test_a_placeholder_name_can_be_learned(store):
-    """`go`, `java`, `swift` and `ocaml` are declared so a refusal can name
-    them, and wired to nothing. A learned entry is exactly what they are
-    waiting for."""
+    """`go`, `java` and `swift` are declared so a refusal can name them, and
+    wired to nothing. A learned entry is exactly what they are waiting for.
+    (OCaml was the fourth until it was wired by hand.)"""
     from purecoder.languages import REGISTRY
 
-    langstore.save(dataclasses.replace(CANDIDATE, name="ocaml"))
-    REGISTRY.pop("ocaml", None)
-    assert [s.name for s in langstore.load_all()] == ["ocaml"]
-    assert REGISTRY["ocaml"].run == CANDIDATE.run
+    langstore.save(dataclasses.replace(CANDIDATE, name="go"))
+    REGISTRY.pop("go", None)
+    assert [s.name for s in langstore.load_all()] == ["go"]
+    assert REGISTRY["go"].run == CANDIDATE.run
 
 
 def test_a_file_claiming_a_built_in_name_is_ignored(store):

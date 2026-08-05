@@ -39,6 +39,30 @@ def test_a_known_good_language_passes_every_probe():
     assert len(results) == 5
 
 
+OCAML_FIXTURE = bootstrap.Fixture(
+    correct="let add a b = a + b",
+    wrong="let add a b = a - b",
+    tests='let () = pc_check (add 1 2 = 3) "add"\n'
+          'let () = pc_check (add 0 0 = 0) "zero"',
+    empty="",
+    always_fails='let () = pc_check false "always"',
+)
+
+
+def test_the_hand_written_ocaml_entry_passes_the_gate_a_learned_one_must():
+    """OCaml is the language the bootstrap layer was built for, and six live
+    runs never registered it. The entry is hand-written now -- and held to the
+    same five probes, because the gate does not care who wrote a spec. A
+    hand-written harness that cannot fail wrong code is exactly as worthless as
+    a drafted one."""
+    spec = L.get("ocaml")
+    ok, why = spec.available()
+    if not ok:
+        pytest.skip(why)
+    passed, results = bootstrap.probe_language(spec, OCAML_FIXTURE)
+    assert passed, [r.name for r in results if not r.ok]
+
+
 def test_a_harness_that_cannot_fail_is_rejected():
     """The probe that matters. A check helper that prints on failure but exits
     0 passes "it compiles", "it runs" and "it reports" -- and is worthless.
@@ -388,11 +412,13 @@ def test_a_reserved_name_is_refused_before_any_model_call(store, name):
 def test_a_placeholder_name_is_accepted(store):
     """`learn ocaml` was refused because the placeholder that exists so a
     refusal can name the language also reserved it -- found on the first live
-    run, and worked around with the name `ocaml5`."""
+    run, and worked around with the name `ocaml5`. OCaml is wired by hand now,
+    so `go` carries the case: a declared-but-unimplemented name must stay
+    learnable."""
     _cpp()
-    res = _learn(FakeModel(completions=DRAFTS), store, name="ocaml")
+    res = _learn(FakeModel(completions=DRAFTS), store, name="go")
     assert res["ok"], res["error"]
-    assert (store / "ocaml.json").is_file()
+    assert (store / "go.json").is_file()
 
 
 def test_a_draft_that_does_not_parse_is_reported_not_raised(store):
