@@ -51,15 +51,47 @@ def chunk_markdown(text, source, max_chars=800, overlap=150):
         if len(sec) <= max_chars:
             chunks.append(sec)
         else:
+            # Split on line boundaries. It used to slice by character, and over
+            # 61 real OCaml tutorials that opened 445 of 3044 chunks mid-word
+            # -- `de effect`, `rom the left hand end` -- so retrieval handed the
+            # model a fragment starting in the middle of a token.
+            #
             # An overlap at or above the window makes the stride zero or
             # negative -- the loop never advances and the process hangs with no
             # output. `chunk_markdown(text, src, max_chars=100)` against the
             # default overlap of 150 is enough to do it.
             stride = max(1, max_chars - overlap)
-            start = 0
-            while start < len(sec):
-                chunks.append(sec[start:start + max_chars].strip())
-                start += stride
+            window = []
+
+            def flush(window=window):
+                joined = "\n".join(window).strip()
+                if joined:
+                    chunks.append(joined)
+                # Carry the tail of this window into the next one, by whole
+                # lines, until the carried text reaches the overlap budget.
+                keep, size = [], 0
+                for line in reversed(window):
+                    if size + len(line) + 1 > overlap:
+                        break
+                    keep.insert(0, line)
+                    size += len(line) + 1
+                window[:] = keep
+
+            for line in sec.split("\n"):
+                # A single line longer than the whole window has no boundary to
+                # respect -- a minified file, a very long URL, a table row. It
+                # is sliced by character, which is what the old code did to
+                # everything.
+                if len(line) > max_chars:
+                    flush()
+                    window.clear()
+                    for start in range(0, len(line), stride):
+                        chunks.append(line[start:start + max_chars].strip())
+                    continue
+                if window and sum(len(w) + 1 for w in window) + len(line) > max_chars:
+                    flush()
+                window.append(line)
+            flush()
     return [(c, source) for c in chunks if c.strip()]
 
 

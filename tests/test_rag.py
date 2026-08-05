@@ -702,3 +702,35 @@ def test_a_type_is_labelled_by_its_own_name_not_its_first_constructor():
     pytest.importorskip("tree_sitter_language_pack")
     labels = _labels(rag.chunk_code(OCAML_INTERFACE, "option.mli", "ocaml"))
     assert any(label.endswith("t in option.mli") for label in labels), labels
+
+
+def test_a_long_section_is_split_on_line_boundaries_not_mid_word():
+    """Live finding, over 61 real OCaml tutorials: 445 of 3044 chunks began
+    mid-word -- `de effect`, `rom the left hand end`, `htening to illustrate`.
+    The window was sliced by CHARACTER, so a chunk could open in the middle of
+    a token and the retrieved context handed the model a fragment."""
+    section = "# Heading\n" + "\n".join(
+        f"sentence number {i} explaining something about lists" for i in range(60))
+    chunks = rag.chunk_markdown(section, "doc.md", max_chars=300, overlap=60)
+    assert len(chunks) > 1, "the section should have been split at all"
+    for text, _ in chunks:
+        assert text.startswith(("#", "sentence")), repr(text[:40])
+
+
+def test_splitting_still_covers_the_whole_section():
+    """A boundary-respecting split must not silently drop text."""
+    lines = [f"line {i} with several words in it" for i in range(40)]
+    chunks = rag.chunk_markdown("\n".join(lines), "doc.md", max_chars=200,
+                                overlap=40)
+    joined = " ".join(t for t, _ in chunks)
+    for i in (0, 17, 39):
+        assert f"line {i} with" in joined, i
+
+
+def test_a_single_line_longer_than_the_window_is_still_emitted():
+    """A minified line or a very long URL has no boundary to split on. It must
+    still be indexed rather than dropped."""
+    long_line = "x" * 900
+    chunks = rag.chunk_markdown(long_line, "doc.md", max_chars=300, overlap=50)
+    assert chunks
+    assert sum(len(t) for t, _ in chunks) >= 900
