@@ -6,12 +6,11 @@ Minimal doc/code-retrieval RAG over ONE library or project, for a tight 6 GB car
 Pipeline: chunk source (code-aware for .py, markdown-aware for docs) -> embed
 with a small model -> store vectors on disk -> at generation time retrieve the
 top-k relevant chunks if they clear a similarity threshold (the "retrieve when
-needed" gate), injecting just that slice to stay inside context. Measured, that
-gate almost never refuses: over 3044 chunks of real documentation an unrelated
-question scored 1.103 against a threshold of 0.3, because bge-small's cosine
-floor is high for any English text and the hybrid score adds a lexical term on
-top. Treated as a boundary rather than tuned to fit one corpus -- see
-docs/STATUS.md.
+needed" gate), injecting just that slice to stay inside context. Over 3044
+chunks of real documentation, relevant questions score 1.10-1.34 and unrelated
+ones 0.50-0.70; the gate sits at 0.8. Those ranges used to overlap, because a
+token the corpus had never seen was dropped from the lexical denominator rather
+than counted against the match -- see `_lexical`.
 
 Ranking uses two signals. Cosine similarity answers "is this about the same
 thing"; an IDF-weighted lexical score answers "does this contain the exact name

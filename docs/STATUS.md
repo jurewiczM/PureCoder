@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-509 tests, all green, none of them needing a GPU or a running server
+517 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -283,15 +283,23 @@ _Snapshot of what's built, tested, and what's next._
   the repair does not match. Refusing was tried first and ended runs at
   attempts=0 with the writer never reached. Nothing here infers intent -- a
   malformation with two possible meanings does not belong in this field.
-- **The gate does not gate, and now there are numbers.** Over 3044 chunks of
-  real ocaml.org documentation, `premier league offside rule` scores 1.103 and
-  `how do I bake sourdough bread` 0.826, against a `min_score` of 0.3 -- higher
-  than most on-topic queries. bge-small's cosine floor is high for any English
-  text and the hybrid score adds a lexical term on top, so the scale runs past
-  1.0 while the threshold stayed where it was for cosine alone. The README's
-  "ONLY IF they clear a similarity threshold" is not true of any query anyone
-  would type. Deliberately not tuned to fit this one corpus, since a too-tight
-  gate drops documentation the model needed and does it silently.
+- **The gate refuses again, and the reason it could not was a bug rather than
+  a threshold.** It was recorded here first as a boundary about embedding
+  floors -- that was wrong, and worth leaving on the record. The lexical score
+  is the share of a query's rare tokens a chunk holds, and tokens the corpus
+  had never seen were dropped from the denominator instead of counted against
+  the match, so a chunk matching ONE incidental token scored as well as one
+  matching every token: `cheapest flights to Lisbon in March` scored a perfect
+  1.000 against OCaml documentation because "march" appears somewhere. With
+  unseen tokens weighted at the rarest known weight, unrelated queries fall to
+  0.50-0.70 while real ones stay at 1.10-1.34 -- ranges that used to overlap,
+  which is exactly why raising the threshold had looked like corpus-fitting.
+  The default is now 0.8, set nearer the junk end because a too-tight gate
+  drops documentation silently. `min_lexical` preserves the exact-symbol
+  rescue at cosine zero, which is only safe now that an unrelated question can
+  no longer score 1.0 lexical. Live: 7 of 7 real questions retrieve, 0 of 5
+  unrelated ones do. The threshold itself remains a judgement calibrated on one
+  corpus and eleven queries; the separation it exploits is the measured part.
 - **`ingest` cannot read the documentation most projects publish.** It matches
   prose and source extensions; the web's docs are HTML, which is skipped whole
   rather than stripped and indexed. The ocaml.org tutorials used to test
