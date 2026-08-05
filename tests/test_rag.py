@@ -734,3 +734,26 @@ def test_a_single_line_longer_than_the_window_is_still_emitted():
     chunks = rag.chunk_markdown(long_line, "doc.md", max_chars=300, overlap=50)
     assert chunks
     assert sum(len(t) for t, _ in chunks) >= 900
+
+
+def test_an_overlap_at_or_above_the_window_does_not_explode():
+    """The old character-sliced chunker guarded this with `stride = max(1,
+    max_chars - overlap)`, which stopped it hanging. The line-based one
+    terminates without that guard but degenerates instead: it carries the whole
+    previous window forward, advances one line at a time, and emits a
+    near-duplicate chunk per line -- 500 lines became 476 chunks of 25 lines
+    each, a 25x blow-up in an index nobody would notice was wrong."""
+    text = "x\n" * 500
+    chunks = rag.chunk_markdown(text, "d.md", max_chars=50, overlap=99)
+    assert len(chunks) < 60, len(chunks)
+
+
+def test_the_overlap_still_overlaps_at_sane_settings():
+    lines = [f"line {i} of the section" for i in range(40)]
+    chunks = rag.chunk_markdown("\n".join(lines), "d.md", max_chars=200,
+                                overlap=60)
+    texts = [c for c, _ in chunks]
+    assert len(texts) > 2
+    shared = [t for t in texts[1:]
+              if any(ln in texts[texts.index(t) - 1] for ln in t.splitlines())]
+    assert shared, "consecutive chunks share no line at all"

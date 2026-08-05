@@ -517,3 +517,22 @@ def test_a_correct_check_is_left_exactly_alone():
 def test_a_language_with_no_repair_declared_is_untouched():
     cpp = 'void pc_tests(){ PC_CHECK((add(1, 2)) == 3); }'
     assert repair_tests(get("c++"), cpp) == cpp
+
+
+def test_a_csharp_style_diagnostic_is_understood():
+    """`candidate.cs(12,5): error CS0103` names its line in parentheses, which
+    the other two shapes do not cover -- so C# was the one wired language whose
+    diagnostics quoted nothing."""
+    code = "int Add(int a, int b) => a + b;"
+    out = quoted_source(get("c#"), code, "PC_CHECK(true, \"x\");",
+                        "candidate.cs(3,5): error CS0103: no such name")
+    assert ">>    3 |" in out, out
+
+
+def test_only_a_few_regions_are_quoted():
+    """A compiler can emit a dozen diagnostics, and five lines of context each
+    would spend the context budget this project is built around."""
+    code = "\n".join(f"let v{i} = {i}" for i in range(60))
+    error = "\n".join(f'File "x.ml", line {i}, characters 1-2:' for i in range(1, 13))
+    out = quoted_source(get("ocaml"), code, "", error)
+    assert out.count(">>") <= 3, out.count(">>")

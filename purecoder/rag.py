@@ -65,10 +65,19 @@ def chunk_markdown(text, source, max_chars=800, overlap=150):
             # negative -- the loop never advances and the process hangs with no
             # output. `chunk_markdown(text, src, max_chars=100)` against the
             # default overlap of 150 is enough to do it.
-            stride = max(1, max_chars - overlap)
+            # An overlap at or above the window is what made the old
+            # character-sliced version hang, and it degenerates this one
+            # instead: the whole previous window is carried forward, the walk
+            # advances a line at a time, and 500 lines become 476 near-identical
+            # chunks. Half the window is the most that can be carried while
+            # still guaranteeing real forward progress.
+            carry = min(overlap, max_chars // 2)
+            stride = max(1, max_chars - carry)
             window = []
 
-            def flush(window=window):
+            # Bound as defaults: both are per-section values, and a closure over
+            # the loop's variables is a trap even where it happens to work.
+            def flush(window=window, carry=carry):
                 joined = "\n".join(window).strip()
                 if joined:
                     chunks.append(joined)
@@ -76,7 +85,7 @@ def chunk_markdown(text, source, max_chars=800, overlap=150):
                 # lines, until the carried text reaches the overlap budget.
                 keep, size = [], 0
                 for line in reversed(window):
-                    if size + len(line) + 1 > overlap:
+                    if size + len(line) + 1 > carry:
                         break
                     keep.insert(0, line)
                     size += len(line) + 1

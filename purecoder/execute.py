@@ -322,7 +322,15 @@ def missing_relation(spec, error: str) -> str:
 # project runs: `path:12:34: error` (gcc, clang, rustc, node) and
 # `File "x.ml", line 12, characters 3-4` (ocamlc, and Python's own traceback
 # says `line 12` too).
-_LINE_REF = re.compile(r"(?:^|[\s\"])(?:line |[^\s:]+:)(\d+)[:,\s]", re.MULTILINE)
+_LINE_REF = re.compile(
+    r"(?:^|[\s\"])(?:line |[^\s:]+:)(\d+)[:,\s]"      # gcc/rustc/node/ocaml
+    r"|\.[A-Za-z]+\((\d+),\d+\):",                    # C#: candidate.cs(12,5):
+    re.MULTILINE)
+
+# A compiler can emit a dozen diagnostics, and five lines of context each would
+# spend the budget this whole project is shaped around. The first few are where
+# the cause is; the rest are usually consequences of it.
+_MAX_QUOTED_REGIONS = 3
 
 
 def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
@@ -342,8 +350,9 @@ def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
     a diagnostic needs its own neighbourhood, not the module.
     """
     lines = spec.assemble(code, tests).split("\n")
-    wanted = sorted({int(n) for n in _LINE_REF.findall(error)
-                     if 0 < int(n) <= len(lines)})
+    found = [n for match in _LINE_REF.findall(error) for n in match if n]
+    wanted = sorted({int(n) for n in found
+                     if 0 < int(n) <= len(lines)})[:_MAX_QUOTED_REGIONS]
     if not wanted:
         return ""
 
