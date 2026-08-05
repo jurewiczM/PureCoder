@@ -73,6 +73,10 @@ class LanguageSpec:
     # parse as applying the label to a boolean, and the tester writes that
     # whenever the prompt's counter-example is diluted by other context.
     test_lint: tuple = ()
+    # (regex, replacement) pairs applied to a designed suite before it is
+    # gated. Only for malformations with exactly ONE possible intent, where
+    # refusing has been tried and does not converge -- see OCaml below.
+    test_fix: tuple = ()
     aliases: tuple = ()
     # The docs this language was learned from, kept as an index. A STEM, not a
     # path: the store's location follows PURECODER_HOME, so an absolute path
@@ -519,6 +523,11 @@ register(LanguageSpec(
         clean="rm -f main *.cmi *.cmo",
     ),
     check_call="pc_check",
+    # Repaired first, then gated. The gate alone was tried live and the
+    # designer reproduced the same malformation on every attempt, ending the
+    # run at attempts=0 without ever reaching the writer.
+    test_fix=((r"pc_check\s*\((\(.*?\))\s*(\"[^\"]*\")\s*\)",
+               r"pc_check \1 \2"),),
     test_lint=((r"pc_check\s*\(\(",
                 "a check reads `pc_check ((expr) \"label\")`, which applies "
                 "the label to a boolean and does not compile -- the label goes "

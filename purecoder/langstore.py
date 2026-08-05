@@ -22,7 +22,7 @@ _TUPLE_FIELDS = ("probe", "build", "run", "aliases")
 # Nested: (pattern, reason) pairs. JSON flattens both levels to lists, and a
 # spec compared by value is then quietly unequal to the one that was saved --
 # which is how a round-trip test caught this the moment `test_lint` existed.
-_TUPLE_PAIR_FIELDS = ("test_lint",)
+_TUPLE_PAIR_FIELDS = ("test_lint", "test_fix")
 _FIELDS = tuple(f.name for f in dataclasses.fields(LanguageSpec))
 
 

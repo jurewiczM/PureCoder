@@ -12,6 +12,7 @@ from purecoder.execute import (
     missing_relation,
     public_names,
     quoted_source,
+    repair_tests,
     run_python,
 )
 from purecoder.languages import get
@@ -490,3 +491,29 @@ def test_a_gcc_style_diagnostic_is_understood_too():
     code = "int add(int a,int b){ return foo(a,b); }"
     out = quoted_source(get("c++"), code, "void pc_tests(){}", GCC_ERROR)
     assert ">>    3 |" in out, out
+
+
+# ---- repairing a syntactically impossible check --------------------------
+
+def test_a_misparenthesised_ocaml_check_is_repaired_before_the_gate():
+    """The gate rejecting it was not enough: live, the designer wrote the same
+    malformation on every attempt and the run ended with attempts=0, having
+    never reached the writer at all.
+
+    Repair rather than refusal, on the same argument as `./{bin}` and `{src}.ml`
+    before it. `pc_check ((expr) "label")` cannot compile under ANY reading --
+    it applies a string to a boolean -- so there is exactly one thing it can
+    have meant, and rewriting it is meaning-preserving by construction."""
+    bad = 'let () = pc_check ((sum_list [1] = 1) "one")\n'
+    assert repair_tests(get("ocaml"), bad) == \
+        'let () = pc_check (sum_list [1] = 1) "one"\n'
+
+
+def test_a_correct_check_is_left_exactly_alone():
+    good = 'let () = pc_check (sum_list [1] = 1) "one"\n'
+    assert repair_tests(get("ocaml"), good) == good
+
+
+def test_a_language_with_no_repair_declared_is_untouched():
+    cpp = 'void pc_tests(){ PC_CHECK((add(1, 2)) == 3); }'
+    assert repair_tests(get("c++"), cpp) == cpp

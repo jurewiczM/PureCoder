@@ -500,6 +500,24 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     return True, ""
 
 
+def repair_tests(spec, tests: str) -> str:
+    """Apply a language's declared, meaning-preserving test repairs.
+
+    The trust boundary here is real and worth stating: this edits code a model
+    wrote. It is allowed only for a construct with exactly one possible intent
+    -- OCaml's `pc_check ((expr) "label")` applies a string to a boolean and
+    cannot compile under any reading -- and only after refusing was tried and
+    failed to converge. Live, the gate rejected the same malformation on every
+    attempt and the run ended at attempts=0, having never reached the writer.
+
+    Same argument as `./{bin}` and `{src}.ml` in the bootstrap layer, which are
+    normalised rather than refused for the same reason.
+    """
+    for pattern, replacement in spec.test_fix:
+        tests = re.sub(pattern, replacement, tests)
+    return tests
+
+
 def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
                spec=PYTHON):
     """Reject structurally bad tests BEFORE they get to judge code.
@@ -600,7 +618,8 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
     """
     task, tests, reason = description, "", ""
     for attempt in range(1, max_retries + 1):
-        tests = generate_tests(pc, task, n_predict=n_predict, spec=spec)
+        tests = repair_tests(spec, generate_tests(pc, task, n_predict=n_predict,
+                                                  spec=spec))
         ok, reason = lint_tests(tests, targets=targets,
                                 min_assertions=min_assertions, spec=spec)
         if ok:
