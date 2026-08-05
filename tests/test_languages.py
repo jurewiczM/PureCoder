@@ -403,3 +403,36 @@ def test_the_python_tester_is_told_not_to_wrap_its_asserts():
     prompts all forbid a wrapper; Python's never did."""
     text = L.PYTHON.test_system
     assert "no test function" in text.lower() or "do not wrap" in text.lower()
+
+
+def test_the_ocaml_gate_rejects_a_misparenthesised_check():
+    """The dominant OCaml tester failure, live: `pc_check ((expr) "label")`
+    applies the label to a boolean and does not compile. A counter-example was
+    added to the tester prompt and held until documentation was also in the
+    context, at which point the model reverted to it -- a prompt asks, a gate
+    tells. Caught before the run, with the correction fed back."""
+    bad = ('let () = pc_check ((sum_list [] = 0) "empty")\n'
+           'let () = pc_check ((sum_list [1] = 1) "one")\n'
+           'let () = pc_check ((sum_list [1; 2] = 3) "two")\n')
+    ok, err = lint_tests(bad, spec=L.get("ocaml"))
+    assert not ok
+    assert "outside" in err.lower()
+
+
+def test_the_ocaml_gate_accepts_the_documented_idiom():
+    good = ('let () = pc_check (sum_list [] = 0) "empty"\n'
+            'let () = pc_check (sum_list [1] = 1) "one"\n'
+            'let () = pc_check (sum_list [1; 2] = 3) "two"\n')
+    ok, err = lint_tests(good, spec=L.get("ocaml"))
+    assert ok, err
+
+
+def test_another_language_is_not_held_to_ocamls_rule():
+    """C++ writes `PC_CHECK((a + b) == c, "label")` legitimately -- a rule about
+    OCaml's application syntax must not reach it."""
+    cpp = ('void pc_tests(){\n'
+           '  PC_CHECK((add(1, 2)) == 3);\n'
+           '  PC_CHECK((add(0, 0)) == 0);\n'
+           '  PC_CHECK((add(-1, 1)) == 0);\n}')
+    ok, err = lint_tests(cpp, spec=L.get("c++"))
+    assert ok, err

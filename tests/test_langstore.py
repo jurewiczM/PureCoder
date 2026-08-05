@@ -13,6 +13,17 @@ def test_a_spec_survives_a_round_trip_unchanged():
     assert langstore.from_json(langstore.to_json(PYTHON)) == PYTHON
 
 
+def test_a_nested_tuple_field_comes_back_nested():
+    """`test_lint` is (pattern, reason) pairs. JSON flattens both levels, and a
+    spec compared by value is then quietly unequal to the one saved -- the
+    round-trip test caught it the moment the field existed."""
+    from purecoder.languages import get
+
+    ocaml = get("ocaml")
+    assert ocaml.test_lint, "the fixture needs a spec that has one"
+    assert langstore.from_json(langstore.to_json(ocaml)) == ocaml
+
+
 def test_tuple_fields_come_back_as_tuples_not_lists():
     """JSON has no tuple. A LanguageSpec is frozen and compared by value, so a
     list where a tuple belongs makes every equality check quietly false."""

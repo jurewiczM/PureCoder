@@ -478,6 +478,14 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
         return False, (f"only {count} check(s); need at least {min_assertions} "
                        f"-- assert with {spec.check_call}")
 
+    # A malformation the language's own compiler would catch, but only after a
+    # build -- and after the loop has spent an attempt on it. Declared per
+    # language because the shape is per language: C++ writes
+    # `PC_CHECK((a + b) == c, "x")` perfectly legitimately.
+    for pattern, reason in spec.test_lint:
+        if re.search(pattern, tests):
+            return False, reason
+
     lines = [ln.strip() for ln in tests.splitlines()
              if spec.check_call in ln]
     if lines:

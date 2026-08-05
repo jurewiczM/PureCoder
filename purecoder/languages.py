@@ -67,6 +67,12 @@ class LanguageSpec:
     project: ProjectSpec | None = None
     unvalidatable: str = ""              # non-empty: refuse permanently, w/ reason
     check_call: str = ""                 # textual marker the gate counts
+    # (regex, reason) pairs the test gate rejects on, for a malformation this
+    # language's compiler would catch anyway but late and expensively. Only
+    # OCaml needs one: its application syntax makes `pc_check ((expr) "label")`
+    # parse as applying the label to a boolean, and the tester writes that
+    # whenever the prompt's counter-example is diluted by other context.
+    test_lint: tuple = ()
     aliases: tuple = ()
     # The docs this language was learned from, kept as an index. A STEM, not a
     # path: the store's location follows PURECODER_HOME, so an absolute path
@@ -513,6 +519,10 @@ register(LanguageSpec(
         clean="rm -f main *.cmi *.cmo",
     ),
     check_call="pc_check",
+    test_lint=((r"pc_check\s*\(\(",
+                "a check reads `pc_check ((expr) \"label\")`, which applies "
+                "the label to a boolean and does not compile -- the label goes "
+                "OUTSIDE the parentheses: pc_check (expr) \"label\""),),
     aliases=("ml",),
 ))
 
