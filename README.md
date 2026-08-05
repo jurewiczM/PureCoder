@@ -157,8 +157,10 @@ real API instead of leaving the fix loop guessing.
 
 ## Teaching it a language it has never run
 
-Six languages exist because someone wrote six registry entries. `learn` points
-the pipeline at a language's own documentation and has it draft the seventh:
+Seven languages exist because someone wrote seven registry entries — the
+seventh, OCaml, after six live attempts to *draft* one never registered. `learn`
+points the pipeline at a language's own documentation and has it draft the
+eighth:
 
 ```bash
 purecoder learn zig ./zig-docs --ext .zig
@@ -256,7 +258,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           489 tests (no GPU, no server; toolchain ones self-skip)
+tests/           495 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -288,6 +290,7 @@ flowchart LR
     REG --> RS["<b>rust</b><br/>rustc → ./bin"]
     REG --> CS["<b>c#</b><br/>dotnet run"]
     REG --> SQL["<b>sql</b><br/>sqlite3 driver"]
+    REG --> ML["<b>ocaml</b><br/>ocamlc → ./bin"]
     REG --> GO["<b>go, java, swift</b><br/><i>awaiting toolchain</i>"]
     REG --> PQ["<b>power query</b><br/><i>no local runner</i>"]
 
@@ -297,6 +300,7 @@ flowchart LR
     RS --> RUN
     CS --> RUN
     SQL --> RUN
+    ML --> RUN
     GO --> NO[refuse<br/><i>naming what to install</i>]
     PQ --> NO
 

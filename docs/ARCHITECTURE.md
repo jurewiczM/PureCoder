@@ -179,7 +179,9 @@ The gate catches *structural* bad tests; it cannot catch a plausible-but-wrong
 expected value — that's spec clarity's job, and the code says so honestly.
 
 ### 3.5 Learning a language (`purecoder/bootstrap.py`, `purecoder/langstore.py`)
-Five languages exist because a human wrote five entries. `purecoder learn`
+Seven languages exist because a human wrote seven entries -- the last of them,
+OCaml, only after six live attempts to draft one had failed, which is a result
+about this layer worth keeping. `purecoder learn`
 points the pipeline at a language's own documentation and has it draft the
 sixth: check helper, harness tail, tester prompt, build and run commands.
 

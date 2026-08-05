@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-489 tests, all green, none of them needing a GPU or a running server
+495 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -25,6 +25,7 @@ _Snapshot of what's built, tested, and what's next._
 | 9 | `bench.py` contract measurement | ✅ built, ⬜ unrun | instrument calibrated hermetically; no live numbers collected yet |
 | 9 | declared packages (`code --with`) | ✅ tested | probed in the sandbox interpreter before any model call; refusals name the install |
 | 9 | tree-sitter chunking | ✅ tested | C++/Rust/OCaml chunked by definition; ingest now sees those files at all |
+| 10 | OCaml execution | ✅ tested | hand-written entry; passes the five bootstrap probes; first-attempt generation live |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -95,10 +96,10 @@ _Snapshot of what's built, tested, and what's next._
   code. The first live contract run produced `parse_ports('80,443') ->
   [443, 80]` for a spec that said "sorted", and the anchor faithfully failed a
   correct implementation. Noisy-wrong beats silent-wrong, but it is not free.
-- **Execution validation reaches six languages, still only run-to-completion
-  code.** Python, C++, JavaScript, Rust, C# and SQL all compile (where needed),
-  run real assertions, and prove a check executed. Go, Java, Swift and OCaml are
-  declared and refuse until both a toolchain and a test idiom exist. Power
+- **Execution validation reaches seven languages, still only run-to-completion
+  code.** Python, C++, JavaScript, Rust, C#, SQL and OCaml all compile (where
+  needed), run real assertions, and prove a check executed. Go, Java and Swift
+  are declared and refuse until both a toolchain and a test idiom exist. Power
   Query is refused permanently -- it runs only inside Excel and Power BI.
 - **SQL is validated, but its harness lives in two places.** SQL has no
   assertion and no reliable way to end a script non-zero: SQLite's `RAISE`
@@ -177,15 +178,21 @@ _Snapshot of what's built, tested, and what's next._
   and was discarded rather than published. What the run does give is the first
   quantitative form of finding 1: the tester is the bottleneck, in eight of ten
   arms.
-- **A learned language is only as good as its tester.** OCaml now registers on
-  the first attempt with all five probes green, but generating *with* it stalls
-  on test quality: the writer produced correct OCaml every time while the
-  tester produced source the compiler rejected. The loop refuses honestly
-  rather than emitting it. That is the expected outcome, not an open defect --
-  `ocaml` is a placeholder entry (no runner, no test idiom, `available()` says
-  so), and it meets the project's oldest finding, that the writer is stronger
-  than the tester, for a language the model barely saw. Wiring OCaml properly
-  is separate work.
+- **OCaml is wired, and it was written by hand.** It was the language the
+  bootstrap layer existed for, and six live `learn` runs never registered one:
+  the drafting model wrote `let PC_CHECK cond =` (OCaml reserves capitals for
+  constructors), explained its code in English inside the source, echoed the
+  prompt back, glued an extension onto `{src}`, and finally produced `end
+  else`. Every one of those is fixed where it belongs -- and the entry is still
+  hand-written, because the probes do not care who wrote a spec and a language
+  nobody can generate for is worth less than an hour of typing. It passes the
+  same five bootstrap probes a learned entry must, which a test asserts, and
+  `code --lang ocaml` validated on the first attempt live. Two consequences:
+  `learn ocaml` is now refused like `learn python` (a wired entry is reserved,
+  so `go`/`java`/`swift` carry the placeholder tests), and an OCaml failure is
+  an ordinary failure again rather than an expected limit. Harder algorithms
+  still fail on writer competence -- a live bubble sort produced an OCaml type
+  error three attempts running -- which is the boundary every language has.
 - **Retrieval reaches the code artifact of a project, and only that one.**
   `code`, `ask` and `project` share one resolver, so an explicit `--store` or a
   learned language's own index grounds all three. Inside a scaffold the
