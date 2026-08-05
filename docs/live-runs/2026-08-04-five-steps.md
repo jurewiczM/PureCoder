@@ -287,6 +287,67 @@ The tester implemented it and correct code failed again. No mechanical check
 catches that; it is the documented cost of grounding, and it stays documented
 rather than patched.
 
+## Retrieval, over documentation downloaded from the internet (2026-08-05)
+
+Everything above used documentation already on the machine. This run fetched
+the real thing: 61 tutorials and guides from the `ocaml.org` repository, plus
+five stdlib `.mli` interfaces — 3044 chunks after ingest, 861 qualified names
+extracted (`List` 32, `String` 28, `Hashtbl` 23).
+
+**Retrieval itself is good.** "how to add a binding to a Hashtbl" returns
+`hashtbl.mli` declarations; "List.fold_left argument order" returns the list
+tutorial's `fold_left` example; "Seq.unfold lazy sequences" returns the two
+chunks of the Seq tutorial that define and use it. The tree-sitter work pays
+off visibly here — the `.mli` hits are labelled `value_specification find`
+rather than being paragraphs of an interface file.
+
+**The chunker was handing the model fragments.** Retrieved chunks opened
+mid-token: `de effect`, `rom the left hand end`, `htening to illustrate`,
+`` l`. ``. A section longer than the window was sliced by character. The window
+is now filled by whole lines, with the overlap carried by whole lines too, and
+a line longer than the entire window — a minified file, a long URL — still
+falls back to character slicing because it has no boundary to respect.
+Re-ingested: every observed fragment is gone, and chunks opening with a short
+lowercase fragment fall from 331 to 152, the remainder being ordinary `let ...`
+code lines.
+
+**The retrieval gate does not gate.** This was already documented as "looser in
+practice than the number suggests"; here is the sharp version. `min_score` is
+0.3. Against this corpus:
+
+| query | top score |
+|---|---|
+| `List.fold_left argument order` | 1.261 |
+| `Seq.unfold lazy sequences` | 1.240 |
+| `how to add a binding to a Hashtbl` | 1.196 |
+| **`premier league offside rule`** | **1.103** |
+| **`how do I bake sourdough bread at home`** | **0.826** |
+
+A question with no relationship whatsoever to the corpus outscores most real
+ones, and nothing is ever refused. Two causes compound: bge-small's cosine
+floor for any English text is high, and the hybrid score adds a lexical term on
+top, so the scale runs past 1.0 while the threshold stayed where it was for
+cosine alone. The README's claim that chunks are injected "ONLY IF they clear a
+similarity threshold" is, as written, not true of any query anyone would type.
+
+It is left unfixed on purpose. Raising the number to fit this corpus is tuning
+against one sample, which is exactly what `docs/STATUS.md` says has never been
+done here — and the failure mode of a too-tight gate (dropping documentation
+the model needed) is worse and quieter than the current one. What the run
+supplies is the evidence a future fix should be measured against.
+
+**One bootstrap defect, from drafting against these docs.** The build command
+came back as `ocamlc -o {bin} {src}.ml`, which passes every trust-boundary
+check and asks the compiler for `candidate.ml.ml`. Normalised now, the way
+`./{bin}` already was — refusing it was tried first and the model glued the
+suffix back on three redrafts running.
+
+**And a gap worth naming: the corpus had to be markdown.** `ingest` matches
+prose and source extensions; real documentation on the web is usually HTML, and
+an HTML docs directory is skipped entirely rather than stripped and indexed.
+The tutorials used here happen to be markdown in their source repository, which
+is why this run was possible at all.
+
 ## Standing caveats on all of the above
 
 - One pass, five tasks, two arms, a sampled model: directional, not

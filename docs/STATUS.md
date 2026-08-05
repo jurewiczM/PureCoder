@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-479 tests, all green, none of them needing a GPU or a running server
+489 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -260,6 +260,20 @@ _Snapshot of what's built, tested, and what's next._
   The pattern is now derived from the chunker's own extension table, which is
   the third time this session that a working feature was reachable by nothing.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
+- **The gate does not gate, and now there are numbers.** Over 3044 chunks of
+  real ocaml.org documentation, `premier league offside rule` scores 1.103 and
+  `how do I bake sourdough bread` 0.826, against a `min_score` of 0.3 -- higher
+  than most on-topic queries. bge-small's cosine floor is high for any English
+  text and the hybrid score adds a lexical term on top, so the scale runs past
+  1.0 while the threshold stayed where it was for cosine alone. The README's
+  "ONLY IF they clear a similarity threshold" is not true of any query anyone
+  would type. Deliberately not tuned to fit this one corpus, since a too-tight
+  gate drops documentation the model needed and does it silently.
+- **`ingest` cannot read the documentation most projects publish.** It matches
+  prose and source extensions; the web's docs are HTML, which is skipped whole
+  rather than stripped and indexed. The ocaml.org tutorials used to test
+  retrieval are markdown in their source repository, which is the only reason
+  that test was possible.
 - **Ranking is two signals, and the gate is shared.** Cosine plus an
   IDF-weighted exact-name score, the latter bounded in `[0,1]` absolutely so it
   can share `min_score`. The consequence is deliberate: a chunk containing
