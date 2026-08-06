@@ -536,6 +536,24 @@ def test_a_substring_of_another_name_does_not_count():
     assert not ok
 
 
+def test_a_language_whose_tests_never_name_the_target_is_exempt():
+    """SQL has no functions: the implementation is DDL and the checks are rows
+    in a table, so the contract's name appears in neither. Demanding it would
+    have failed every correct SQL run. The rule is "provide what the tests
+    call", which stays true in a language without functions."""
+    sql = "CREATE TABLE t (id INTEGER);\nINSERT INTO t VALUES (1);\n"
+    checks = "INSERT INTO pc_checks VALUES ((SELECT count(*) FROM t) = 1, 'one');\n"
+    ok, _ = defines_target(sql, "add_row", checks)
+    assert ok
+
+
+def test_the_demand_still_holds_when_the_tests_do_call_it():
+    ok, _ = defines_target("let curry4 f w x y z = f (w, x, y, z)\n",
+                           "rev_string",
+                           'let () = pc_check (rev_string "ab" = "ba") "r"\n')
+    assert not ok
+
+
 def test_no_target_means_no_opinion():
     """Without a contract there is no name to require, and the check abstains
     rather than guessing one."""

@@ -370,7 +370,7 @@ def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
             "found there:\n" + "\n".join(out))
 
 
-def defines_target(code: str, name: str):
+def defines_target(code: str, name: str, tests: str = ""):
     """(ok, reason). Whether the implementation mentions the name it was asked
     for at all.
 
@@ -388,8 +388,20 @@ def defines_target(code: str, name: str):
     and absence is enough -- if the name is not there, the tests cannot call
     it and the run is already lost. Whether what IS there is a correct
     definition is left to the compiler, which answers it properly.
+
+    The demand is made only where the tests make it. In SQL the contract's
+    name is not an identifier the code can contain at all -- the
+    implementation is DDL and the checks are rows in a table -- so requiring
+    it would have failed every correct SQL run. Asking "does the code provide
+    what the tests call" keeps the rule true in a language without functions,
+    and needs no per-language exception to say so.
     """
-    if not name or re.search(rf"\b{re.escape(name)}\b", code):
+    if not name:
+        return True, ""
+    named = re.compile(rf"\b{re.escape(name)}\b")
+    if tests and not named.search(tests):
+        return True, ""          # the tests never call it; nothing to provide
+    if named.search(code):
         return True, ""
     return False, (f"the implementation never defines {name!r} -- it looks "
                    f"like documentation was copied instead of used. Output "
@@ -960,7 +972,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # Checked in every language, unlike the above: an answer that never
         # names the function asked for is wrong before it is compiled.
         if impl_ok:
-            impl_ok, impl_reason = defines_target(code, target_name)
+            impl_ok, impl_reason = defines_target(code, target_name,
+                                                  designed)
         if not impl_ok:
             if verbose:
                 print(f"[attempt {attempt}] {impl_reason} -> retrying")
