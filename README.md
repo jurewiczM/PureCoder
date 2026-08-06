@@ -218,6 +218,19 @@ rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
 | `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
 | `measure`          | run the contract measurement: five ambiguous specs, both arms |
 
+```bash
+purecoder code --tdd "a function parse_ports that ..."   # test-first
+```
+
+`--tdd` turns the request into a contract, the contract into tests, and then
+**proves those tests fail** against an implementation that does nothing --
+before writing any. A suite a do-nothing stub satisfies has demonstrated
+nothing, and no amount of parsing can tell you that. The tests and their
+failure are shown for confirmation, which is the one moment to catch a contract
+that misread you; `-y` skips the question. Python only: a stub needs a real
+signature in a compiled language, and there an empty implementation is a
+compile error rather than evidence.
+
 `code --with numpy` declares a third-party package the generated code may use.
 It is probed in the sandbox interpreter *before* anything is generated, so a
 package that is not installed is refused with the `pip install` line rather than
@@ -258,7 +271,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           517 tests (no GPU, no server; toolchain ones self-skip)
+tests/           532 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

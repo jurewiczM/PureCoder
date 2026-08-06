@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-517 tests, all green, none of them needing a GPU or a running server
+532 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -27,6 +27,7 @@ _Snapshot of what's built, tested, and what's next._
 | 9 | tree-sitter chunking | ✅ tested | C++/Rust/OCaml chunked by definition; ingest now sees those files at all |
 | 10 | OCaml execution | ✅ tested | hand-written entry; passes the five bootstrap probes; 4 of 5 live tasks generate and validate |
 | 10 | the fix loop shows its own output | ✅ tested | quoted source around a diagnostic, plus the previous attempt, bounded |
+| 11 | test-first mode (`code --tdd`) | ✅ tested | the suite must fail against a stub before any code is written; confirmed on screen |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -87,6 +88,21 @@ _Snapshot of what's built, tested, and what's next._
    defence in depth.
 
 ## Known boundaries (by design, documented)
+
+- **Test-first proves the tests can fail, not that they are right.** `--tdd`
+  runs the designed suite against a stub -- a function that exists and returns
+  None -- and refuses it unless a check ran AND failed. That kills the whole
+  class of suite no static gate can see (`assert True` parses, names the
+  target, is not degenerate). What it cannot do is judge the EXPECTATION: a
+  live run produced `assert word_count(' ') == 1` against a correct
+  implementation, and a red suite full of wrong expectations is red for the
+  wrong reason. The confirmation step exists for exactly that gap -- it is the
+  one moment a person can read what will judge the code, before the code
+  exists -- and `-y` skips it, which is a choice with a cost.
+- **Test-first is Python only.** A stub needs a real signature in C++, Rust or
+  OCaml, which the contract does not supply; there the empty-implementation run
+  is a compile error, which is not evidence about assertions. Refused with the
+  reason rather than approximated.
 
 - Test gate catches *structural* bad tests, not plausible-but-wrong values.
 - Assertion *reachability* is proven at runtime, not by the gate. The tests

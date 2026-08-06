@@ -166,6 +166,18 @@ to prose chunking rather than failing an ingest. And `ingest`'s file pattern is
 derived from the chunker's own extension table, because the previous hardcoded
 one skipped every file the chunker exists for.
 
+**Test-first, when asked for it** (`code --tdd`). The gate above is static: it
+reads the tests. The one question it cannot answer is whether they can fail at
+all, and that question is the whole of TDD. So `--tdd` runs the designed suite
+against a stub -- a function that exists and returns `None` -- and accepts it
+only if a check ran and failed. Three details decide whether that works: the
+stub must be a function rather than an empty file (a missing name fails the run
+without any assertion executing), red must mean an assertion failed rather than
+any non-zero exit, and the mode is Python-only because a stub elsewhere needs a
+signature the contract does not carry. The suite and its failure are then shown
+for confirmation, which is where a user can catch a contract that misread them
+before any code exists.
+
 **Design line:** if it cannot be executed, it is not emitted. A missing
 toolchain is refused with the binary named; Power Query M is refused
 permanently, because it runs only inside Excel and Power BI. There is no
