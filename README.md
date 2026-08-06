@@ -292,7 +292,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           532 tests (no GPU, no server; toolchain ones self-skip)
+tests/           536 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -410,7 +410,8 @@ verdict.
 ## Requirements
 
 - A GPU with ~6 GB VRAM (built and tested on an RTX 4050 Laptop)
-- llama.cpp built with CUDA, serving Qwen2.5-Coder at Q4_K_M
+- llama.cpp built with CUDA, serving Qwen2.5-Coder-7B at Q5_K_M
+  (Q4_K_M is smaller and faster and measurably worse — see the table above)
 - Python 3.10+, `requests`, `numpy`; `sentence-transformers` for RAG
 
 ## Status
