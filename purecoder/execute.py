@@ -370,6 +370,32 @@ def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
             "found there:\n" + "\n".join(out))
 
 
+def defines_target(code: str, name: str):
+    """(ok, reason). Whether the implementation mentions the name it was asked
+    for at all.
+
+    Retrieval can be answered instead of used. Live, asked for `rev_string`
+    with OCaml documentation in the prompt, the writer returned
+
+        let curry4 f w x y z = f (w, x, y, z)
+        module StringSet = Set.Make(String)
+
+    -- fragments of the retrieved docs, and no `rev_string` anywhere. The
+    toolchain then reports an unbound name, which reads like a coding mistake
+    and is not one: nothing was written to be wrong.
+
+    Deliberately weak. Absence is decidable without parsing, in any language,
+    and absence is enough -- if the name is not there, the tests cannot call
+    it and the run is already lost. Whether what IS there is a correct
+    definition is left to the compiler, which answers it properly.
+    """
+    if not name or re.search(rf"\b{re.escape(name)}\b", code):
+        return True, ""
+    return False, (f"the implementation never defines {name!r} -- it looks "
+                   f"like documentation was copied instead of used. Output "
+                   f"only the implementation of {name!r}.")
+
+
 def lint_implementation(code: str):
     """Reject an implementation that has smuggled its tests inside itself.
 
@@ -915,6 +941,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # executor already reports clearly.
         impl_ok, impl_reason = (lint_implementation(code)
                                 if spec.name == "python" else (True, ""))
+        # Checked in every language, unlike the above: an answer that never
+        # names the function asked for is wrong before it is compiled.
+        if impl_ok:
+            impl_ok, impl_reason = defines_target(code, red_target)
         if not impl_ok:
             if verbose:
                 print(f"[attempt {attempt}] {impl_reason} -> retrying")
@@ -1019,7 +1049,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # unchanging failure look like a moving one.
         hint = error_hint(error) if error_hint else ""
         if hint and verbose:
-            print(f"[docs] {hint.splitlines()[0]}")
+            # Every line, not just the first. The first line is the header --
+            # "The documentation does not contain every name in that error:" --
+            # and the names it promises are on the lines beneath it, so
+            # printing one line announced a hint and then withheld it.
+            print("\n".join(f"[docs] {line}" for line in hint.splitlines()))
         # Added to the same slot and for the same reason: a hint offered only
         # after the toolchain has already refused, never a gate of its own.
         hint += harness_collision(spec, code, full)

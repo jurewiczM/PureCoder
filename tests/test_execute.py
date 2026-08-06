@@ -6,6 +6,7 @@ import time
 from purecoder.execute import (
     _trim,
     available_packages,
+    defines_target,
     harness_collision,
     lint_implementation,
     lint_tests,
@@ -510,6 +511,36 @@ def test_a_misparenthesised_ocaml_check_is_repaired_before_the_gate():
     bad = 'let () = pc_check ((sum_list [1] = 1) "one")\n'
     assert repair_tests(get("ocaml"), bad) == \
         'let () = pc_check (sum_list [1] = 1) "one"\n'
+
+
+def test_an_implementation_that_never_names_its_target_is_rejected():
+    """Live, asked for `rev_string` with OCaml docs in the prompt, the writer
+    returned fragments of the documentation -- `curry4`, a `StringSet` module
+    -- and no rev_string at all. The toolchain reported an unbound name, which
+    reads like a coding mistake and is not one."""
+    code = ("let curry4 f w x y z = f (w, x, y, z)\n"
+            "module StringSet = Set.Make(String)\n")
+    ok, reason = defines_target(code, "rev_string")
+    assert not ok
+    assert "rev_string" in reason
+
+
+def test_an_implementation_naming_its_target_passes():
+    ok, reason = defines_target("let rev_string s = s\n", "rev_string")
+    assert ok, reason
+
+
+def test_a_substring_of_another_name_does_not_count():
+    """`rev_string_helper` is not `rev_string`; the check is word-anchored."""
+    ok, _ = defines_target("let rev_stringify s = s\n", "rev_string")
+    assert not ok
+
+
+def test_no_target_means_no_opinion():
+    """Without a contract there is no name to require, and the check abstains
+    rather than guessing one."""
+    ok, _ = defines_target("anything at all", "")
+    assert ok
 
 
 def test_a_doubly_parenthesised_check_is_not_mistaken_for_the_malformation():
