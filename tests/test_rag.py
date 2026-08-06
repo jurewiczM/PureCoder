@@ -792,3 +792,39 @@ def test_the_default_threshold_is_the_calibrated_one():
 
     default = inspect.signature(rag.DocStore.search).parameters["min_score"].default
     assert default >= 0.8
+
+
+def test_an_embedder_that_cannot_fit_on_the_gpu_falls_back_to_cpu(monkeypatch,
+                                                                  capsys):
+    """Found by giving the LLM more context. At 16k tokens and full offload the
+    server takes 5.5 GB of a 6 GB card, and the embedder -- which needs about
+    275 MB, mostly torch's CUDA context -- dies with a raw
+    `torch.OutOfMemoryError` traceback in the middle of an ingest. The card is
+    shared; the small model is the one that should yield."""
+    calls = []
+
+    class FakeST:
+        def __init__(self, name, device="cuda"):
+            calls.append(device)
+            if device == "cuda":
+                raise RuntimeError("CUDA out of memory. Tried to allocate 20 MiB")
+
+    import sentence_transformers
+    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", FakeST)
+    embedder = rag.Embedder(device="cuda")
+    assert calls == ["cuda", "cpu"]
+    assert embedder.device == "cpu"
+    assert "cpu" in capsys.readouterr().out.lower()
+
+
+def test_a_failure_that_is_not_about_memory_still_raises(monkeypatch):
+    """Falling back on every error would hide a wrong model name behind a
+    silent, very slow CPU run."""
+    class FakeST:
+        def __init__(self, name, device="cuda"):
+            raise RuntimeError("model not found on the hub")
+
+    import sentence_transformers
+    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", FakeST)
+    with pytest.raises(RuntimeError, match="not found"):
+        rag.Embedder(device="cuda")

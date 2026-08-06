@@ -385,7 +385,25 @@ class Embedder:
                 "retrieval needs sentence-transformers, which the base install "
                 'does not include (it pulls in torch, ~2 GB).\n  pip install -e ".[rag]"'
             ) from e
-        self.model = SentenceTransformer(model_name, device=device)
+        # The card is shared with llama-server, and the small model is the one
+        # that should yield. Found by giving the LLM more context: at 16k
+        # tokens and full offload the server holds 5.5 GB of a 6 GB card, and
+        # this constructor died with a raw torch traceback in the middle of an
+        # ingest. On CPU a query embeds in tens of milliseconds; an ingest is
+        # slower and still finishes, which beats not running.
+        #
+        # Only for memory. Falling back on any error would hide a wrong model
+        # name behind a silent, very slow CPU run.
+        try:
+            self.model = SentenceTransformer(model_name, device=device)
+        except (RuntimeError, MemoryError) as e:
+            if device == "cpu" or "out of memory" not in str(e).lower():
+                raise
+            print(f"[rag] the GPU has no room for the embedder ({e.__class__.__name__})"
+                  f" -- falling back to CPU")
+            device = "cpu"
+            self.model = SentenceTransformer(model_name, device=device)
+        self.device = device
         # Kept so an index can name the model that built it: vectors from two
         # different models are not comparable, and at equal dimensions nothing
         # about that mismatch is visible at query time.
