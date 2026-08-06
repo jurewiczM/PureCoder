@@ -529,7 +529,12 @@ register(LanguageSpec(
     # Repaired first, then gated. The gate alone was tried live and the
     # designer reproduced the same malformation on every attempt, ending the
     # run at attempts=0 without ever reaching the writer.
-    test_fix=((r"pc_check\s*\((\(.*?\))\s*(\"[^\"]*\")\s*\)",
+    # What distinguishes the malformation is not `pc_check ((` -- that opening
+    # is ordinary -- but WHERE the label sits. Malformed, the label is followed
+    # by the closing paren and the statement ends: `... "label")`. Correct, the
+    # label ends the statement: `... ) "label"`. Anchoring on the tail tells the
+    # two apart; anchoring on the head cannot, and rejected valid tests.
+    test_fix=((r"(?m)pc_check\s*\((.*)\s+(\"[^\"]*\")[ \t]*\)[ \t]*$",
                r"pc_check \1 \2"),
               # `Let () = ...` -- a capitalised keyword at the start of a
               # statement. OCaml reads `Let` as a constructor and reports
@@ -544,7 +549,7 @@ register(LanguageSpec(
                 "OCaml -- test an expected exception by catching it: "
                 "pc_check (try ignore (f []); false with Failure _ -> true) "
                 "\"raises\""),
-               (r"pc_check\s*\(\(",
+               (r"(?m)pc_check\s*\(.*\"[ \t]*\)[ \t]*$",
                 "a check reads `pc_check ((expr) \"label\")`, which applies "
                 "the label to a boolean and does not compile -- the label goes "
                 "OUTSIDE the parentheses: pc_check (expr) \"label\""),),

@@ -1,5 +1,6 @@
 """The executor and the test-quality gate -- both model-independent."""
 
+import re
 import time
 
 from purecoder.execute import (
@@ -509,6 +510,26 @@ def test_a_misparenthesised_ocaml_check_is_repaired_before_the_gate():
     bad = 'let () = pc_check ((sum_list [1] = 1) "one")\n'
     assert repair_tests(get("ocaml"), bad) == \
         'let () = pc_check (sum_list [1] = 1) "one"\n'
+
+
+def test_a_doubly_parenthesised_check_is_not_mistaken_for_the_malformation():
+    """`pc_check ((expr) = expr) "label"` is correct OCaml, and it is the shape
+    a test for a string-returning function naturally takes. The gate used to
+    anchor on the opening `pc_check ((` and rejected it, which is why
+    `rev_string` was the unstable task in every arm ever measured -- the
+    designer was regenerating a suite that had been right the first time."""
+    ok = 'let () = pc_check ((rev_string "abc") = "cba") "reverses"\n'
+    assert repair_tests(get("ocaml"), ok) == ok
+    for pattern, _ in get("ocaml").test_lint:
+        assert not re.search(pattern, ok)
+
+
+def test_the_malformation_is_still_caught_with_nesting_inside():
+    """Anchored on the tail, so the label's position decides -- not how many
+    parentheses the expression happens to open with."""
+    bad = 'let () = pc_check ((rev_string "abc" = "cba") "reverses")\n'
+    assert repair_tests(get("ocaml"), bad) == \
+        'let () = pc_check (rev_string "abc" = "cba") "reverses"\n'
 
 
 def test_a_capitalised_let_is_repaired_before_the_gate():
