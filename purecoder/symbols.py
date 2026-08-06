@@ -43,11 +43,31 @@ _NOT_A_MEMBER = frozenset({
     "toml", "cfg", "ini", "npy", "gbnf", "ml", "mli", "cpp", "cc", "h", "hpp",
     "rs", "go", "java", "cs", "sh", "html", "css", "png", "svg", "jpg", "gif",
     "pdf", "csv", "lock", "log", "org", "com", "io", "net", "dev", "gov",
+    # Build products. A tutorial that shows what `ocamlc hello.ml` leaves
+    # behind put `hello.o`, `hello.cmo` and `hello.cmi` into the index as
+    # though they were API, and they were then offered as spelling
+    # suggestions for a name the compiler could not find.
+    "o", "a", "obj", "exe", "out", "so", "dll", "dylib", "class", "pyc",
+    "cmo", "cmi", "cmx", "cma", "cmxa", "cmt", "cmti", "annot", "byte",
 })
 
 # Whatever a compiler puts in quotes is the thing it is complaining about --
 # every toolchain here does it, and it needs no per-language parsing.
 _QUOTED = re.compile(r"[`'\"]([A-Za-z_][A-Za-z0-9_.]*)[`'\"]")
+
+# A compiler that quotes the offending source echoes it back as `18 | let ...`.
+# That line is the CODE, not the complaint, and everything quoted inside it is
+# the program's own string data. Live, a check on the literal "hello" was read
+# as a name and answered with `hello.o`, while the actual unbound value was
+# never mentioned -- the suspects have to come from what the toolchain SAYS.
+_SOURCE_ECHO = re.compile(r"^\s*\d+\s*\|")
+
+# Not every toolchain quotes the name it rejects. OCaml writes `Unbound value
+# to_list` bare, so the one name worth answering was the one name not
+# collected.
+_UNBOUND = re.compile(
+    r"\b[Uu]nbound (?:value|module|constructor|type|label|record field) "
+    r"([A-Za-z_][A-Za-z0-9_.]*)")
 
 
 def qualified_names(text):
@@ -93,13 +113,18 @@ def did_you_mean(error, names, limit=3, cutoff=0.7):
     """
     if not error or not names:
         return ""
+    said = "\n".join(ln for ln in error.splitlines()
+                     if not _SOURCE_ECHO.match(ln))
+    error = said or error
     quoted = _QUOTED.findall(error)
     # Some toolchains quote the module and the member separately -- Python's
     # "module 're' has no attribute 'escap'" is two quotes describing one name.
     # Joining adjacent pairs reassembles it without knowing whose message it is.
+    # Built from the quoted names alone: an unbound name found by a different
+    # rule is not adjacent to anything, and pairing it invents a suspect.
     joined = {f"{a}.{b}" for a, b in zip(quoted, quoted[1:], strict=False)}
-    suspects = sorted((set(quoted) | joined | qualified_names(error))
-                      - set(names))
+    suspects = sorted((set(quoted) | set(_UNBOUND.findall(error)) | joined
+                       | qualified_names(error)) - set(names))
     lines = []
     for suspect in suspects:
         near = difflib.get_close_matches(suspect, names, n=limit, cutoff=cutoff)
