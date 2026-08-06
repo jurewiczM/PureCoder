@@ -6,6 +6,7 @@ import time
 from purecoder.execute import (
     _trim,
     available_packages,
+    defined_names,
     defines_target,
     harness_collision,
     lint_implementation,
@@ -579,6 +580,44 @@ def test_an_ocaml_suite_that_tests_the_stdlib_instead_of_the_target():
     assert "insertion_sort" in reason
 
 
+def test_a_suite_that_mostly_tests_something_else_is_rejected():
+    """Measured: a 17-check suite for rev_string, accepted, whose checks were
+    mostly about a `StringSet` module that does not exist -- retrieved
+    documentation answered instead of used. One conforming check satisfied
+    "any", and the rest failed the build on behalf of correct code."""
+    tests = ('let () = pc_check (rev_string "ab" = "ba") "reverses"\n'
+             'let () = pc_check (StringSet.empty = StringSet.empty) "empty"\n'
+             'let () = pc_check (StringSet.cardinal StringSet.empty = 0) "size"\n'
+             'let () = pc_check (StringSet.mem "a" StringSet.empty = false) "mem"\n')
+    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"))
+    assert not ok
+    assert "1 of 4" in reason
+
+
+def test_one_incidental_check_does_not_condemn_a_suite():
+    """A sanity check that touches nothing under test is ordinary; only a
+    minority aimed at the target is refused."""
+    tests = ('let () = pc_check (rev_string "ab" = "ba") "reverses"\n'
+             'let () = pc_check (rev_string "" = "") "empty"\n'
+             'let () = pc_check (String.length "abc" = 3) "sanity"\n')
+    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"))
+    assert ok, reason
+
+
+def test_ocaml_definitions_are_read_from_the_code():
+    """Without this the gate had no target at all outside Python or a
+    contract, and `code` derives no contract by default."""
+    code = ("let rev_string s =\n"
+            "  let rec aux acc i = if i < 0 then acc else aux acc (i - 1) in\n"
+            "  aux \"\" (String.length s - 1)\n")
+    assert defined_names(get("ocaml"), code) == ["rev_string"], \
+        "a nested `let rec` is an implementation detail, not the target"
+
+
+def test_a_language_that_cannot_say_what_it_defines_is_left_permissive():
+    assert defined_names(get("c++"), "int add(int a, int b) { return a + b; }") == []
+
+
 def test_an_ocaml_suite_that_does_test_the_target_passes():
     tests = ('let () = pc_check (insertion_sort [2;1] = [1;2]) "sorts"\n'
              'let () = pc_check (insertion_sort [] = []) "empty"\n'
@@ -606,6 +645,16 @@ def test_the_malformation_is_still_caught_with_nesting_inside():
     bad = 'let () = pc_check ((rev_string "abc" = "cba") "reverses")\n'
     assert repair_tests(get("ocaml"), bad) == \
         'let () = pc_check (rev_string "abc" = "cba") "reverses"\n'
+
+
+def test_a_check_with_no_label_is_left_alone_not_mangled():
+    """The repair claims to be meaning-preserving. A first version was not: on
+    a check written with no label it took the expression as group 1, read the
+    final string as the label, and emitted `pc_check rev_string "ab" = "ba"` --
+    parentheses gone. A missing label is a real error, but it is the gate's to
+    report, not the repair's to invent an answer for."""
+    bare = 'let () = pc_check (rev_string "ab" = "ba")\n'
+    assert repair_tests(get("ocaml"), bare) == bare
 
 
 def test_a_capitalised_let_is_repaired_before_the_gate():

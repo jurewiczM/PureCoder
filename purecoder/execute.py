@@ -370,6 +370,27 @@ def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
             "found there:\n" + "\n".join(out))
 
 
+def defined_names(spec, code: str):
+    """Top-level names `code` defines, in any language that can say how.
+
+    Python is parsed. Everything else consults the spec's `definition` regex,
+    which most languages do not have -- and for them this returns [], leaving
+    the gate exactly as permissive as it was. That silence was the bug: the
+    rule "these tests never touch the thing under test" existed and could not
+    reach any language but Python, so an OCaml suite that tested `List.sort`
+    instead of the requested `insertion_sort` was accepted.
+    """
+    if spec.name == "python":
+        return public_names(code)
+    if not spec.definition:
+        return []
+    seen = []
+    for name in re.findall(spec.definition, code):
+        if name not in seen and not name.startswith("_"):
+            seen.append(name)
+    return seen
+
+
 def defines_target(code: str, name: str, tests: str = ""):
     """(ok, reason). Whether the implementation mentions the name it was asked
     for at all.
@@ -544,6 +565,22 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     if targets and not any(t in tests for t in targets):
         return False, (f"tests never mention any of {sorted(targets)} -- "
                        f"they are not testing the target")
+
+    # One mention is not a test suite. Live, a 17-check OCaml suite for
+    # rev_string was accepted whose checks were mostly about a `StringSet`
+    # module that does not exist -- retrieved documentation answered instead
+    # of used. A single conforming check satisfied "any", and the rest failed
+    # the build on behalf of code that was correct.
+    #
+    # Counted per check rather than per line, so setup lines are not held
+    # against a suite, and only a MINORITY is refused: a sanity check that
+    # touches nothing under test is ordinary, a suite of them is not.
+    if targets and lines and len(lines) >= min_assertions:
+        aimed = [ln for ln in lines if any(t in ln for t in targets)]
+        if len(aimed) * 2 < len(lines):
+            return False, (f"only {len(aimed)} of {len(lines)} checks "
+                           f"exercise {sorted(targets)} -- the rest test "
+                           f"something else")
     return True, ""
 
 
@@ -930,7 +967,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             regated = True
             # public_names parses Python; for any other language it is [],
             # so fall back to the name the contract already gave us.
-            targets = public_names(code) or (
+            targets = defined_names(spec, code) or (
                 [target_name] if target_name else [])
             if targets:
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
