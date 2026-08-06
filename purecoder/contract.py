@@ -89,6 +89,13 @@ def validate_contract(obj):
         for side in ("in", "out"):
             if side not in ex or not isinstance(ex[side], str):
                 return False, f"example {i}: missing string {side!r}"
+        # An example that states no outcome grounds neither the writer nor the
+        # tester. Observed live in a test-first run: `word_count('hello world')
+        # -> ` with nothing after the arrow. The same emptiness `examples: []`
+        # is already refused for, one level down.
+        if not ex["out"].strip():
+            return False, (f"example {i} states no outcome -- say what "
+                           f"{obj['name']} returns or raises for that input")
         # An example that calls nothing. Observed live: `count_words(text)`
         # came back with `count_words() -> raises ValueError` as its
         # demonstration of the empty-input case, the test designer implemented

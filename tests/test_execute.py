@@ -12,8 +12,10 @@ from purecoder.execute import (
     missing_relation,
     public_names,
     quoted_source,
+    red_check,
     repair_tests,
     run_python,
+    stub_for,
 )
 from purecoder.languages import get
 
@@ -536,3 +538,59 @@ def test_only_a_few_regions_are_quoted():
     error = "\n".join(f'File "x.ml", line {i}, characters 1-2:' for i in range(1, 13))
     out = quoted_source(get("ocaml"), code, "", error)
     assert out.count(">>") <= 3, out.count(">>")
+
+
+# ---- TDD: watch the tests fail before trusting them ----------------------
+
+def test_a_stub_is_a_function_that_exists_and_does_nothing():
+    """Not an empty file. An empty implementation makes Python raise NameError
+    and makes C++ fail to compile -- in both cases the run "fails" without a
+    single assertion having executed, which is no evidence at all."""
+    assert stub_for(get("python"), "parse_ports") == \
+        "def parse_ports(*a, **kw):\n    return None\n"
+
+
+def test_a_language_that_cannot_be_stubbed_says_so():
+    """A stub needs a real signature in C++, Rust or OCaml, and the registry's
+    idiom is to refuse with the reason rather than approximate."""
+    assert stub_for(get("c++"), "add") == ""
+    assert stub_for(get("ocaml"), "add") == ""
+
+
+def test_tests_that_catch_a_do_nothing_implementation_are_red():
+    tests = ("assert add(1, 2) == 3\n"
+             "assert add(0, 0) == 0\n"
+             "assert add(-1, 1) == 0\n")
+    red, reason = red_check(get("python"), tests, "add")
+    assert red, reason
+
+
+def test_tests_that_pass_against_a_stub_are_not_red():
+    """The whole point. A suite that a do-nothing implementation satisfies has
+    demonstrated nothing about the behaviour that was asked for, and the static
+    gate cannot see it."""
+    red, reason = red_check(get("python"), "assert True\nassert 1 == 1\n"
+                                           "assert add is not None\n", "add")
+    assert not red
+    assert "does nothing" in reason
+
+
+def test_a_suite_that_never_reaches_an_assertion_is_not_red_either():
+    """Red has to mean "a check ran and failed". A suite that dies before any
+    assertion executes proves only that a name is undefined, which is what the
+    gate's target check already covers -- and it must not be mistaken for
+    evidence."""
+    red, reason = red_check(get("python"), "helper_that_does_not_exist()\n",
+                            "add")
+    assert not red
+    assert "no check" in reason.lower()
+
+
+def test_the_expected_exception_idiom_still_counts_as_red():
+    """try/except/else is how this project asks for a raises test, and its
+    success path runs no assert at all. Against a stub that returns None the
+    `else: assert False` fires, which is a check running and failing."""
+    tests = ("try:\n    parse('')\n    assert False\nexcept ValueError:\n"
+             "    pass\nassert parse('1') == [1]\nassert parse('1,2') == [1, 2]\n")
+    red, reason = red_check(get("python"), tests, "parse")
+    assert red, reason

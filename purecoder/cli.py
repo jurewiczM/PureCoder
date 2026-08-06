@@ -174,18 +174,49 @@ def _grounded(context, task):
     return f"{context}\n\n{task}" if context else task
 
 
+def confirm_tests(tests, evidence, ask=input):
+    """Show the suite and the proof that it fails, then ask. -> True to go on.
+
+    The TDD ritual, made visible: this is the moment the user is looking at
+    what will judge the implementation, before any implementation exists.
+    Silence is a no, like every other confirmation here.
+    """
+    print("\n" + "-" * 60)
+    print("These tests were written from your request, and they FAIL against "
+          "an implementation that does nothing:")
+    print("-" * 60)
+    print(tests.rstrip())
+    print("-" * 60)
+    detail = (evidence or "").strip().splitlines()
+    for line in detail[-4:]:
+        print(f"  {line}")
+    print("-" * 60)
+    return ask("Write an implementation that satisfies them? [y/N] ").strip()\
+        .lower() in ("y", "yes")
+
+
 def cmd_code(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
     context, hint = ground_in_docs(args, spec, args.spec)
+    tdd = bool(getattr(args, "tdd", False))
+    # Test-first cannot stub without a name, and the name comes from the
+    # contract -- so the flag implies it rather than failing later on a
+    # combination the user did not know was required.
+    extra = {}
+    if tdd:
+        extra = {"tdd": True,
+                 "confirm_tests": None if getattr(args, "yes", False)
+                 else confirm_tests}
     _print_result(generate_validated_python(
         pc, _grounded(context, args.spec), max_retries=args.retries, spec=spec,
-        use_contract=resolve_contract(args, default=False),
+        use_contract=True if tdd else resolve_contract(args, default=False),
         error_hint=hint,
         # `--with` lives on this subcommand alone, so `getattr` is the honest
         # read rather than a default nobody set.
-        packages=tuple(getattr(args, "packages", None) or ())),
+        packages=tuple(getattr(args, "packages", None) or ()),
+        **extra),
         show_tests=args.show_tests)
 
 
@@ -414,6 +445,14 @@ def main():
         parser = sub.add_parser(name)
         parser.add_argument("spec")
         if name == "code":
+            parser.add_argument(
+                "--tdd", action="store_true",
+                help="test-first: derive a contract, write the tests, PROVE "
+                     "they fail against a do-nothing implementation, and "
+                     "confirm them before any code is written (python only)")
+            parser.add_argument(
+                "-y", "--yes", action="store_true",
+                help="skip the test confirmation --tdd would ask for")
             parser.add_argument(
                 "--with", dest="packages", action="append", metavar="PKG",
                 help="a third-party package the code may import (repeatable). "

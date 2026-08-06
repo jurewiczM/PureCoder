@@ -460,3 +460,67 @@ def test_declared_packages_reach_the_loop_and_default_to_none():
     finally:
         cli.generate_validated_python = real
     assert seen["packages"] == ("numpy",)
+
+
+def test_tdd_flag_reaches_the_loop_with_a_confirmation():
+    """`code --tdd` turns the need into a contract, the contract into tests,
+    and proves those tests fail before any implementation is written."""
+    from purecoder import cli
+
+    class Args:
+        spec = "add two numbers"
+        lang = "python"
+        retries = 1
+        contract = None
+        show_tests = False
+        store = None
+        no_docs = True
+        packages = None
+        tdd = True
+        yes = False
+
+    seen = {}
+
+    def spy(pc, description, **kw):
+        seen.update(kw)
+        return {"ok": True, "text": "", "tests": "", "contract": None,
+                "attempts": 1, "error": ""}
+
+    real = cli.generate_validated_python
+    cli.generate_validated_python = spy
+    try:
+        cli.cmd_code(None, Args())
+    finally:
+        cli.generate_validated_python = real
+    assert seen["tdd"] is True
+    assert seen["use_contract"] is True, "test-first without a contract cannot stub"
+    assert callable(seen["confirm_tests"])
+
+    # -y is the same run without the question, which is what a script needs.
+    Args.yes = True
+    seen.clear()
+    cli.generate_validated_python = spy
+    try:
+        cli.cmd_code(None, Args())
+    finally:
+        cli.generate_validated_python = real
+    assert seen["confirm_tests"] is None
+
+
+def test_the_tests_and_their_failure_are_shown_before_confirming(capsys, monkeypatch):
+    from purecoder import cli
+
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    ok = cli.confirm_tests("assert add(1, 2) == 3\n",
+                           "AssertionError\n", ask=input)
+    out = capsys.readouterr().out
+    assert ok
+    assert "assert add(1, 2) == 3" in out
+    assert "AssertionError" in out
+    assert "fail" in out.lower()
+
+
+def test_anything_but_yes_declines_the_tests(capsys):
+    from purecoder import cli
+
+    assert cli.confirm_tests("assert x", "boom", ask=lambda _: "n") is False

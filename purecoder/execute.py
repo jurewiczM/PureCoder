@@ -509,6 +509,62 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     return True, ""
 
 
+def stub_for(spec, name: str) -> str:
+    """An implementation that exists and does nothing. "" if impossible here.
+
+    Not an empty file, which is the obvious thing and the wrong one: with no
+    definition at all Python raises NameError and C++ fails to compile, so the
+    run "fails" without a single assertion having executed. That is not
+    evidence that the tests can catch a wrong answer -- only that a name is
+    missing, which the gate's target check already covers.
+
+    Python only, and deliberately. A stub in C++, Rust or OCaml needs a real
+    signature and a real return type, which the contract does not supply, so
+    the registry's own idiom applies: refuse with the reason rather than
+    approximate. A language can earn this later by declaring how to stub
+    itself.
+    """
+    if spec.name != "python" or not name.isidentifier():
+        return ""
+    return f"def {name}(*a, **kw):\n    return None\n"
+
+
+def red_check(spec, tests: str, name: str, timeout: int = 10):
+    """Does this suite fail against an implementation that does nothing?
+    -> (red, reason).
+
+    The step this project's own discipline demands and the pipeline never took:
+    a test you have not watched fail is a test you cannot trust. A suite that a
+    do-nothing implementation satisfies has demonstrated nothing about the
+    behaviour that was asked for, and no static gate can see that -- `assert
+    True` parses, calls the target often enough, and is not degenerate.
+
+    Red means a check RAN and FAILED. A suite that dies before reaching an
+    assertion is not red: the same three-way distinction `bench.py` draws
+    between a wrong answer and an unusable one.
+    """
+    stub = stub_for(spec, name)
+    if not stub:
+        return False, (f"{spec.name} cannot be stubbed, so the tests cannot be "
+                       f"watched failing before the implementation exists")
+
+    ok, err = run_candidate(spec, stub, tests, timeout=timeout, require_checks=1)
+    if ok:
+        return False, ("these tests pass against an implementation that does "
+                       "nothing and returns None -- they assert nothing about "
+                       "the behaviour that was asked for")
+    # Red means an ASSERTION failed. Anything else -- a NameError from a
+    # helper the suite invented, a TypeError from calling the stub wrongly --
+    # kills the run before a check can execute, and the instrumentation cannot
+    # report "no checks ran" from a script that never reached its own tail.
+    # Both were mistaken for red on the first attempt at this.
+    if "no checks ran" in err or "AssertionError" not in err:
+        return False, ("no check ran against the stub: the suite fails before "
+                       "reaching an assertion, which proves a name is missing "
+                       "rather than that the tests can catch a wrong answer")
+    return True, err
+
+
 def repair_tests(spec, tests: str) -> str:
     """Apply a language's declared, meaning-preserving test repairs.
 
@@ -618,24 +674,37 @@ def generate_tests(pc, description: str, n_predict: int = 512,
 
 
 def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
-                 n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON):
+                 n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON,
+                 red_target="", timeout=10):
     """Generate tests and put them through the quality gate, regenerating with
     the reason fed back on rejection. Returns (tests, ok, reason).
 
     The designer stays code-blind: only the GATE ever sees names from the
     implementation, and only to check the tests call them at all.
+
+    `red_target` names the function to stub, which turns the gate from static
+    to empirical: the suite must FAIL against an implementation that does
+    nothing. That is the one check no amount of parsing can make -- `assert
+    True` is well-formed, mentions the target and is not degenerate.
     """
-    task, tests, reason = description, "", ""
+    task, tests, reason, evidence = description, "", "", ""
     for attempt in range(1, max_retries + 1):
         tests = repair_tests(spec, generate_tests(pc, task, n_predict=n_predict,
                                                   spec=spec))
         ok, reason = lint_tests(tests, targets=targets,
                                 min_assertions=min_assertions, spec=spec)
+        if ok and red_target:
+            ok, detail = red_check(spec, tests, red_target, timeout=timeout)
+            if ok:
+                evidence = detail
+            else:
+                reason = detail
         if ok:
             if verbose:
+                red = " and failing against a stub" if red_target else ""
                 print(f"[tests] accepted on attempt {attempt} "
-                      f"({len(tests.splitlines())} lines)")
-            return tests, True, ""
+                      f"({len(tests.splitlines())} lines{red})")
+            return tests, True, evidence
         if verbose:
             print(f"[tests] attempt {attempt} rejected: {reason} -> regenerating")
         task = (f"{description}\n\n"
@@ -649,7 +718,8 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
-                              error_hint=None, packages=(), **kw):
+                              error_hint=None, packages=(), tdd=False,
+                              confirm_tests=None, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -672,6 +742,24 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     if not ok:
         return {"ok": False, "text": "", "tests": "", "contract": None,
                 "attempts": 0, "error": f"cannot generate {spec.name}: {why}"}
+
+    # TDD mode, refused before any model call when it cannot be honoured. It
+    # needs two things: a language that can be stubbed, and a contract to take
+    # the name from. Neither can be improvised, and generating the ordinary way
+    # while the caller believes the tests were proven would be the worst of the
+    # available outcomes.
+    if tdd:
+        if not stub_for(spec, "probe"):
+            return {"ok": False, "text": "", "tests": "", "contract": None,
+                    "attempts": 0,
+                    "error": f"cannot run test-first for {spec.name}: it has no "
+                             f"stub form, so the tests cannot be watched "
+                             f"failing before an implementation exists"}
+        if not use_contract and contract is None:
+            return {"ok": False, "text": "", "tests": "", "contract": None,
+                    "attempts": 0,
+                    "error": "test-first needs a contract: the stub is built "
+                             "from the name it declares. Use --contract."}
 
     # Declared packages, checked before a single model call. Two refusals, both
     # cheap: a language with no import story cannot honour the request at all,
@@ -723,9 +811,22 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                      f"installed: {allowed}. Nothing else outside the standard "
                      f"library.")
 
+    # The name to stub, once the contract exists. A contract that failed to
+    # derive leaves TDD mode with nothing to build a stub from, and saying so
+    # beats silently dropping the guarantee the caller asked for.
+    red_target = ""
+    if tdd:
+        if contract is None:
+            return {"ok": False, "text": "", "tests": "", "contract": None,
+                    "attempts": 0,
+                    "error": "test-first needs a contract and none could be "
+                             "derived, so there is no name to stub"}
+        red_target = str(contract.get("name", ""))
+
     if tests is None:
         designed, gate_ok, gate_reason = design_tests(
-            pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec)
+            pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec,
+            red_target=red_target, timeout=timeout)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
@@ -736,6 +837,16 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     "error": f"test design failed the quality gate: {gate_reason}"}
     else:
         designed = tests
+
+    # The ritual made visible: the user sees the tests, and sees them failing,
+    # before any implementation exists. `gate_reason` carries the stub run's
+    # own output on the success path -- that failure IS the evidence.
+    if tdd and confirm_tests is not None:
+        if not confirm_tests(designed, gate_reason):
+            return {"ok": False, "text": "", "tests": designed,
+                    "contract": contract, "attempts": 0,
+                    "error": "declined: the tests were not accepted, so no "
+                             "implementation was written"}
 
     task = grounded
     code, error = "", ""
