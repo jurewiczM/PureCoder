@@ -111,24 +111,30 @@ git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j
 
 ./build/bin/llama-server \
-  -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M \
+  -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q5_K_M \
   -ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080
 ```
 
-Those flags are measured, not guessed, on a 6 GB card with Q5_K_M weights:
+Those flags are measured, not guessed, on a 6 GB card:
 
-| offload | context | KV | VRAM | speed | embedder fits |
+| weights | offload | context | VRAM | speed | live tasks passed |
 |---|---|---|---|---|---|
-| 20/29 | 4k | f16 | 3.8 GB | 19 tok/s | yes |
-| 24/29 | **16k** | q8_0 | **4.7 GB** | **23 tok/s** | **yes** |
-| 29/29 | 16k | q8_0 | 5.5 GB | 35 tok/s | **no — retrieval OOMs** |
+| Q5_K_M | 20/29 | 4k | 3.8 GB | 19 tok/s | — |
+| **Q5_K_M** | **24/29** | **16k** | **4.7 GB** | **23 tok/s** | **4 / 5** |
+| Q5_K_M | 29/29 | 16k | 5.5 GB | 35 tok/s | embedder OOMs |
+| Q4_K_M | 29/29 | 16k | 4.9 GB | 40 tok/s | 2 / 5 |
 
-Full offload is the fastest and the wrong choice: the embedder needs ~275 MB on
-the same card, so every doc-grounded run dies. Four times the context costs
-about 500 MB, which is the trade this pipeline wants — the prompt is where the
-pressure is (retrieved docs, the contract, the previous attempt, the quoted
-source around a diagnostic), not the 512-token output budget, which measurement
-shows is not binding.
+Two results decided these flags. **Full offload is the fastest and the wrong
+choice** — the embedder needs ~275 MB on the same card, so every doc-grounded
+run dies. And **the smaller quantisation is faster and worse**: Q4_K_M passed
+two of the same five tasks against Q5's four, and raising its retry budget from
+four to seven recovered *none* of them — two failures that Q5 cleared on the
+first attempt survived seven. Throughput does not buy capability back.
+
+Four times the context costs about 500 MB, which is the trade this pipeline
+wants: the pressure is on the prompt (retrieved docs, the contract, the previous
+attempt, the source quoted around a diagnostic), not on the 512-token output
+budget, which measurement shows is not binding.
 
 ## Quickstart
 
