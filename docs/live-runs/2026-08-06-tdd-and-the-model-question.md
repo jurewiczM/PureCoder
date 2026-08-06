@@ -96,9 +96,45 @@ It also puts a number beside the specialization plan, which proposes the same
 trade at a larger scale. Its go/no-go bars exist for this reason, and this run
 is the first evidence that they will bind.
 
+## How noisy is this benchmark, actually?
+
+The index this batch retrieves from was lost to a `/tmp` cleanup, so before
+testing anything new it was rebuilt from the same source — and came back at
+**3017 chunks, the exact count of the destroyed one**. The corpus reproduces.
+
+Q5 was then re-run on it as a control, to check that the recorded numbers still
+mean what they said. Four runs of the same weights, same flags, same corpus:
+
+| task | run 1 | run 2 | run 3 | run 4 |
+|---|---|---|---|---|
+| `sum_list` | ✓ 1 | ✓ 1 | ✓ 1 | ✓ 1 |
+| `max_of_list` | ✓ | ✓ 2 | ✓ 2 | ✓ 2 |
+| `insertion_sort` | ✓ 1 | ✓ 1 | ✓ 1 | ✓ 1 |
+| `rev_string` | ✓ 1 | ✗ 3 | ✗ **0** | ✗ 4 |
+| `is_palindrome` | ✗ 4 | ✗ 4 | ✓ 2 | ✗ 4 |
+| **total** | **4/5** | 3/5 | 4/5 | 3/5 |
+
+**Three of the five tasks are deterministic**, to the attempt. Every bit of the
+variance lives in the two string tasks — and `attempts=0` names the stage it
+lives at: the test-design gate never accepted a suite, so the writer was never
+asked for code. The instability is in the tester, not the coder, which agrees
+with the tester being blamed in eight of ten previously measured arms.
+
+Two consequences. **A single five-task score carries ±1 task of noise**, so no
+configuration can be judged by its total alone; the per-task attempt counts are
+the measurement, and attempts-to-pass is far steadier than pass/fail. And
+`is_palindrome`, which had failed at max retries in *every* arm ever run, passed
+at 2 on run 3 — four failures in a row were a small sample of a noisy stage, not
+the wall they looked like.
+
+The Q4 verdict survives this. Q4's 2/5 sits below the observed Q5 range of 3–4,
+and the seven-retry row — where failures outlived their remedy — is what carried
+it in the first place. Wider error bars, same conclusion.
+
 ## Caveats
 
-- Five tasks, one run per configuration, a sampled model. The Q4/Q5 gap at four
+- Five tasks, a sampled model, and — measured directly above — ±1 task of
+  run-to-run noise on the total. The Q4/Q5 gap at four
   retries alone would be inside the noise; the seven-retry row is what makes it
   worth acting on, because it shows the failures surviving the remedy.
 - The 4k → 16k measurement is this card and these weights. Nothing about it
