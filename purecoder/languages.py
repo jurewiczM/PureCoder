@@ -530,7 +530,15 @@ register(LanguageSpec(
     # designer reproduced the same malformation on every attempt, ending the
     # run at attempts=0 without ever reaching the writer.
     test_fix=((r"pc_check\s*\((\(.*?\))\s*(\"[^\"]*\")\s*\)",
-               r"pc_check \1 \2"),),
+               r"pc_check \1 \2"),
+              # `Let () = ...` -- a capitalised keyword at the start of a
+              # statement. OCaml reads `Let` as a constructor and reports
+              # "Unbound constructor Let"; a model that begins a line the way
+              # it begins a sentence fails every task in a batch this way. The
+              # anchor is deliberately narrow: only the exact `Let ()` opening
+              # this harness's statements use, so a genuine constructor named
+              # `Let` in some other position is untouched.
+              (r"(?m)^(\s*)Let(\s+\(\)\s*=)", r"\1let\2"),),
     test_lint=((r"=\s*raise\b",
                 "a check compares a value against `raise`, which is not valid "
                 "OCaml -- test an expected exception by catching it: "

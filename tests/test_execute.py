@@ -511,6 +511,27 @@ def test_a_misparenthesised_ocaml_check_is_repaired_before_the_gate():
         'let () = pc_check (sum_list [1] = 1) "one"\n'
 
 
+def test_a_capitalised_let_is_repaired_before_the_gate():
+    """Measured, not imagined: a 30B model opened its first check with `Let ()`
+    -- a line begun the way a sentence is begun -- and OCaml read `Let` as a
+    constructor. All five tasks of a batch died on it while the implementations
+    it wrote were correct, so the score said 0/5 and meant nothing.
+
+    Meaning-preserving for the same reason as the case above: `Let ()  = ...`
+    has no valid reading, since a constructor cannot be applied to unit and
+    bound with `=` at the head of a statement."""
+    bad = 'Let () = pc_check (sum_list [1] = 1) "one"\n'
+    assert repair_tests(get("ocaml"), bad) == \
+        'let () = pc_check (sum_list [1] = 1) "one"\n'
+
+
+def test_only_the_leading_keyword_is_lowered():
+    """The anchor is narrow on purpose. A constructor genuinely named `Let`,
+    anywhere but at the head of a `Let () =` statement, is left alone."""
+    kept = 'let () = pc_check (parse "x" = Let ()) "constructor survives"\n'
+    assert repair_tests(get("ocaml"), kept) == kept
+
+
 def test_a_correct_check_is_left_exactly_alone():
     good = 'let () = pc_check (sum_list [1] = 1) "one"\n'
     assert repair_tests(get("ocaml"), good) == good
