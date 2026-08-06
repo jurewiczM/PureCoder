@@ -840,6 +840,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # The name to stub, once the contract exists. A contract that failed to
     # derive leaves TDD mode with nothing to build a stub from, and saying so
     # beats silently dropping the guarantee the caller asked for.
+    # The contract names the thing under test, and that name is knowable
+    # before any code exists. Two things below need it: the gate, to require
+    # that the designed tests actually exercise it, and test-first mode, to
+    # know what to stub.
+    target_name = str(contract.get("name", "")) if contract else ""
     red_target = ""
     if tdd:
         if contract is None:
@@ -847,11 +852,19 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     "attempts": 0,
                     "error": "test-first needs a contract and none could be "
                              "derived, so there is no name to stub"}
-        red_target = str(contract.get("name", ""))
+        red_target = target_name
 
     if tests is None:
+        # Gated against the contract's name from the start. Previously the
+        # only source of targets was `public_names`, which parses Python: for
+        # every other language it returned [] and the "never tests the target"
+        # check silently did nothing. Live, an OCaml suite for insertion_sort
+        # asserted on `List.sort` throughout and was accepted -- the sort was
+        # the standard library's, and the implementation under test was never
+        # called at all.
         designed, gate_ok, gate_reason = design_tests(
             pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec,
+            targets=[target_name] if target_name else None,
             red_target=red_target, timeout=timeout)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
@@ -903,7 +916,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # actually call it -- the one check that needs a name from the code.
         if not regated:
             regated = True
-            targets = public_names(code)
+            # public_names parses Python; for any other language it is [],
+            # so fall back to the name the contract already gave us.
+            targets = public_names(code) or (
+                [target_name] if target_name else [])
             if targets:
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
                                                   spec=spec)
@@ -944,7 +960,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # Checked in every language, unlike the above: an answer that never
         # names the function asked for is wrong before it is compiled.
         if impl_ok:
-            impl_ok, impl_reason = defines_target(code, red_target)
+            impl_ok, impl_reason = defines_target(code, target_name)
         if not impl_ok:
             if verbose:
                 print(f"[attempt {attempt}] {impl_reason} -> retrying")

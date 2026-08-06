@@ -583,12 +583,18 @@ def test_a_previous_attempt_too_large_to_show_is_left_out():
 
 # ---- TDD mode -------------------------------------------------------------
 
-TAUTOLOGY = "assert True\nassert 1 == 1\nassert add is not None\n"
+# Every line calls `add` and asserts something true of any return value at
+# all, so a stub returning None satisfies the suite entire. It has to CALL the
+# target: the static gate now requires that, and a suite failing to would be
+# rejected before the red step ever ran -- proving the wrong thing here.
+TAUTOLOGY = ("assert add(1, 2) == add(1, 2)\n"
+             "assert add(0, 0) == add(0, 0)\n"
+             "assert add(2, 3) is add(2, 3)\n")
 
 
 def test_tdd_rejects_a_suite_a_do_nothing_implementation_satisfies():
-    """The static gate cannot see this: `assert True` parses, is not
-    degenerate, and mentions the target. Only running it against a stub does."""
+    """The static gate cannot see this: it parses, is not degenerate, and
+    calls the target three times. Only running it against a stub does."""
     contract = {"name": "add", "summary": "adds two numbers",
                 "params": [{"name": "a", "type": "int"},
                            {"name": "b", "type": "int"}],

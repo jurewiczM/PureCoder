@@ -543,6 +543,33 @@ def test_no_target_means_no_opinion():
     assert ok
 
 
+def test_an_ocaml_suite_that_tests_the_stdlib_instead_of_the_target():
+    """Measured: asked for insertion_sort, the designer wrote
+
+        let () = pc_check ((List.sort compare ["c";"ab"] = ["ab";"c"])) "sorts"
+
+    -- the standard library's sort, three checks of it, and the implementation
+    under test never called. The gate held the rule already; what it never
+    received for a non-Python language was a target, because the only source
+    of one parsed Python and returned [] for everything else."""
+    tests = ('let () = pc_check (List.sort compare [2;1] = [1;2]) "sorts"\n'
+             'let () = pc_check (List.sort compare [] = []) "empty"\n'
+             'let () = pc_check (List.sort compare [1] = [1]) "single"\n')
+    ok, reason = lint_tests(tests, targets=["insertion_sort"],
+                            spec=get("ocaml"))
+    assert not ok
+    assert "insertion_sort" in reason
+
+
+def test_an_ocaml_suite_that_does_test_the_target_passes():
+    tests = ('let () = pc_check (insertion_sort [2;1] = [1;2]) "sorts"\n'
+             'let () = pc_check (insertion_sort [] = []) "empty"\n'
+             'let () = pc_check (insertion_sort [1] = [1]) "single"\n')
+    ok, reason = lint_tests(tests, targets=["insertion_sort"],
+                            spec=get("ocaml"))
+    assert ok, reason
+
+
 def test_a_doubly_parenthesised_check_is_not_mistaken_for_the_malformation():
     """`pc_check ((expr) = expr) "label"` is correct OCaml, and it is the shape
     a test for a string-returning function naturally takes. The gate used to
