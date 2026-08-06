@@ -794,7 +794,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
                               error_hint=None, packages=(), tdd=False,
-                              confirm_tests=None, **kw):
+                              confirm_tests=None, context="", **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -886,6 +886,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                      f"installed: {allowed}. Nothing else outside the standard "
                      f"library.")
 
+    # Retrieved documentation goes to the WRITER and not to the tester.
+    #
+    # The two were one string, docs first, and the tester answered them. Live,
+    # asked for `rev_string` with OCaml documentation in front of the request,
+    # four consecutive designs never mentioned rev_string at all -- they
+    # tested a StringSet module the docs happened to describe, and the run
+    # ended having never judged the implementation. This module's first
+    # principle is that tests come from the SPEC; the docs are how the writer
+    # learns an unfamiliar idiom, and they are not part of the request.
+    writing = f"{context}\n\n{grounded}" if context else grounded
+
     # The name to stub, once the contract exists. A contract that failed to
     # derive leaves TDD mode with nothing to build a stub from, and saying so
     # beats silently dropping the guarantee the caller asked for.
@@ -936,7 +947,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     "error": "declined: the tests were not accepted, so no "
                              "implementation was written"}
 
-    task = grounded
+    task = writing
     code, error = "", ""
     regated = False          # the target-name check runs once, after code exists
     redesigned = False       # the tests get one second chance, not a loop
@@ -955,7 +966,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         if res["truncated"]:
             error = "output was cut off (hit n_predict)"
-            task = (f"{grounded}{constraints}\n\n"
+            task = (f"{writing}{constraints}\n\n"
                     f"Previous output was cut off. Be complete but concise.")
             if verbose:
                 print(f"[attempt {attempt}] truncated -> retrying")
@@ -1015,7 +1026,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             if verbose:
                 print(f"[attempt {attempt}] {impl_reason} -> retrying")
             error = impl_reason
-            task = (f"{grounded}{constraints}\n\n"
+            task = (f"{writing}{constraints}\n\n"
                     f"Your previous output was rejected: {impl_reason}\n"
                     f"Output only the implementation, nothing else.")
             continue
@@ -1046,7 +1057,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     f"library.{allowed} {dep!r} is not installed and cannot be "
                     f"validated here. No other third-party imports at all, in "
                     f"any later attempt.")
-                task = f"{grounded}{constraints}"
+                task = f"{writing}{constraints}"
                 continue
             if verbose:
                 print(f"[attempt {attempt}] still missing {dep!r} -- "
@@ -1089,14 +1100,14 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     print(f"[attempt {attempt}] the same failure on different "
                           f"code -- suspecting the tests, redesigning them")
                 designed, redo_ok, redo_reason = design_tests(
-                    pc, grounded, targets=public_names(code),
+                    pc, grounded, targets=defined_names(spec, code),
                     max_retries=max_retries, verbose=verbose, spec=spec)
                 if not redo_ok:
                     return {"ok": False, "text": code, "tests": designed,
                             "contract": contract, "attempts": attempt,
                             "error": f"test design failed the quality gate: "
                                      f"{redo_reason}"}
-                task = f"{grounded}{constraints}"
+                task = f"{writing}{constraints}"
                 continue
 
             if verbose:
@@ -1143,7 +1154,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # small card. A large implementation is described by its error alone.
         previous = (f"\n\nYour previous implementation, which failed:\n{code}"
                     if len(code) <= 2000 else "")
-        task = (f"{grounded}{constraints}{previous}\n\n"
+        task = (f"{writing}{constraints}{previous}\n\n"
                 f"It failed these tests, which are run separately and must NOT "
                 f"appear in your output:\n{full}\n\n"
                 f"With this error:\n{error}\n"

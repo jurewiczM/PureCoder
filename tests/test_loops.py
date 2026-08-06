@@ -581,6 +581,26 @@ def test_a_previous_attempt_too_large_to_show_is_left_out():
     assert "x = 1\n    x = 1" not in pc.prompts[1]
 
 
+def test_documentation_reaches_the_writer_and_not_the_test_designer():
+    """The two were one string, docs first. Live, asked for `rev_string` with
+    OCaml documentation in front of the request, four consecutive designs never
+    mentioned rev_string at all -- they tested a StringSet module the docs
+    happened to describe, and the run ended having judged no implementation.
+
+    Tests come from the SPEC. Documentation is how the writer learns an
+    unfamiliar idiom; it is not part of what was asked for."""
+    docs = "Relevant documentation:\nStringSet.of_list builds a set."
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", context=docs,
+                                    verbose=False)
+    assert res["ok"], res["error"]
+
+    designer, writer = pc.prompts[0], pc.prompts[1]
+    assert "StringSet" not in designer, "the designer was handed the docs"
+    assert "add two numbers" in designer
+    assert "StringSet" in writer, "the writer lost its grounding"
+
+
 # ---- TDD mode -------------------------------------------------------------
 
 # Every line calls `add` and asserts something true of any return value at

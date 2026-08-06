@@ -169,11 +169,6 @@ def ground_in_docs(args, spec, query, required=False):
     return ctx, lambda err: did_you_mean(err, store.symbols)
 
 
-def _grounded(context, task):
-    """The task with its documentation in front, if there is any."""
-    return f"{context}\n\n{task}" if context else task
-
-
 def confirm_tests(tests, evidence, ask=input):
     """Show the suite and the proof that it fails, then ask. -> True to go on.
 
@@ -210,7 +205,7 @@ def cmd_code(pc, args):
                  "confirm_tests": None if getattr(args, "yes", False)
                  else confirm_tests}
     _print_result(generate_validated_python(
-        pc, _grounded(context, args.spec), max_retries=args.retries, spec=spec,
+        pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=True if tdd else resolve_contract(args, default=False),
         error_hint=hint,
         # `--with` lives on this subcommand alone, so `getattr` is the honest
@@ -328,7 +323,7 @@ def cmd_ask(pc, args):
     if context is None:
         return 1
     _print_result(generate_validated_python(
-        pc, _grounded(context, args.spec), max_retries=args.retries, spec=spec,
+        pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
         error_hint=hint),
         show_tests=args.show_tests)

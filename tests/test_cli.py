@@ -173,14 +173,15 @@ def learned(store, monkeypatch):
 def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys):
     """The claim the whole feature exists for: `code --lang X` is grounded with
     no second ingest and no --store."""
-    from purecoder.cli import _grounded, ground_in_docs
+    from purecoder.cli import ground_in_docs
 
     context, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
     assert "Relevant documentation:" in context
     assert "Zig.print" in context
     assert "using the ziglike docs from `learn`" in capsys.readouterr().out
-    # and the caller puts it in front of the task rather than around it
-    assert _grounded(context, "alpha").endswith("alpha")
+    # The caller hands it to generate_validated_python as `context`, kept
+    # apart from the request so it can reach the writer without reaching the
+    # test designer -- see test_loops for the behaviour that depends on it.
 
 
 def test_the_docs_answer_did_you_mean_for_that_language(learned):
