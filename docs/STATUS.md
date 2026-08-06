@@ -180,6 +180,18 @@ _Snapshot of what's built, tested, and what's next._
   above were made on Q4_K_M -- a mismatch at the time, and since resolved the
   other way: Q5_K_M is now the documented model, because Q4 was measured and
   rejected (finding 9).
+- **A third live run found eight, and they were failing correct code** --
+  [docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md](live-runs/2026-08-07-the-harness-was-the-bottleneck.md).
+  A capitalised `Let` at the head of a statement; a gate anchored so that
+  valid doubly-parenthesised OCaml was refused; a repair that mangled a check
+  written with no label; "these tests never call the target" unreachable
+  outside Python, so a suite testing `List.sort` instead of `insertion_sort`
+  was accepted; one target mention enough to pass that check; the writer
+  answering retrieved documentation instead of using it; the test designer
+  doing the same, which was the root cause; and a `[docs]` hint that printed
+  its header and withheld the names. All eight were invisible to 536 passing
+  tests, and every one was found by reading a failing run's transcript rather
+  than its verdict.
 - **The bootstrap's own prompts were three of its four failure modes.** Six
   `learn ocaml` runs against real stdlib `.mli` files produced: a model
   explanation compiled as source (`unfence` strips fences, not prose); a
@@ -482,3 +494,12 @@ were dropped from the lexical denominator, not because the threshold was wrong;
 the fix loop taught to show the writer its own previous output and the source a
 diagnostic points at; test-first mode; and the context window measured up from
 4k to 16k, with Q4_K_M weights tried and rejected on capability.
+
+Done in the session after that: eight harness defects that were failing correct
+code, and the model question settled. Qwen3-Coder-30B-A3B at Q3_K_M runs on
+this 6 GB card with `-ngl 99 --cpu-moe` -- experts in system RAM, ~3B activated
+per token -- in **1864 MiB at 33.3 tok/s**, which is less VRAM and more speed
+than the 7B it replaces. It passes all five OCaml tasks at one attempt each.
+But so does Q5_K_M on the fixed harness, having scored 4, 3, 4, 3 on the broken
+one: the model was never the bottleneck, and the 30B's case rests on halving
+the attempts, not on the score.
