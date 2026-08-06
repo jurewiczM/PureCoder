@@ -512,8 +512,11 @@ register(LanguageSpec(
         "prose, no fences. pc_check is already defined and takes a boolean and "
         "a label: e.g. let () = pc_check (add 1 2 = 3) \"add\". The label goes "
         "OUTSIDE the parentheses -- `pc_check ((add 1 2 = 3) \"add\")` applies "
-        "the label to a boolean and does not compile. Assume the thing under "
-        "test is already defined above your statements."
+        "the label to a boolean and does not compile. For a call that should "
+        "RAISE, catch it: let () = pc_check (try ignore (f []); false with "
+        "Failure _ -> true) \"raises on empty\" -- never compare a value "
+        "against a raise. Assume the thing under test is already defined above "
+        "your statements."
     ),
     project=ProjectSpec(
         entry="main.ml",
@@ -528,7 +531,12 @@ register(LanguageSpec(
     # run at attempts=0 without ever reaching the writer.
     test_fix=((r"pc_check\s*\((\(.*?\))\s*(\"[^\"]*\")\s*\)",
                r"pc_check \1 \2"),),
-    test_lint=((r"pc_check\s*\(\(",
+    test_lint=((r"=\s*raise\b",
+                "a check compares a value against `raise`, which is not valid "
+                "OCaml -- test an expected exception by catching it: "
+                "pc_check (try ignore (f []); false with Failure _ -> true) "
+                "\"raises\""),
+               (r"pc_check\s*\(\(",
                 "a check reads `pc_check ((expr) \"label\")`, which applies "
                 "the label to a boolean and does not compile -- the label goes "
                 "OUTSIDE the parentheses: pc_check (expr) \"label\""),),
