@@ -112,8 +112,23 @@ cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j
 
 ./build/bin/llama-server \
   -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M \
-  -ngl 99 -c 4096 -fa on --port 8080
+  -ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080
 ```
+
+Those flags are measured, not guessed, on a 6 GB card with Q5_K_M weights:
+
+| offload | context | KV | VRAM | speed | embedder fits |
+|---|---|---|---|---|---|
+| 20/29 | 4k | f16 | 3.8 GB | 19 tok/s | yes |
+| 24/29 | **16k** | q8_0 | **4.7 GB** | **23 tok/s** | **yes** |
+| 29/29 | 16k | q8_0 | 5.5 GB | 35 tok/s | **no — retrieval OOMs** |
+
+Full offload is the fastest and the wrong choice: the embedder needs ~275 MB on
+the same card, so every doc-grounded run dies. Four times the context costs
+about 500 MB, which is the trade this pipeline wants — the prompt is where the
+pressure is (retrieved docs, the contract, the previous attempt, the quoted
+source around a diagnostic), not the 512-token output budget, which measurement
+shows is not binding.
 
 ## Quickstart
 

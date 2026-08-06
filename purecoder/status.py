@@ -86,6 +86,12 @@ def print_status(pc):
     print("=" * 56)
     if not up:
         print(" ! server down — start it with:")
+        # Measured on a 6 GB card, Q5_K_M: 24 of 29 layers and a q8_0 KV cache
+        # hold 16k of context in 4.7 GB at 23 tok/s, and leave room for the
+        # embedder (~275 MB) that a doc-grounded run needs on the same card.
+        # Full offload is faster (35 tok/s) and takes 5.5 GB, which makes every
+        # retrieval OOM -- see docs/STATUS.md.
         print("   llama-server -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
-              ":Q4_K_M -ngl 99 -c 4096 -fa on --port 8080")
+              ":Q4_K_M -ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 "
+              "--port 8080")
     print()
