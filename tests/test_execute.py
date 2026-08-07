@@ -1,16 +1,24 @@
 """The executor and the test-quality gate -- both model-independent."""
 
+import re
 import time
 
 from purecoder.execute import (
     _trim,
     available_packages,
+    defined_names,
+    defines_target,
     harness_collision,
     lint_implementation,
     lint_tests,
     missing_dependency,
+    missing_relation,
     public_names,
+    quoted_source,
+    red_check,
+    repair_tests,
     run_python,
+    stub_for,
 )
 from purecoder.languages import get
 
@@ -401,3 +409,372 @@ def test_a_package_the_sandbox_lacks_is_named():
 
 def test_nothing_declared_needs_no_subprocess():
     assert available_packages(()) == (True, [])
+
+
+def test_a_missing_table_is_named_as_something_the_code_should_create():
+    """Live finding, twice over. Asked for a view over `orders`, the writer
+    emitted a correct view and no table; `no such table: main.orders` went back
+    three times unchanged and the loop finally blamed the tests. A stronger
+    writer prompt did not fix it -- the same lesson as the .env comment, where
+    the system prompt was ignored and the mechanical constraint worked."""
+    hint = missing_relation(get("sql"), "sqlite3.OperationalError: no such "
+                                        "table: main.orders")
+    assert "orders" in hint
+    assert "CREATE TABLE" in hint
+
+
+def test_a_missing_view_is_named_too():
+    hint = missing_relation(get("sql"), "sqlite3.OperationalError: no such "
+                                        "view: summary")
+    assert "summary" in hint
+
+
+def test_a_missing_column_is_not_answered_with_a_new_table():
+    """The first version of this hint told the model to `CREATE TABLE id` in
+    answer to `no such column: id`, and it did exactly that. Observed on the
+    live run that was verifying the hint itself."""
+    hint = missing_relation(get("sql"), "sqlite3.OperationalError: no such "
+                                        "column: id")
+    assert "CREATE TABLE id" not in hint
+    assert "column" in hint
+
+
+def test_an_unrelated_sql_error_gets_no_schema_hint():
+    assert missing_relation(get("sql"), "sqlite3.OperationalError: near "
+                                        "\"SELEKT\": syntax error") == ""
+
+
+def test_no_schema_hint_for_a_language_without_a_schema():
+    assert missing_relation(get("python"), "no such table: orders") == ""
+
+
+# ---- a diagnostic that names a line nobody was shown ---------------------
+
+OCAML_ERROR = ('File "/tmp/tmpx/candidate.ml", line 4, characters 39-40:\n'
+               '4 |         else swap_if_needed (x :: acc) y :: rest\n'
+               '                                           ^\n'
+               "Error: This expression has type 'a but an expression was "
+               "expected of type 'a list")
+
+GCC_ERROR = ("/tmp/tmpx/candidate.cpp:3:14: error: 'foo' was not declared "
+             "in this scope")
+
+
+def test_the_offending_line_is_quoted_back_to_the_writer():
+    """The fix loop showed the model an error saying `line 4, characters
+    39-40` and never showed it line 4. Observed live on an OCaml bubble sort:
+    three attempts, three type errors, no convergence -- the model was being
+    asked to fix source it could not see."""
+    code = "let rec bubble x = x\nlet other = 1\n"
+    tests = 'let () = pc_check (bubble 1 = 1) "b"'
+    out = quoted_source(get("ocaml"), code, tests, OCAML_ERROR)
+    assert ">>    4 |" in out, out
+    assert "the file the toolchain compiled" in out
+
+
+def test_the_quote_covers_the_assembled_file_not_just_the_implementation():
+    """Line numbers are the ASSEMBLED file's -- harness, code, tests, tail --
+    so quoting the implementation alone would point at the wrong line."""
+    code = "let add a b = a + b\n"
+    tests = 'let () = pc_check (add 1 2 = 3) "add"'
+    out = quoted_source(get("ocaml"), code, tests,
+                        'File "x.ml", line 1, characters 0-3:\nError: nope')
+    assert "let pc_checks" in out, "line 1 is the harness, not the code"
+
+
+def test_an_error_naming_no_line_adds_nothing():
+    assert quoted_source(get("ocaml"), "let x = 1", "", "Error: something") == ""
+
+
+def test_a_line_outside_the_file_is_ignored():
+    out = quoted_source(get("ocaml"), "let x = 1", "",
+                        'File "x.ml", line 9999, characters 0-1:\nError: nope')
+    assert out == ""
+
+
+def test_a_gcc_style_diagnostic_is_understood_too():
+    code = "int add(int a,int b){ return foo(a,b); }"
+    out = quoted_source(get("c++"), code, "void pc_tests(){}", GCC_ERROR)
+    assert ">>    3 |" in out, out
+
+
+# ---- repairing a syntactically impossible check --------------------------
+
+def test_a_misparenthesised_ocaml_check_is_repaired_before_the_gate():
+    """The gate rejecting it was not enough: live, the designer wrote the same
+    malformation on every attempt and the run ended with attempts=0, having
+    never reached the writer at all.
+
+    Repair rather than refusal, on the same argument as `./{bin}` and `{src}.ml`
+    before it. `pc_check ((expr) "label")` cannot compile under ANY reading --
+    it applies a string to a boolean -- so there is exactly one thing it can
+    have meant, and rewriting it is meaning-preserving by construction."""
+    bad = 'let () = pc_check ((sum_list [1] = 1) "one")\n'
+    assert repair_tests(get("ocaml"), bad) == \
+        'let () = pc_check (sum_list [1] = 1) "one"\n'
+
+
+def test_an_implementation_that_never_names_its_target_is_rejected():
+    """Live, asked for `rev_string` with OCaml docs in the prompt, the writer
+    returned fragments of the documentation -- `curry4`, a `StringSet` module
+    -- and no rev_string at all. The toolchain reported an unbound name, which
+    reads like a coding mistake and is not one."""
+    code = ("let curry4 f w x y z = f (w, x, y, z)\n"
+            "module StringSet = Set.Make(String)\n")
+    ok, reason = defines_target(code, "rev_string")
+    assert not ok
+    assert "rev_string" in reason
+
+
+def test_an_implementation_naming_its_target_passes():
+    ok, reason = defines_target("let rev_string s = s\n", "rev_string")
+    assert ok, reason
+
+
+def test_a_substring_of_another_name_does_not_count():
+    """`rev_string_helper` is not `rev_string`; the check is word-anchored."""
+    ok, _ = defines_target("let rev_stringify s = s\n", "rev_string")
+    assert not ok
+
+
+def test_a_language_whose_tests_never_name_the_target_is_exempt():
+    """SQL has no functions: the implementation is DDL and the checks are rows
+    in a table, so the contract's name appears in neither. Demanding it would
+    have failed every correct SQL run. The rule is "provide what the tests
+    call", which stays true in a language without functions."""
+    sql = "CREATE TABLE t (id INTEGER);\nINSERT INTO t VALUES (1);\n"
+    checks = "INSERT INTO pc_checks VALUES ((SELECT count(*) FROM t) = 1, 'one');\n"
+    ok, _ = defines_target(sql, "add_row", checks)
+    assert ok
+
+
+def test_the_demand_still_holds_when_the_tests_do_call_it():
+    ok, _ = defines_target("let curry4 f w x y z = f (w, x, y, z)\n",
+                           "rev_string",
+                           'let () = pc_check (rev_string "ab" = "ba") "r"\n')
+    assert not ok
+
+
+def test_no_target_means_no_opinion():
+    """Without a contract there is no name to require, and the check abstains
+    rather than guessing one."""
+    ok, _ = defines_target("anything at all", "")
+    assert ok
+
+
+def test_an_ocaml_suite_that_tests_the_stdlib_instead_of_the_target():
+    """Measured: asked for insertion_sort, the designer wrote
+
+        let () = pc_check ((List.sort compare ["c";"ab"] = ["ab";"c"])) "sorts"
+
+    -- the standard library's sort, three checks of it, and the implementation
+    under test never called. The gate held the rule already; what it never
+    received for a non-Python language was a target, because the only source
+    of one parsed Python and returned [] for everything else."""
+    tests = ('let () = pc_check (List.sort compare [2;1] = [1;2]) "sorts"\n'
+             'let () = pc_check (List.sort compare [] = []) "empty"\n'
+             'let () = pc_check (List.sort compare [1] = [1]) "single"\n')
+    ok, reason = lint_tests(tests, targets=["insertion_sort"],
+                            spec=get("ocaml"))
+    assert not ok
+    assert "insertion_sort" in reason
+
+
+def test_a_suite_that_mostly_tests_something_else_is_rejected():
+    """Measured: a 17-check suite for rev_string, accepted, whose checks were
+    mostly about a `StringSet` module that does not exist -- retrieved
+    documentation answered instead of used. One conforming check satisfied
+    "any", and the rest failed the build on behalf of correct code."""
+    tests = ('let () = pc_check (rev_string "ab" = "ba") "reverses"\n'
+             'let () = pc_check (StringSet.empty = StringSet.empty) "empty"\n'
+             'let () = pc_check (StringSet.cardinal StringSet.empty = 0) "size"\n'
+             'let () = pc_check (StringSet.mem "a" StringSet.empty = false) "mem"\n')
+    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"),
+                            strict_targets=True)
+    assert not ok
+    assert "1 of 4" in reason
+
+
+def test_one_incidental_check_does_not_condemn_a_suite():
+    """A sanity check that touches nothing under test is ordinary; only a
+    minority aimed at the target is refused."""
+    tests = ('let () = pc_check (rev_string "ab" = "ba") "reverses"\n'
+             'let () = pc_check (rev_string "" = "") "empty"\n'
+             'let () = pc_check (String.length "abc" = 3) "sanity"\n')
+    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"),
+                            strict_targets=True)
+    assert ok, reason
+
+
+def test_a_contract_name_alone_does_not_trigger_the_minority_rule():
+    """A name from a contract is a weaker claim than a name read out of the
+    code. On the scaffold path -- where `project` derives a contract by
+    default -- a C# suite builds `new Counter()` in a setup line and then
+    checks `c.Add(1)`, so no check names the class and every one of them is
+    testing it. Refusing that regenerates the suite until the gate gives up:
+    attempts=0, the failure this kind of rule exists to prevent."""
+    tests = ("var c = new Counter();\n"
+             "PC_CHECK(c.Add(1) == 1);\n"
+             "PC_CHECK(c.Add(2) == 3);\n"
+             "PC_CHECK(c.Total() == 3);\n")
+    ok, reason = lint_tests(tests, targets=["Counter"], spec=get("c#"))
+    assert ok, reason
+
+
+def test_ocaml_definitions_are_read_from_the_code():
+    """Without this the gate had no target at all outside Python or a
+    contract, and `code` derives no contract by default."""
+    code = ("let rev_string s =\n"
+            "  let rec aux acc i = if i < 0 then acc else aux acc (i - 1) in\n"
+            "  aux \"\" (String.length s - 1)\n")
+    assert defined_names(get("ocaml"), code) == ["rev_string"], \
+        "a nested `let rec` is an implementation detail, not the target"
+
+
+def test_a_language_that_cannot_say_what_it_defines_is_left_permissive():
+    assert defined_names(get("c++"), "int add(int a, int b) { return a + b; }") == []
+
+
+def test_an_ocaml_suite_that_does_test_the_target_passes():
+    tests = ('let () = pc_check (insertion_sort [2;1] = [1;2]) "sorts"\n'
+             'let () = pc_check (insertion_sort [] = []) "empty"\n'
+             'let () = pc_check (insertion_sort [1] = [1]) "single"\n')
+    ok, reason = lint_tests(tests, targets=["insertion_sort"],
+                            spec=get("ocaml"))
+    assert ok, reason
+
+
+def test_a_doubly_parenthesised_check_is_not_mistaken_for_the_malformation():
+    """`pc_check ((expr) = expr) "label"` is correct OCaml, and it is the shape
+    a test for a string-returning function naturally takes. The gate used to
+    anchor on the opening `pc_check ((` and rejected it, which is why
+    `rev_string` was the unstable task in every arm ever measured -- the
+    designer was regenerating a suite that had been right the first time."""
+    ok = 'let () = pc_check ((rev_string "abc") = "cba") "reverses"\n'
+    assert repair_tests(get("ocaml"), ok) == ok
+    for pattern, _ in get("ocaml").test_lint:
+        assert not re.search(pattern, ok)
+
+
+def test_the_malformation_is_still_caught_with_nesting_inside():
+    """Anchored on the tail, so the label's position decides -- not how many
+    parentheses the expression happens to open with."""
+    bad = 'let () = pc_check ((rev_string "abc" = "cba") "reverses")\n'
+    assert repair_tests(get("ocaml"), bad) == \
+        'let () = pc_check (rev_string "abc" = "cba") "reverses"\n'
+
+
+def test_a_check_with_no_label_is_left_alone_not_mangled():
+    """The repair claims to be meaning-preserving. A first version was not: on
+    a check written with no label it took the expression as group 1, read the
+    final string as the label, and emitted `pc_check rev_string "ab" = "ba"` --
+    parentheses gone. A missing label is a real error, but it is the gate's to
+    report, not the repair's to invent an answer for."""
+    bare = 'let () = pc_check (rev_string "ab" = "ba")\n'
+    assert repair_tests(get("ocaml"), bare) == bare
+
+
+def test_a_capitalised_let_is_repaired_before_the_gate():
+    """Measured, not imagined: a 30B model opened its first check with `Let ()`
+    -- a line begun the way a sentence is begun -- and OCaml read `Let` as a
+    constructor. All five tasks of a batch died on it while the implementations
+    it wrote were correct, so the score said 0/5 and meant nothing.
+
+    Meaning-preserving for the same reason as the case above: `Let ()  = ...`
+    has no valid reading, since a constructor cannot be applied to unit and
+    bound with `=` at the head of a statement."""
+    bad = 'Let () = pc_check (sum_list [1] = 1) "one"\n'
+    assert repair_tests(get("ocaml"), bad) == \
+        'let () = pc_check (sum_list [1] = 1) "one"\n'
+
+
+def test_only_the_leading_keyword_is_lowered():
+    """The anchor is narrow on purpose. A constructor genuinely named `Let`,
+    anywhere but at the head of a `Let () =` statement, is left alone."""
+    kept = 'let () = pc_check (parse "x" = Let ()) "constructor survives"\n'
+    assert repair_tests(get("ocaml"), kept) == kept
+
+
+def test_a_correct_check_is_left_exactly_alone():
+    good = 'let () = pc_check (sum_list [1] = 1) "one"\n'
+    assert repair_tests(get("ocaml"), good) == good
+
+
+def test_a_language_with_no_repair_declared_is_untouched():
+    cpp = 'void pc_tests(){ PC_CHECK((add(1, 2)) == 3); }'
+    assert repair_tests(get("c++"), cpp) == cpp
+
+
+def test_a_csharp_style_diagnostic_is_understood():
+    """`candidate.cs(12,5): error CS0103` names its line in parentheses, which
+    the other two shapes do not cover -- so C# was the one wired language whose
+    diagnostics quoted nothing."""
+    code = "int Add(int a, int b) => a + b;"
+    out = quoted_source(get("c#"), code, "PC_CHECK(true, \"x\");",
+                        "candidate.cs(3,5): error CS0103: no such name")
+    assert ">>    3 |" in out, out
+
+
+def test_only_a_few_regions_are_quoted():
+    """A compiler can emit a dozen diagnostics, and five lines of context each
+    would spend the context budget this project is built around."""
+    code = "\n".join(f"let v{i} = {i}" for i in range(60))
+    error = "\n".join(f'File "x.ml", line {i}, characters 1-2:' for i in range(1, 13))
+    out = quoted_source(get("ocaml"), code, "", error)
+    assert out.count(">>") <= 3, out.count(">>")
+
+
+# ---- TDD: watch the tests fail before trusting them ----------------------
+
+def test_a_stub_is_a_function_that_exists_and_does_nothing():
+    """Not an empty file. An empty implementation makes Python raise NameError
+    and makes C++ fail to compile -- in both cases the run "fails" without a
+    single assertion having executed, which is no evidence at all."""
+    assert stub_for(get("python"), "parse_ports") == \
+        "def parse_ports(*a, **kw):\n    return None\n"
+
+
+def test_a_language_that_cannot_be_stubbed_says_so():
+    """A stub needs a real signature in C++, Rust or OCaml, and the registry's
+    idiom is to refuse with the reason rather than approximate."""
+    assert stub_for(get("c++"), "add") == ""
+    assert stub_for(get("ocaml"), "add") == ""
+
+
+def test_tests_that_catch_a_do_nothing_implementation_are_red():
+    tests = ("assert add(1, 2) == 3\n"
+             "assert add(0, 0) == 0\n"
+             "assert add(-1, 1) == 0\n")
+    red, reason = red_check(get("python"), tests, "add")
+    assert red, reason
+
+
+def test_tests_that_pass_against_a_stub_are_not_red():
+    """The whole point. A suite that a do-nothing implementation satisfies has
+    demonstrated nothing about the behaviour that was asked for, and the static
+    gate cannot see it."""
+    red, reason = red_check(get("python"), "assert True\nassert 1 == 1\n"
+                                           "assert add is not None\n", "add")
+    assert not red
+    assert "does nothing" in reason
+
+
+def test_a_suite_that_never_reaches_an_assertion_is_not_red_either():
+    """Red has to mean "a check ran and failed". A suite that dies before any
+    assertion executes proves only that a name is undefined, which is what the
+    gate's target check already covers -- and it must not be mistaken for
+    evidence."""
+    red, reason = red_check(get("python"), "helper_that_does_not_exist()\n",
+                            "add")
+    assert not red
+    assert "no check" in reason.lower()
+
+
+def test_the_expected_exception_idiom_still_counts_as_red():
+    """try/except/else is how this project asks for a raises test, and its
+    success path runs no assert at all. Against a stub that returns None the
+    `else: assert False` fires, which is a check running and failing."""
+    tests = ("try:\n    parse('')\n    assert False\nexcept ValueError:\n"
+             "    pass\nassert parse('1') == [1]\nassert parse('1,2') == [1, 2]\n")
+    red, reason = red_check(get("python"), tests, "parse")
+    assert red, reason

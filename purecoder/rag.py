@@ -5,8 +5,12 @@ Minimal doc/code-retrieval RAG over ONE library or project, for a tight 6 GB car
 
 Pipeline: chunk source (code-aware for .py, markdown-aware for docs) -> embed
 with a small model -> store vectors on disk -> at generation time retrieve the
-top-k relevant chunks ONLY IF they clear a similarity threshold (the "retrieve
-when needed" gate), injecting just that slice to stay inside context.
+top-k relevant chunks if they clear a similarity threshold (the "retrieve when
+needed" gate), injecting just that slice to stay inside context. Over 3044
+chunks of real documentation, relevant questions score 1.10-1.34 and unrelated
+ones 0.50-0.70; the gate sits at 0.8. Those ranges used to overlap, because a
+token the corpus had never seen was dropped from the lexical denominator rather
+than counted against the match -- see `_lexical`.
 
 Ranking uses two signals. Cosine similarity answers "is this about the same
 thing"; an IDF-weighted lexical score answers "does this contain the exact name
@@ -51,15 +55,56 @@ def chunk_markdown(text, source, max_chars=800, overlap=150):
         if len(sec) <= max_chars:
             chunks.append(sec)
         else:
+            # Split on line boundaries. It used to slice by character, and over
+            # 61 real OCaml tutorials that opened 445 of 3044 chunks mid-word
+            # -- `de effect`, `rom the left hand end` -- so retrieval handed the
+            # model a fragment starting in the middle of a token.
+            #
             # An overlap at or above the window makes the stride zero or
             # negative -- the loop never advances and the process hangs with no
             # output. `chunk_markdown(text, src, max_chars=100)` against the
             # default overlap of 150 is enough to do it.
-            stride = max(1, max_chars - overlap)
-            start = 0
-            while start < len(sec):
-                chunks.append(sec[start:start + max_chars].strip())
-                start += stride
+            # An overlap at or above the window is what made the old
+            # character-sliced version hang, and it degenerates this one
+            # instead: the whole previous window is carried forward, the walk
+            # advances a line at a time, and 500 lines become 476 near-identical
+            # chunks. Half the window is the most that can be carried while
+            # still guaranteeing real forward progress.
+            carry = min(overlap, max_chars // 2)
+            stride = max(1, max_chars - carry)
+            window = []
+
+            # Bound as defaults: both are per-section values, and a closure over
+            # the loop's variables is a trap even where it happens to work.
+            def flush(window=window, carry=carry):
+                joined = "\n".join(window).strip()
+                if joined:
+                    chunks.append(joined)
+                # Carry the tail of this window into the next one, by whole
+                # lines, until the carried text reaches the overlap budget.
+                keep, size = [], 0
+                for line in reversed(window):
+                    if size + len(line) + 1 > carry:
+                        break
+                    keep.insert(0, line)
+                    size += len(line) + 1
+                window[:] = keep
+
+            for line in sec.split("\n"):
+                # A single line longer than the whole window has no boundary to
+                # respect -- a minified file, a very long URL, a table row. It
+                # is sliced by character, which is what the old code did to
+                # everything.
+                if len(line) > max_chars:
+                    flush()
+                    window.clear()
+                    for start in range(0, len(line), stride):
+                        chunks.append(line[start:start + max_chars].strip())
+                    continue
+                if window and sum(len(w) + 1 for w in window) + len(line) > max_chars:
+                    flush()
+                window.append(line)
+            flush()
     return [(c, source) for c in chunks if c.strip()]
 
 
@@ -340,7 +385,25 @@ class Embedder:
                 "retrieval needs sentence-transformers, which the base install "
                 'does not include (it pulls in torch, ~2 GB).\n  pip install -e ".[rag]"'
             ) from e
-        self.model = SentenceTransformer(model_name, device=device)
+        # The card is shared with llama-server, and the small model is the one
+        # that should yield. Found by giving the LLM more context: at 16k
+        # tokens and full offload the server holds 5.5 GB of a 6 GB card, and
+        # this constructor died with a raw torch traceback in the middle of an
+        # ingest. On CPU a query embeds in tens of milliseconds; an ingest is
+        # slower and still finishes, which beats not running.
+        #
+        # Only for memory. Falling back on any error would hide a wrong model
+        # name behind a silent, very slow CPU run.
+        try:
+            self.model = SentenceTransformer(model_name, device=device)
+        except (RuntimeError, MemoryError) as e:
+            if device == "cpu" or "out of memory" not in str(e).lower():
+                raise
+            print(f"[rag] the GPU has no room for the embedder ({e.__class__.__name__})"
+                  f" -- falling back to CPU")
+            device = "cpu"
+            self.model = SentenceTransformer(model_name, device=device)
+        self.device = device
         # Kept so an index can name the model that built it: vectors from two
         # different models are not comparable, and at equal dimensions nothing
         # about that mismatch is visible at query time.
@@ -638,17 +701,31 @@ class DocStore:
         # into a float32 array instead put a full match at 0.99999988, which
         # is harmless against a threshold and needlessly untidy in `explain`.
         scores = np.zeros(len(self.chunks), dtype="float64")
+        # A token the corpus has never seen counts in the DENOMINATOR at the
+        # weight of the rarest token it does know. Dropping it instead was the
+        # bug behind "the gate never refuses": the score became the share of a
+        # query's KNOWN tokens, so `cheapest flights to Lisbon in March` scored
+        # a perfect 1.000 against OCaml documentation -- one incidental token
+        # existed, and failing to explain the other five cost nothing. An
+        # unseen token is as informative as the rarest seen one; not matching
+        # it has to cost something.
+        rarest = max(self._idf.values(), default=0.0)
+        scores_seen = 0.0
         total = 0.0
         for token in tokenize(query):
             weight = self._idf.get(token, 0.0)
             if not weight:
+                total += rarest
                 continue
+            scores_seen += weight
             total += weight
             # Safe as a plain scatter because a chunk contributes each token
             # once: postings are built from a per-chunk token SET, so no index
             # repeats and none of numpy's buffered-duplicate trap applies.
             scores[self._postings[token]] += weight
-        if not total:
+        # A query with nothing the corpus knows scores zero everywhere rather
+        # than dividing by zero -- or, worse, trivially scoring 1.
+        if not total or not scores_seen:
             return np.zeros(len(self.chunks), dtype="float32")
         return (scores / total).astype("float32")
 
@@ -668,15 +745,34 @@ class DocStore:
         lexical = self._lexical(query)
         return cosine + LEXICAL_WEIGHT * lexical, cosine, lexical
 
-    def search(self, query, k=3, min_score=0.3):
+    def search(self, query, k=3, min_score=0.8, min_lexical=0.9):
+        """Top k above the gate. -> [(chunk, source, score)].
+
+        0.8 rather than the 0.3 this inherited from when the score was cosine
+        alone. Measured over 3044 chunks of real documentation with eleven
+        queries, five of them deliberately unrelated: relevant queries land at
+        1.10-1.34 and unrelated ones at 0.50-0.70, so anything in that gap
+        separates them. The separation is the measured part; the exact number
+        is a judgement, and it is set nearer the junk end because a too-tight
+        gate drops documentation the model needed and does it silently.
+
+        `min_lexical` keeps the one thing the higher threshold would otherwise
+        have killed: a chunk containing essentially every rare token of the
+        query is retrieved even with a cosine of zero, which is the case the
+        lexical signal exists for and the case embeddings are worst at. That
+        clause is only safe now -- before unknown tokens counted against a
+        match, an unrelated question scored a perfect 1.0 lexical and would
+        have walked straight through it.
+        """
         # An empty query embeds to something, and that something scores against
         # every chunk. Whatever comes back is not a match for anything.
         if self.vectors is None or not self.chunks or not query.strip():
             return []
-        scores, _, _ = self._scores(query)
+        scores, _, lexical = self._scores(query)
         order = np.argsort(-scores)[:k]
         return [(self.chunks[i], self.sources[i], float(scores[i]))
-                for i in order if scores[i] >= min_score]
+                for i in order
+                if scores[i] >= min_score or lexical[i] >= min_lexical]
 
     def explain(self, query, k=5):
         """Top k with both signals separated -- why a hit ranked where it did.

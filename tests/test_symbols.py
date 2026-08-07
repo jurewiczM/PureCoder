@@ -101,3 +101,35 @@ def test_the_library_never_rules_on_code_the_toolchain_accepted():
                   if name in ("unknown_members", "check_code", "lint_symbols")]
     assert takes_code == [], \
         "a symbol check that judges code needs a completeness the docs lack"
+
+
+def test_build_products_are_not_api():
+    """A tutorial showing what `ocamlc hello.ml` leaves behind put hello.o,
+    hello.cmo and hello.cmi into the index as though they were names. They were
+    then offered as spelling suggestions for a value the compiler could not
+    find. Removing them dropped 52 entries from a real 843-name index."""
+    text = "Compiling leaves hello.o, hello.cmo and hello.cmi beside List.map"
+    assert qualified_names(text) == {"List.map"}
+
+
+def test_a_string_literal_in_the_echoed_source_is_not_a_suspect():
+    """A compiler that quotes the offending line echoes the program's own
+    string data with it. Live, a check on the literal "hello" was read as a
+    name and answered with `hello.o`, while the value actually unbound went
+    unmentioned. Suspects come from what the toolchain SAYS, not from the code
+    it quotes back."""
+    error = ('File "candidate.ml", line 18, characters 64-81:\n'
+             '18 | let () = pc_check (greet "hello" = "hi") "greets"\n'
+             '                        ^^^^^\n'
+             "Error: Unbound value greet\n")
+    hint = did_you_mean(error, frozenset({"hello.o", "hello.cmo", "greeter"}))
+    assert "hello.o" not in hint
+
+
+def test_an_unquoted_unbound_name_is_still_collected():
+    """OCaml writes `Unbound value to_list` bare. Collecting only quoted names
+    meant the one name worth answering was the one name not collected."""
+    hint = did_you_mean("Error: Unbound value to_list",
+                        frozenset({"Soup.to_list", "List.map"}))
+    assert "to_list" in hint
+    assert "Soup.to_list" in hint

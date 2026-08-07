@@ -264,3 +264,51 @@ def test_validate_still_accepts_a_returns_field_merely_mentioning_errors():
     ok, err = validate_contract(
         {**GOOD, "returns": "a sorted list, or an empty list on no input"})
     assert ok, err
+
+
+def test_an_example_that_passes_no_arguments_to_a_function_with_params_is_refused():
+    """Live finding, in a scaffold run. The contract for `count_words(text)`
+    carried the example `count_words() -> raises ValueError` -- zero arguments
+    -- as its demonstration of the empty-input case. The test designer
+    implemented it faithfully, and correct code failed the loop three times
+    over an example that cannot be called at all.
+
+    Structural, not semantic: a contract param has a name and a type and no
+    default, so a function with one declared parameter cannot be invoked with
+    none."""
+    ok, err = validate_contract({
+        "name": "count_words",
+        "summary": "counts words",
+        "params": [{"name": "text", "type": "str"}],
+        "returns": "dict[str, int]",
+        "raises": [{"exc": "ValueError", "when": "the text is empty"}],
+        "examples": [{"in": "'a b'", "out": "{'a': 1, 'b': 1}"},
+                     {"in": "", "out": "raises ValueError"}],
+    })
+    assert not ok
+    assert "no arguments" in err
+
+
+def test_a_function_with_no_params_may_of_course_take_none():
+    ok, err = validate_contract({
+        "name": "now", "summary": "the time", "params": [],
+        "returns": "float", "raises": [],
+        "examples": [{"in": "", "out": "1712345678.0"}],
+    })
+    assert ok, err
+
+
+def test_an_example_with_no_outcome_is_refused():
+    """Live, in a test-first run: the contract came back with
+    `word_count('hello world') -> ` and nothing after the arrow. An example
+    that states no outcome grounds neither the writer nor the tester -- it is
+    the same emptiness `examples: []` is already refused for, one level down."""
+    ok, err = validate_contract({
+        "name": "word_count", "summary": "counts words",
+        "params": [{"name": "text", "type": "str"}],
+        "returns": "int", "raises": [],
+        "examples": [{"in": "'a b'", "out": "2"},
+                     {"in": "'hello world'", "out": "   "}],
+    })
+    assert not ok
+    assert "outcome" in err

@@ -80,9 +80,22 @@ class PureCoder:
         data = r.json()
         return {
             "text": data.get("content", ""),
-            # stopped_limit == True -> hit n_predict, output cut off mid-gen.
-            # With a grammar that's a valid *prefix*, not a complete file.
-            "truncated": data.get("stopped_limit", False),
+            # Hit n_predict: the output is cut off mid-generation, and with a
+            # grammar that means a valid *prefix* rather than a complete file.
+            #
+            # Two spellings, because llama.cpp changed its mind and this went
+            # unnoticed: older builds set `stopped_limit`, current ones report
+            # `stop_type: "limit"` and omit the boolean entirely -- so
+            # `.get("stopped_limit", False)` answered "complete" for every
+            # truncated generation, and every truncation retry in this project
+            # was dead code. Found live, on a .env cut off mid-comment that
+            # validated clean and was returned as ok.
+            #
+            # Note `data["truncated"]` is NOT this: it is llama.cpp saying the
+            # PROMPT was cut to fit the context window, which is a different
+            # failure and would fire on every long-context call.
+            "truncated": bool(data.get("stopped_limit",
+                                       data.get("stop_type") == "limit")),
             "tokens": data.get("tokens_predicted"),
             "raw": data,
         }

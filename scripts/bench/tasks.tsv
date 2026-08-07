@@ -1,0 +1,20 @@
+# The ten-task cross-language corpus.  name <TAB> spec
+#
+# `{fn}` is substituted by batch.sh with the task name cased to the target
+# language's convention -- see the README for why that is done here rather
+# than left to the model.
+#
+# Every spec states its own edge cases.  An underspecified spec does not
+# produce a harder task, it produces a test designer inventing an expectation:
+# a live run wrote `assert word_count(' ') == 1` against a correct
+# implementation, and the failure was about the spec rather than the model.
+sum_list	a function {fn} that returns the sum of a list of integers; the empty list returns 0
+rev_string	a function {fn} that returns a string reversed; the empty string returns the empty string
+count_vowels	a function {fn} that counts the vowels a e i o u in a string, counting both upper and lower case, and never counting y; the empty string returns 0
+max_of_list	a function {fn} that returns the largest element of a list of integers; the list is guaranteed non-empty, so do not handle the empty case; a one-element list returns that element
+is_palindrome	a function {fn} that returns true when a string reads the same backwards; the comparison is exact, so case matters and spaces and punctuation count; the empty string is a palindrome
+gcd	a function {fn} that returns the greatest common divisor of two non-negative integers; {fn} of x and 0 is x, and {fn} of 0 and 0 is 0
+unique	a function {fn} that returns a new list of integers with duplicates removed, keeping the FIRST occurrence of each value in its original order; the empty list returns an empty list
+insertion_sort	a function {fn} that returns a new list of integers sorted ascending, leaving the input list unchanged; duplicates are kept rather than collapsed; the empty list returns an empty list
+run_length_encode	a function {fn} that encodes a string of letters so that each run of one character becomes that character followed by the length of the run, including runs of length 1, so that "aaab" becomes "a3b1"; the empty string returns the empty string
+roman	a function {fn} that converts an integer between 1 and 3999 into its Roman numeral as a string, using the subtractive form, so that 4 is "IV", 9 is "IX" and 1994 is "MCMXCIV"
