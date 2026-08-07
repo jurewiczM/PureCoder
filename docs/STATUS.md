@@ -461,13 +461,29 @@ _Snapshot of what's built, tested, and what's next._
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-5. **Merge the branch stack.** Fourteen branches, `chore/harden-ci` through
-   `feat/13-tdd`, 136 commits, strictly linear -- each one contains the last,
-   verified link by link. Nothing is on `main`. They are open as a stacked
-   chain of PRs, each based on its predecessor so a reviewer sees only that
-   branch's own commits; they must merge bottom-up, and each merge retargets
-   the next onto `main` automatically. `feat/13` alone would carry the lot in
-   one merge, at the cost of any reviewability.
+5. **Merge the branch stack.** Twelve branches, `feat/03-audit-and-deslop`
+   through `feat/14-multilang-bench`, 111 commits, strictly linear -- each one
+   contains the last, verified link by link. They are open as a stacked chain
+   of PRs, each based on its predecessor so a reviewer sees only that branch's
+   own commits; they must merge bottom-up, and each merge retargets the next
+   onto `main` automatically. `feat/14` alone would carry the lot in one merge,
+   at the cost of any reviewability.
+
+   **This entry used to say "Nothing is on `main`", and that was false from
+   2026-08-02 onward.** PR #1 merged `feat/spec-contracts` into `main` that
+   day; the stack had been cut from `80f4776`, the commit *before* it, and the
+   local `origin/main` ref was never refetched, so every subsequent check
+   agreed with a stale answer. It surfaced only when `chore/harden-ci` merged
+   on 2026-08-07, GitHub retargeted the next PR onto `main`, and a branch that
+   adds nothing reported a conflict in 12 files -- because `feat/01` and
+   `feat/02` were a rewritten twin of work `main` already had under different
+   SHAs. `git diff origin/main origin/feat/02-multi-language` was EMPTY, which
+   is what settled it. The two redundant PRs are closed and everything from
+   `feat/03` up was rebased onto `main`: 111 commits, no conflicts, every
+   branch tree-identical to its pre-rebase tip. The lesson is not about
+   rebasing. A claim about a remote was read from a cached local ref for five
+   days, and nothing in the project could tell the difference -- `git fetch`
+   before believing anything about `main`.
 6. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
