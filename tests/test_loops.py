@@ -7,40 +7,11 @@ needing llama-server running.
 
 import json
 
+from conftest import FakeModel
+
 from purecoder.execute import generate_validated_python
 from purecoder.scaffold import scaffold_project
 from purecoder.validate import generate_validated
-
-
-class FakeModel:
-    """Returns queued responses in order; records the prompts it was given."""
-
-    def __init__(self, code_outputs=None, completions=None):
-        self.code_outputs = list(code_outputs or [])
-        self.completions = list(completions or [])
-        self.prompts = []
-        self.code_kwargs = []            # what the loop asked the writer for
-
-    def _next(self, queue):
-        return queue.pop(0) if len(queue) > 1 else queue[0]
-
-    def complete(self, system, user, grammar=None, **kw):
-        self.prompts.append(user)
-        return {"text": self._next(self.completions), "truncated": False,
-                "tokens": 1, "raw": {}}
-
-    def code(self, description, language="python", **kw):
-        self.prompts.append(description)
-        self.code_kwargs.append({"language": language, **kw})
-        return {"text": self._next(self.code_outputs), "truncated": False,
-                "tokens": 1, "raw": {}}
-
-    def env_file(self, description, **kw):
-        return self.complete("", description)
-
-    def makefile(self, description, **kw):
-        return self.complete("", description)
-
 
 GOOD_TESTS = ("assert add(1, 2) == 3\n"
               "assert add(0, 0) == 0\n"
@@ -152,6 +123,40 @@ def test_execution_loop_gives_up_and_reports_the_error():
                                     max_retries=2, verbose=False)
     assert not res["ok"] and res["attempts"] == 2
     assert "AssertionError" in res["error"]
+
+
+def test_an_error_hint_reaches_the_retry_prompt():
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_hint=lambda err: "the documentation defines List.fold_left")
+    assert res["ok"]
+    assert "List.fold_left" in pc.prompts[1]
+
+
+def test_an_error_hint_cannot_change_a_verdict():
+    """It is consulted only after a run has already failed, and its text goes
+    to the prompt rather than to `error` -- so a hint can neither fail a
+    passing run nor pass a failing one."""
+    said = []
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_hint=lambda err: said.append(err) or "invented nonsense")
+    assert res["ok"] and said == [], "a passing run must not consult the docs"
+
+
+def test_a_hint_does_not_disturb_the_no_progress_signal():
+    """The stop-when-stuck check compares the toolchain's last line across
+    attempts. Enriching `error` would make an unchanging failure look like a
+    moving one, and the loop would keep burning calls."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=6, verbose=False,
+        error_hint=lambda err: f"hint about attempt {len(pc.prompts)}")
+    assert not res["ok"]
+    assert "identical failures" in res["error"]
+    assert "hint about" not in res["error"]
 
 
 def test_execution_loop_designs_tests_when_none_are_given():
@@ -389,6 +394,33 @@ def test_the_stdlib_constraint_survives_a_later_unrelated_failure():
         "the constraint was dropped by a later rebuild"
 
 
+def test_a_duplicate_entry_point_is_explained_not_just_reported():
+    """The other half of the writer demand. A linker saying "multiple
+    definition of `main'" is about the assembled file, and the writer only ever
+    sees its own output -- so the retry prompt names what the harness already
+    provides rather than leaving the model to infer it."""
+    import pytest
+
+    from purecoder.languages import get
+
+    spec = get("c++")
+    ok, why = spec.available()
+    if not ok:
+        pytest.skip(why)
+
+    tests = ("int add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); }")
+    with_main = ("int add(int a,int b){return a+b;}\n"
+                 "int main() { return 0; }\n")
+    clean = "int add(int a,int b){return a+b;}\n"
+    pc = FakeModel(code_outputs=[with_main, clean], completions=[tests])
+    res = generate_validated_python(pc, "add two numbers", spec=spec,
+                                    tests=tests, max_retries=3, verbose=False,
+                                    timeout=60)
+    assert res["ok"], res["error"]
+    assert "main" in pc.prompts[-1]
+    assert "already provides" in pc.prompts[-1]
+
+
 def test_the_loop_stops_when_the_same_failure_repeats():
     """Observed live: 5x "API endpoint is unreachable", 4x an identical
     AttributeError, 3x an identical KeyError -- twelve model calls spent after
@@ -411,3 +443,245 @@ def test_a_loop_that_makes_progress_is_not_cut_short():
                                     max_retries=5, verbose=False)
     assert res["ok"], res["error"]
     assert res["attempts"] == 3
+
+
+def test_a_failure_that_survives_new_code_is_blamed_on_the_tests():
+    """The tests do not change between attempts, so an identical failure across
+    DIFFERENT generated code is evidence the tests are at fault. Observed live
+    on OCaml: the tester emitted invalid source, the compiler said "Syntax
+    error", and that went to the writer three times while the writer's own
+    output was fine each time."""
+    broken_tests = "assert add(1, 2) == 3\nassert add(0 0) == 0\n"   # will not parse
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE, "def add(a, b):\n    return b + a\n"],
+        completions=[broken_tests, GOOD_TESTS],
+    )
+    res = generate_validated_python(pc, "add two numbers", verbose=False)
+    assert res["ok"], res["error"]
+    assert res["tests"] == GOOD_TESTS.strip(), "the tests were never redesigned"
+
+
+def test_the_tests_get_one_second_chance_not_a_loop():
+    """A redesign that does not help must not restart the cycle -- that would
+    turn a decided outcome into an unbounded spend."""
+    broken_tests = "assert add(1, 2 == 3\n"
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[broken_tests])
+    res = generate_validated_python(pc, "add two numbers", max_retries=6,
+                                    verbose=False)
+    assert not res["ok"]
+    # 6 attempts were allowed; the run stops well short of spending them.
+    assert res["attempts"] < 6
+
+
+def test_supplied_tests_that_fail_the_gate_are_reported_not_replaced():
+    """A caller who passed tests in owns them. The post-code gate used to
+    redesign them, discarding the one thing they asked the code to be checked
+    against and then reporting success against tests they never wrote."""
+    thin = "assert add(1, 2) == 3\n"          # one assertion; the floor is three
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=thin,
+                                    max_retries=4, verbose=False)
+    assert not res["ok"]
+    assert "tests you supplied" in res["error"]
+    assert res["tests"] == thin, "the caller's tests were swapped out"
+
+
+def test_supplied_tests_that_pass_the_gate_are_used_as_given():
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["tests"] == GOOD_TESTS
+
+
+# ---- declared packages ---------------------------------------------------
+
+def test_a_package_the_sandbox_lacks_is_refused_before_any_model_call():
+    """Three attempts of correct code against a package that is not installed
+    is the most expensive route to "cannot validate". The refusal names the
+    package and the command that would fix it."""
+    pc = FakeModel()          # an empty queue: any model call would raise
+    res = generate_validated_python(pc, "read a CSV", verbose=False,
+                                    packages=("definitely_not_a_real_pkg",))
+    assert not res["ok"]
+    assert "definitely_not_a_real_pkg" in res["error"]
+    assert "pip install" in res["error"]
+    assert pc.prompts == [], "the model was asked before the sandbox was checked"
+
+
+def test_a_declared_package_reaches_the_writer_and_the_tester():
+    """A writer allowed numpy and a tester that is not produces assertions
+    that cannot run. Both prompts carry the same permission or neither does."""
+    code = "import numpy\n\ndef mean(xs):\n    return float(numpy.mean(xs))\n"
+    tests = ("assert mean([1, 2, 3]) == 2.0\n"
+             "assert mean([0, 4]) == 2.0\n"
+             "assert mean([5]) == 5.0\n")
+    pc = FakeModel(code_outputs=[code], completions=[tests])
+    res = generate_validated_python(pc, "the mean of a list", verbose=False,
+                                    packages=("numpy",))
+    assert res["ok"], res["error"]
+    designer_prompt, writer_prompt = pc.prompts[0], pc.prompts[1]
+    assert "numpy" in designer_prompt
+    assert "numpy" in writer_prompt
+
+
+def test_the_stdlib_nudge_keeps_the_declared_packages():
+    """Observed shape: a numpy run that hits a DIFFERENT missing import used to
+    be told to use only the standard library, dropping the package the caller
+    explicitly allowed."""
+    importer = ("import numpy, definitely_not_a_real_pkg\n\n"
+                "def mean(xs):\n    return 1.0\n")
+    fixed = "import numpy\n\ndef mean(xs):\n    return float(numpy.mean(xs))\n"
+    tests = ("assert mean([1, 2, 3]) == 2.0\n"
+             "assert mean([0, 4]) == 2.0\n"
+             "assert mean([5]) == 5.0\n")
+    pc = FakeModel(code_outputs=[importer, fixed], completions=[tests])
+    res = generate_validated_python(pc, "the mean of a list", max_retries=3,
+                                    verbose=False, packages=("numpy",))
+    assert res["ok"], res["error"]
+    nudge = next(p for p in pc.prompts if "HARD CONSTRAINT" in p)
+    assert "numpy" in nudge, "the nudge dropped the package the caller allowed"
+
+
+def test_declaring_a_package_for_a_language_that_has_no_such_notion_is_refused():
+    """`--with numpy` for C++ is a request the pipeline cannot honour. Silently
+    ignoring it would generate code under a permission that was never real."""
+    from purecoder.languages import get
+
+    res = generate_validated_python(FakeModel(), "add two numbers",
+                                    verbose=False, spec=get("c++"),
+                                    packages=("numpy",))
+    assert not res["ok"]
+    assert "c++" in res["error"]
+
+
+def test_the_retry_shows_the_writer_what_it_wrote_last_time():
+    """A fix loop that cannot see what it is fixing is a regeneration loop.
+    Observed live on an OCaml bubble sort: four attempts, each starting from
+    the spec alone, repeating variants of the same bug -- the failing check
+    named the case (`single_element`) but nothing showed the code that failed
+    it."""
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert BAD_CODE.strip() in pc.prompts[1], "the previous attempt was not shown"
+    assert "your previous implementation" in pc.prompts[1].lower()
+
+
+def test_a_previous_attempt_too_large_to_show_is_left_out():
+    """Context is the scarce resource on this card, and the project's own
+    finding is that feeding full code forward triggers degeneration. A huge
+    implementation is summarised by its error alone rather than pasted."""
+    huge = "def add(a, b):\n" + "    x = 1\n" * 800 + "    return a - b\n"
+    pc = FakeModel(code_outputs=[huge, GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert "x = 1\n    x = 1" not in pc.prompts[1]
+
+
+def test_documentation_reaches_the_writer_and_not_the_test_designer():
+    """The two were one string, docs first. Live, asked for `rev_string` with
+    OCaml documentation in front of the request, four consecutive designs never
+    mentioned rev_string at all -- they tested a StringSet module the docs
+    happened to describe, and the run ended having judged no implementation.
+
+    Tests come from the SPEC. Documentation is how the writer learns an
+    unfamiliar idiom; it is not part of what was asked for."""
+    docs = "Relevant documentation:\nStringSet.of_list builds a set."
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", context=docs,
+                                    verbose=False)
+    assert res["ok"], res["error"]
+
+    designer, writer = pc.prompts[0], pc.prompts[1]
+    assert "StringSet" not in designer, "the designer was handed the docs"
+    assert "add two numbers" in designer
+    assert "StringSet" in writer, "the writer lost its grounding"
+
+
+# ---- TDD mode -------------------------------------------------------------
+
+# Every line calls `add` and asserts something true of any return value at
+# all, so a stub returning None satisfies the suite entire. It has to CALL the
+# target: the static gate now requires that, and a suite failing to would be
+# rejected before the red step ever ran -- proving the wrong thing here.
+TAUTOLOGY = ("assert add(1, 2) == add(1, 2)\n"
+             "assert add(0, 0) == add(0, 0)\n"
+             "assert add(2, 3) is add(2, 3)\n")
+
+
+def test_tdd_rejects_a_suite_a_do_nothing_implementation_satisfies():
+    """The static gate cannot see this: it parses, is not degenerate, and
+    calls the target three times. Only running it against a stub does."""
+    contract = {"name": "add", "summary": "adds two numbers",
+                "params": [{"name": "a", "type": "int"},
+                           {"name": "b", "type": "int"}],
+                "returns": "int", "raises": [],
+                "examples": [{"in": "1, 2", "out": "3"}]}
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(contract), TAUTOLOGY, GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=True, tdd=True)
+    assert res["ok"], res["error"]
+    assert res["tests"].strip() == GOOD_TESTS.strip(), "the tautology was used"
+    assert any("does nothing" in p for p in pc.prompts), \
+        "the designer was never told why its suite was rejected"
+
+
+def test_tdd_needs_a_contract_to_know_what_to_stub():
+    """The stub is `def <name>(*a, **kw)`, and the name comes from the
+    contract. Without one there is nothing to stub, and TDD mode says so
+    instead of quietly generating the ordinary way."""
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=False, tdd=True)
+    assert not res["ok"]
+    assert "contract" in res["error"]
+
+
+def test_tdd_refuses_a_language_it_cannot_stub():
+    from purecoder.languages import get
+
+    res = generate_validated_python(FakeModel(), "add two numbers",
+                                    verbose=False, spec=get("c++"), tdd=True)
+    assert not res["ok"]
+    assert "stub" in res["error"]
+
+
+def test_the_red_evidence_reaches_the_caller_for_confirmation():
+    """"Based on the user's need" means the user sees the tests, and sees them
+    failing, before any implementation exists. The loop hands both to a
+    callback; the CLI decides how to ask."""
+    contract = {"name": "add", "summary": "adds", "params": [],
+                "returns": "int", "raises": [],
+                "examples": [{"in": "", "out": "3"}]}
+    seen = {}
+
+    def confirm(tests, evidence):
+        seen["tests"], seen["evidence"] = tests, evidence
+        return True
+
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(contract), GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=True, tdd=True,
+                                    confirm_tests=confirm)
+    assert res["ok"], res["error"]
+    assert "assert add(1, 2) == 3" in seen["tests"]
+    assert "AssertionError" in seen["evidence"], seen["evidence"]
+
+
+def test_declining_the_tests_stops_before_any_code_is_written():
+    contract = {"name": "add", "summary": "adds", "params": [],
+                "returns": "int", "raises": [],
+                "examples": [{"in": "", "out": "3"}]}
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(contract), GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=True, tdd=True,
+                                    confirm_tests=lambda t, e: False)
+    assert not res["ok"]
+    assert "declined" in res["error"]
+    assert pc.code_kwargs == [], "code was written after the tests were declined"

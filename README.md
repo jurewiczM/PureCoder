@@ -111,9 +111,48 @@ git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j
 
 ./build/bin/llama-server \
-  -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M \
-  -ngl 99 -c 4096 -fa on --port 8080
+  -hf unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_M \
+  -ngl 99 --cpu-moe -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080
 ```
+
+A 30B on a 6 GB card is not a typo. It is a mixture of experts: `--cpu-moe`
+keeps the expert tensors in system RAM and only ~3B parameters activate per
+token, so the card holds attention and the KV cache alone.
+
+Measured on that card, same five OCaml tasks, same index:
+
+| weights | offload | VRAM | speed | tasks passed | attempts |
+|---|---|---|---|---|---|
+| **30B-A3B Q3_K_M** | **`--cpu-moe`** | **1.9 GB** | **33 tok/s** | **5 / 5** | **5** |
+| 30B-A3B Q3_K_M | `-ncmoe 36` | 5.1 GB | 41 tok/s | — | — |
+| 7B Q5_K_M | 24/29 | 4.7 GB | 23 tok/s | 5 / 5 | 10 |
+| 7B Q4_K_M | 29/29 | 4.9 GB | 40 tok/s | 3 / 5 | — |
+
+Three results decided these flags. **The 7B at Q5 also passes everything** —
+the model was never this pipeline's bottleneck, and eight harness defects were
+([2026-08-07](docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md)).
+The 30B earns the default on half the attempts, 40% of the VRAM and 1.4× the
+speed, not on the score. **Full offload is the fastest and the wrong choice**
+in either architecture: the embedder needs ~275 MB on the same card, so a
+configuration that leaves it nothing kills every doc-grounded run. And **the
+smaller quantisation is still worse**: Q4_K_M passes three of five where the
+other two pass all of them — it was two of five before the harness was fixed,
+with a retry budget raised from four to seven recovering none of them.
+Throughput does not buy capability back.
+
+To run the 7B instead — 5 GB of weights rather than 15, and no MoE support
+needed in your llama.cpp build:
+
+```bash
+./build/bin/llama-server \
+  -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q5_K_M \
+  -ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080
+```
+
+Four times the context costs about 500 MB, which is the trade this pipeline
+wants: the pressure is on the prompt (retrieved docs, the contract, the previous
+attempt, the source quoted around a diagnostic), not on the 512-token output
+budget, which measurement shows is not binding.
 
 ## Quickstart
 
@@ -134,8 +173,76 @@ purecoder ingest ./some_library/docs --store lib
 purecoder ask "write code using <that library> to do X" --store lib
 ```
 
+`ingest` shows you what it is about to index and waits — every file with its
+chunk count, plus what it pruned, skipped as binary, or dropped as a duplicate.
+`[e]` drops paths or globs and re-plans; nothing is embedded until you accept,
+because chunking is free and embedding is not. It prints the `--exclude` flags
+matching your choices so the same index can be rebuilt in one command. `-y`
+skips the review, as does a non-interactive stdin.
+
 Embedding is the slow part, so the index persists to `<store>.npy` / `.json` —
 ingest once, reuse across runs.
+
+Ranking uses two signals: embedding similarity for *what this is about*, and an
+exact-name score for *what you literally typed*. Embeddings are worst at API
+symbols, which is most of what gets asked here — `Printf.eprintf` retrieves the
+page defining it even when a page merely about output formatting embeds closer.
+
+`ingest` also collects every qualified name the docs use. It cannot tell you a
+name is wrong — prose documentation never enumerates a module, and assuming
+otherwise flagged 45 pieces of correct code in the measurement that settled it
+— but once the compiler has rejected a name, it answers *did you mean* from the
+real API instead of leaving the fix loop guessing.
+
+## Teaching it a language it has never run
+
+Seven languages exist because someone wrote seven registry entries — the
+seventh, OCaml, after six live attempts to *draft* one never registered. `learn`
+points the pipeline at a language's own documentation and has it draft the
+eighth:
+
+```bash
+purecoder learn zig ./zig-docs --ext .zig
+purecoder --lang zig code "a function add(a, b) returning their sum"
+```
+
+What the model drafts from those docs: the check helper, the harness tail that
+fails a run where no check executed, and the build/run commands (shown to you as
+argv, confirmed before anything is executed). What it does **not** draft is the
+tester's own instructions — those are templated, because a model writing its own
+instructions is the technique that measured worst. The writer's extra demand is
+templated too, but from the drafted harness rather than from prose: it is told
+that the file already defines the check helper, and either supplies the entry
+point or runs statements at top level, so it should write neither and wrap
+nothing. Without it a writer that emits its own `main` produces a link error
+about a file it never saw; with it, and when it happens anyway, the retry names
+what collided.
+
+Then the gate. Five mechanical probes must pass before anything is registered:
+correct code passes, **wrong code fails**, an empty suite fails, a suite that
+never runs a check fails. A harness that cannot fail wrong code is a rubber
+stamp, not a language entry, and is refused with the compiler's own message.
+Plus one live round — a real generate-and-validate cycle — unless you pass
+`--no-live`.
+
+`learn` also drafts a **project layout** — entry filename, make targets, and an
+entry point for languages that need one to link — and probes that separately:
+a project of correct code must build and run, and one of code that cannot parse
+must fail. If it does not hold the language is still registered without a
+layout, so `project` refuses it and `code` is unaffected. `make install` is
+shown to you but never run: it installs software, and a drafted command is not
+reason enough. `--no-project` skips the whole thing.
+
+A learned language **keeps the index of its documentation**, so the second
+command above is doc-grounded automatically: no second `ingest`, no `--store` to
+remember, and once the toolchain rejects a name, the docs answer *did you mean*.
+`--no-docs` opts out. A registered language is two things on disk under
+`$PURECODER_HOME` (or XDG) — `languages/<name>.json` and its index at
+`docs/<name>.npy` / `.json` — so removing one by hand means removing both:
+
+```bash
+rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
+```
 
 ## Commands
 
@@ -145,9 +252,40 @@ ingest once, reuse across runs.
 | `env "<spec>"`     | grammar-valid `.env` |
 | `make "<spec>"`    | validated Makefile |
 | `project <name> "<spec>" [dir]` | scaffold a whole project (code + Makefile + .env + README) |
-| `ingest <dir>`     | build a RAG index over docs/code |
+| `ingest <dir>`     | build a RAG index over docs/code, after showing you what it will index |
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
+| `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
+| `measure`          | run the contract measurement: five ambiguous specs, both arms |
+
+```bash
+purecoder code --tdd "a function parse_ports that ..."   # test-first
+```
+
+`--tdd` turns the request into a contract, the contract into tests, and then
+**proves those tests fail** against an implementation that does nothing --
+before writing any. A suite a do-nothing stub satisfies has demonstrated
+nothing, and no amount of parsing can tell you that. The tests and their
+failure are shown for confirmation, which is the one moment to catch a contract
+that misread you; `-y` skips the question. Python only: a stub needs a real
+signature in a compiled language, and there an empty implementation is a
+compile error rather than evidence.
+
+`code --with numpy` declares a third-party package the generated code may use.
+It is probed in the sandbox interpreter *before* anything is generated, so a
+package that is not installed is refused with the `pip install` line rather than
+discovered three attempts later; the permission reaches the test designer too,
+and the stdlib-only retry no longer withdraws it. Python only — every other
+language refuses the flag instead of ignoring it.
 | `status`           | live system status |
+
+Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
+(otherwise a learned language uses its own); `--no-docs` ignores it; `-y` skips
+the ingest review; `--exclude GLOB` leaves paths out of an index.
+
+`code`, `ask` and `project` all ground themselves the same way — one resolver,
+so they cannot drift apart. In a scaffold the documentation reaches the
+execution-validated module only; the Makefile, `.env` and README are generated
+without it on purpose.
 
 `project` derives a spec contract by default; `code` does not. Add
 `--contract` to opt in, `--no-contract` to opt out, or set
@@ -163,12 +301,16 @@ purecoder/
   validate.py    config validators + write→validate→fix loop
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
-  rag.py         code/doc-aware chunking + retrieval
+  rag.py         code/doc-aware chunking (AST + tree-sitter) + retrieval
+  symbols.py     the names the docs use, and what they can honestly decide
   status.py      live system probe
+  bootstrap.py   draft a language entry from its docs, then probe it
+  langstore.py   where a learned language and its docs live between runs
+  bench.py       ambiguous specs + hidden oracles: does grounding help?
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           225 tests (no GPU, no server; toolchain ones self-skip)
+tests/           559 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -199,6 +341,8 @@ flowchart LR
     REG --> JS["<b>javascript</b><br/>node file.js"]
     REG --> RS["<b>rust</b><br/>rustc → ./bin"]
     REG --> CS["<b>c#</b><br/>dotnet run"]
+    REG --> SQL["<b>sql</b><br/>sqlite3 driver"]
+    REG --> ML["<b>ocaml</b><br/>ocamlc → ./bin"]
     REG --> GO["<b>go, java, swift</b><br/><i>awaiting toolchain</i>"]
     REG --> PQ["<b>power query</b><br/><i>no local runner</i>"]
 
@@ -207,6 +351,8 @@ flowchart LR
     JS --> RUN
     RS --> RUN
     CS --> RUN
+    SQL --> RUN
+    ML --> RUN
     GO --> NO[refuse<br/><i>naming what to install</i>]
     PQ --> NO
 
@@ -216,10 +362,51 @@ flowchart LR
     style NO fill:#fce8e6,stroke:#ea4335,color:#111
 ```
 
+SQL is the odd one, and worth a sentence. It has no assertion and no way to end
+a script non-zero — SQLite's `RAISE` takes a literal, so a failing check cannot
+name itself, and `SELECT 1/0` returns NULL. So a check is a **row**: the harness
+creates `pc_checks(ok, label)`, the tests insert booleans into it, and the
+stdlib `sqlite3` driver reads the verdict back — no rows means "no checks ran",
+and every failing row prints its own label. It has no project layout, so
+`project --lang sql` refuses and `code` is unaffected.
+
 ```bash
 purecoder --lang c++ code "a function add(int, int) returning their sum"
 purecoder --lang c++ project calc "a small calculator library" ./calc
+purecoder --lang sql code "a view over orders showing revenue per customer"
 ```
+
+### Teaching it a language
+
+```bash
+purecoder learn zig ./zig-docs --ext .zig
+```
+
+Points the pipeline at a language's documentation and has it draft its own
+registry entry: the check helper, the harness tail, the tester prompt, and the
+build/run commands. The drafting prompts carry the C++, JavaScript and Rust
+entries as *worked examples*, because
+[measured results](https://huggingface.co/papers/2501.19085) show translation
+examples help at every model size while prose translation rules score *below*
+baseline on a third of runs. For the same reason the tester prompt is templated
+rather than drafted — a model writing its own instructions is the technique
+that measured worst.
+
+Nothing is registered until it proves itself. Five probes run against a trivial
+`add(a, b)` on the real toolchain — a correct implementation passes, a wrong
+one fails, an empty suite fails, a broken one produces a diagnostic, a failing
+check fails the run — and then one live round on a bubble sort. A harness that
+merely compiles is not a harness that can fail wrong code, and only the second
+kind is worth having.
+
+The drafted build/run commands are shown and need explicit confirmation before
+they first execute: every other entry's commands were written by hand, and
+these are the one place a local model's output becomes a process. They are argv,
+never a shell string, and shell syntax is refused outright.
+
+A learned language is stored as JSON under `$PURECODER_HOME` (or XDG), marked
+with where it came from, and can never shadow a built-in entry. Delete it with
+`rm`.
 
 The governing rule: **if it cannot be executed, it is not emitted.** A missing
 toolchain is refused with the binary named. Power Query M runs only inside
@@ -241,7 +428,9 @@ verdict.
 ## Requirements
 
 - A GPU with ~6 GB VRAM (built and tested on an RTX 4050 Laptop)
-- llama.cpp built with CUDA, serving Qwen2.5-Coder at Q4_K_M
+- llama.cpp built with CUDA, serving Qwen3-Coder-30B-A3B at Q3_K_M with
+  `--cpu-moe`, or Qwen2.5-Coder-7B at Q5_K_M (Q4_K_M is smaller and faster and
+  measurably worse — see the table above)
 - Python 3.10+, `requests`, `numpy`; `sentence-transformers` for RAG
 
 ## Status

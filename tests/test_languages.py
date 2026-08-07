@@ -46,7 +46,10 @@ def test_names_lists_every_entry_available_or_not():
 
 # ---- every entry is coherent ---------------------------------------------
 
-@pytest.mark.parametrize("name", L.names())
+# Iterates the built-ins, not L.names(): once a learned entry can take a
+# placeholder's name, names() depends on what happens to be in the developer's
+# store, and the suite would collect a different set on every machine.
+@pytest.mark.parametrize("name", sorted(L.BUILTIN_NAMES))
 def test_every_spec_is_internally_consistent(name):
     spec = L.get(name)
     assert spec.name == name
@@ -62,13 +65,20 @@ def test_every_spec_is_internally_consistent(name):
         assert spec.check_call, f"{name} must name its check helper"
         # check_call is the INVOCATION form, which is what the gate counts.
         # Rust's is `pc_check!`, while the definition reads `macro_rules!
-        # pc_check {` -- so compare on the bare name.
-        assert spec.check_call.rstrip("!") in spec.preamble, \
+        # pc_check {`; SQL's is `INSERT INTO pc_checks`, and what the preamble
+        # defines is the table at the end of it -- so compare on the last bare
+        # name either way.
+        helper = spec.check_call.rstrip("!").split()[-1]
+        assert helper in spec.preamble, \
             f"{name} names a check helper its preamble never defines"
-        assert spec.epilogue, f"{name} cannot prove a check ran"
+        # The proof that a check ran must be in the SPEC. For four languages
+        # that is the tail; for SQL the tail cannot express it and the runner
+        # does, which is legitimate because that runner is ours.
+        assert "no checks ran" in spec.epilogue + " ".join(spec.run), \
+            f"{name} cannot prove a check ran"
 
 
-@pytest.mark.parametrize("name", ["c++", "javascript", "rust", "c#"])
+@pytest.mark.parametrize("name", ["c++", "javascript", "rust", "c#", "ocaml"])
 def test_a_wired_language_fails_the_run_when_no_check_executes(name):
     """Every non-Python harness must carry the 'no checks ran' tail. That is
     the guarantee that stops exit code 0 being mistaken for evidence."""
@@ -94,17 +104,68 @@ def test_a_language_needing_nothing_extra_says_nothing_extra():
             f"{name} restates what the writer prompt already says"
 
 
+def test_sql_proves_a_check_ran_from_its_runner_not_its_tail():
+    """The one wired language whose proof is not in the epilogue. SQLite's
+    RAISE takes a literal, so a failing check cannot name itself from inside
+    SQL, and there is no statement that reliably ends a script non-zero. The
+    driver is ours -- unlike g++ or node -- so the verdict lives there, and the
+    invariant is that the SPEC proves it, not that the tail does."""
+    spec = L.get("sql")
+    assert "no checks ran" not in spec.epilogue
+    assert "no checks ran" in " ".join(spec.run)
+
+
+def test_a_failing_sql_check_says_which_one():
+    """A verdict with no label is a fix loop with nothing to act on -- the
+    reason the check table carries one."""
+    spec = _skip_unless("sql")
+    ok, err = run_candidate(
+        spec, "CREATE VIEW added AS SELECT 1 + 2 AS total;",
+        "INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 3, 'sum');\n"
+        "INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 9, 'wrong');",
+        timeout=30, require_checks=1)
+    assert not ok
+    assert "wrong" in err
+    assert "sum" not in err, "a passing check must not be reported as failing"
+
+
+def test_sql_can_be_generated_but_not_scaffolded():
+    """Two claims, and only the first holds. A one-file SQL "project" would
+    need a Makefile recipe that reproduces the driver, so `project` refuses
+    with a reason rather than writing a layout nothing proves."""
+    assert L.get("sql").project is None
+    assert L.get("sql").available()[0]
+
+
+def test_sql_tells_the_writer_whose_table_that_is():
+    """The harness creates `pc_checks` and the tests insert into it. An
+    implementation that creates or drops it breaks every check in the file."""
+    assert "pc_checks" in L.get("sql").writer_system
+
+
 def test_a_permanently_unvalidatable_language_refuses_with_a_reason():
     ok, why = L.get("powerquery").available()
     assert not ok
     assert "Excel" in why or "Power BI" in why
 
 
+def test_only_wired_and_refused_names_are_reserved():
+    """`learn` may not replace a wired entry or a standing refusal. It MAY take
+    a placeholder's name -- reserving those meant the feature refused the exact
+    four languages it exists to enable."""
+    assert {"python", "c++", "javascript", "rust", "c#"} <= L.RESERVED_NAMES
+    assert "powerquery" in L.RESERVED_NAMES, "a standing refusal must stay one"
+    # ocaml joined them: it is wired now, so `learn ocaml` is refused the way
+    # `learn python` always was.
+    assert "ocaml" in L.RESERVED_NAMES
+    assert not ({"go", "java", "swift"} & L.RESERVED_NAMES)
+
+
 def test_a_declared_but_unimplemented_language_refuses():
-    """`ocaml` is installed on some machines. Having the binary is not the
-    same as being wired, and reporting available would trade a clear refusal
-    for a confusing runtime failure."""
-    ok, why = L.get("ocaml").available()
+    """`go` is installed on some machines. Having the binary is not the same as
+    being wired, and reporting available would trade a clear refusal for a
+    confusing runtime failure. (This was OCaml's test until OCaml was wired.)"""
+    ok, why = L.get("go").available()
     assert not ok
     assert "not implemented" in why
 
@@ -126,6 +187,7 @@ def test_python_is_available_without_a_probe():
 
 @pytest.mark.parametrize("name,binary", [
     ("c++", "g++"), ("javascript", "node"), ("rust", "rustc"), ("c#", "dotnet"),
+    ("ocaml", "ocamlc"),
 ])
 def test_availability_matches_the_machine(name, binary):
     ok, _ = L.get(name).available()
@@ -170,6 +232,25 @@ CASES = {
         "fn add(a:i32,b:i32)->i32{a-b}",
         "fn pc_tests(){ pc_check!(add(1,2)==3); }",
         "fn pc_tests(){ }",
+    ),
+    # OCaml runs top-level statements in order, so a check is a statement and
+    # the tests need no wrapper function -- the shape JavaScript and C# use.
+    "ocaml": (
+        "let add a b = a + b",
+        "let add a b = a - b",
+        'let () = pc_check (add 1 2 = 3) "add"\n'
+        'let () = pc_check (add 0 0 = 0) "zero"\n'
+        'let () = pc_check (add (-1) 1 = 0) "negative"',
+        "",
+    ),
+    # SQL has no function to call, so the thing under test is a view. The
+    # checks are rows: a boolean and a label, inserted into a table the
+    # harness created.
+    "sql": (
+        "CREATE VIEW added AS SELECT 1 + 2 AS total;",
+        "CREATE VIEW added AS SELECT 1 - 2 AS total;",
+        "INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 3, 'add');",
+        "",
     ),
 }
 
@@ -301,3 +382,78 @@ def test_an_interpreted_language_needs_no_entry_stub():
     assert L.get("python").project.entry_stub == ""
     assert L.get("javascript").project.entry_stub == ""
     assert "main" in L.get("c++").project.entry_stub
+
+
+def test_sql_tells_the_writer_the_database_starts_empty():
+    """Live finding. Asked for "a view over a table orders", the writer emitted
+    a correct view and no table, the run died on `no such table: main.orders`
+    three attempts running, and the loop then blamed the tests. Every other
+    language hands the writer an environment that already exists; SQL hands it
+    an empty database, and nothing said so."""
+    demand = L.get("sql").writer_system
+    assert "empty" in demand.lower()
+    assert "CREATE TABLE" in demand
+
+
+def test_the_python_tester_is_told_not_to_wrap_its_asserts():
+    """Live finding, and an old one seen again: the designer wrapped every
+    assertion in `def test_mean_of():` that nothing calls, so the run exited 0
+    with no check executed. The runtime instrumentation caught it and refused
+    honestly -- three times, at full generation cost. The four non-Python
+    prompts all forbid a wrapper; Python's never did."""
+    text = L.PYTHON.test_system
+    assert "no test function" in text.lower() or "do not wrap" in text.lower()
+
+
+def test_the_ocaml_gate_rejects_a_misparenthesised_check():
+    """The dominant OCaml tester failure, live: `pc_check ((expr) "label")`
+    applies the label to a boolean and does not compile. A counter-example was
+    added to the tester prompt and held until documentation was also in the
+    context, at which point the model reverted to it -- a prompt asks, a gate
+    tells. Caught before the run, with the correction fed back."""
+    bad = ('let () = pc_check ((sum_list [] = 0) "empty")\n'
+           'let () = pc_check ((sum_list [1] = 1) "one")\n'
+           'let () = pc_check ((sum_list [1; 2] = 3) "two")\n')
+    ok, err = lint_tests(bad, spec=L.get("ocaml"))
+    assert not ok
+    assert "outside" in err.lower()
+
+
+def test_the_ocaml_gate_accepts_the_documented_idiom():
+    good = ('let () = pc_check (sum_list [] = 0) "empty"\n'
+            'let () = pc_check (sum_list [1] = 1) "one"\n'
+            'let () = pc_check (sum_list [1; 2] = 3) "two"\n')
+    ok, err = lint_tests(good, spec=L.get("ocaml"))
+    assert ok, err
+
+
+def test_another_language_is_not_held_to_ocamls_rule():
+    """C++ writes `PC_CHECK((a + b) == c, "label")` legitimately -- a rule about
+    OCaml's application syntax must not reach it."""
+    cpp = ('void pc_tests(){\n'
+           '  PC_CHECK((add(1, 2)) == 3);\n'
+           '  PC_CHECK((add(0, 0)) == 0);\n'
+           '  PC_CHECK((add(-1, 1)) == 0);\n}')
+    ok, err = lint_tests(cpp, spec=L.get("c++"))
+    assert ok, err
+
+
+def test_the_ocaml_tester_is_told_how_to_check_an_exception():
+    """Live: asked for a function that raises Failure on an empty list, the
+    tester wrote `pc_check (last_element [] = raise Failure) "empty"` --
+    comparing a value against a raise, which does not compile. Python's tester
+    prompt has carried the try/except idiom for months; OCaml's said nothing
+    about exceptions at all."""
+    text = L.get("ocaml").test_system
+    assert "try" in text and "with" in text
+
+
+def test_the_ocaml_gate_rejects_a_comparison_against_a_raise():
+    """The prompt half of this has been ignored often enough today to be worth
+    a mechanical catch. `= raise` in a check is never valid OCaml."""
+    bad = ('let () = pc_check (f [] = raise Failure) "a"\n'
+           'let () = pc_check (f [1] = 1) "b"\n'
+           'let () = pc_check (f [2] = 2) "c"\n')
+    ok, err = lint_tests(bad, spec=L.get("ocaml"))
+    assert not ok
+    assert "raise" in err

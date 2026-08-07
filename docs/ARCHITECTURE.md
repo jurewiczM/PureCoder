@@ -59,6 +59,19 @@ A contract does one thing about that, and it is enough: it makes the shared
 interpretation a single artifact the user can read in seconds, before any code
 exists, instead of an invisible agreement between two generated files.
 
+**Measured, or rather measurable** (`purecoder/bench.py`, `purecoder measure`).
+Every other layer here is validated by a tool that says yes or no. This one's
+claim — grounding reduces spec-divergence — is different in kind, so it needs an
+experiment: five deliberately ambiguous specs, each with a hand-written oracle
+the model never sees, run through both arms. Divergence is defined mechanically
+as *the loop reported success and the oracle disagreed*; code the oracle cannot
+call is a separate bucket, because a `NameError` is not a misreading, and so is
+a task the loop never finished, because a dead server must not read as a clean
+run. The instrument is calibrated in the test suite against a scripted model
+that misreads the spec unless shown a contract — if `measure` cannot see a
+difference that blatant, no live number it produces would mean anything. The
+numbers themselves need a server and have not been collected.
+
 **Boundary, stated plainly:** this does not make the contract correct. A
 confidently wrong contract grounds the writer and the tester in the same wrong
 idea. It makes the wrongness *visible*, which is a weaker and more honest
@@ -106,12 +119,64 @@ know nothing else about it. A compile failure is ordinary fix-loop feedback —
 it is exactly what the writer needs — so C++, Rust and C# get a check Python
 never had.
 
+**SQL is the entry that had to be designed rather than translated.** The four
+compiled/interpreted harnesses all say the same thing in their own syntax: `if
+(!cond) { print; exit 1; }`. SQL has no `if`, no `exit`, and no assertion —
+SQLite's `RAISE` lives only inside a trigger and takes a literal, so a failing
+check cannot name itself, and the `SELECT 1/0` trick returns NULL. So a check is
+a **row**: the preamble creates `pc_checks(ok, label)`, a check is an `INSERT`
+of a boolean and a label, and the stdlib `sqlite3` driver reads the table back
+afterwards — no rows is "no checks ran", any row with `ok <> 1` is a failure
+that prints its own label. The verdict therefore lives in `run` rather than in
+`epilogue`, which is a genuine asymmetry, allowed because that driver is ours
+and not a third-party interpreter. The invariant the registry enforces is
+stated in those terms: the *spec* must prove a check ran. One side effect is
+better than the others manage — every failing check is reported, where an
+`exit 1` helper stops at the first.
+
 Non-Python languages are not parsed. Each harness injects its own assertion
-helper (`PC_CHECK`, `pc_check!`) and the tester prompt names it, which buys the
-gate an assertion count without a parser per language, and buys the run a way
+helper (`PC_CHECK`, `pc_check!`, `INSERT INTO pc_checks`) and the tester prompt
+names it, which buys the gate an assertion count without a parser per language,
+and buys the run a way
 to **prove** a check executed instead of inferring it from exit code 0. That
 last guarantee took the Python path a session of false greens to earn; the
 newer languages have it from the first commit.
+
+**Declared packages** (`--with numpy`). The sandbox runs `sys.executable`, so
+it inherits whatever environment PureCoder runs in — which for a long time this
+project's own docs denied, claiming a stdlib-only sandbox. The fix is not a
+package manager but a declaration: the caller names what the code may import,
+the import is probed in the interpreter the executor will actually use before a
+single model call, and a missing one is refused with the `pip install` command
+rather than after three attempts of correct code. The permission lives in the
+shared task text so the test designer reads it too. A per-run venv that installs
+on demand is deliberately absent: it needs the network inside a run, CI cannot
+exercise it, and a half-installed environment is the "generated but unchecked"
+tier under another name.
+
+**Chunking is per grammar, not per paragraph.** Python is split by its own AST
+— stdlib, exact, no dependency. Everything else used to be chunked as prose,
+which is the wrong shape by construction: a paragraph break has nothing to do
+with where a function ends, and an 800-character window cut samples in half.
+tree-sitter now splits C++, Rust, OCaml, JavaScript, C#, Go, Java and SQL by
+definition, matching node types on a suffix (`_definition`, `_item`,
+`_binding`) rather than a per-language table — the same reason the registry
+keeps languages as data. It is an optional install: without it, code degrades
+to prose chunking rather than failing an ingest. And `ingest`'s file pattern is
+derived from the chunker's own extension table, because the previous hardcoded
+one skipped every file the chunker exists for.
+
+**Test-first, when asked for it** (`code --tdd`). The gate above is static: it
+reads the tests. The one question it cannot answer is whether they can fail at
+all, and that question is the whole of TDD. So `--tdd` runs the designed suite
+against a stub -- a function that exists and returns `None` -- and accepts it
+only if a check ran and failed. Three details decide whether that works: the
+stub must be a function rather than an empty file (a missing name fails the run
+without any assertion executing), red must mean an assertion failed rather than
+any non-zero exit, and the mode is Python-only because a stub elsewhere needs a
+signature the contract does not carry. The suite and its failure are then shown
+for confirmation, which is where a user can catch a contract that misread them
+before any code exists.
 
 **Design line:** if it cannot be executed, it is not emitted. A missing
 toolchain is refused with the binary named; Power Query M is refused
@@ -125,10 +190,187 @@ development traced to **spec ambiguity** or **test quality**, never the writer.
 The gate catches *structural* bad tests; it cannot catch a plausible-but-wrong
 expected value — that's spec clarity's job, and the code says so honestly.
 
+### 3.5 Learning a language (`purecoder/bootstrap.py`, `purecoder/langstore.py`)
+Seven languages exist because a human wrote seven entries -- the last of them,
+OCaml, only after six live attempts to draft one had failed, which is a result
+about this layer worth keeping. `purecoder learn`
+points the pipeline at a language's own documentation and has it draft the
+sixth: check helper, harness tail, tester prompt, build and run commands.
+
+```
+docs dir ──ingest──▶ index ──retrieve──▶ draft harness + commands
+                       │                          │
+                       │                     confirm argv
+                       │                          ▼
+                       │                   5 probes + 1 live round
+                       │                          │  (nothing registers until they pass)
+                       └──────── kept ────────────┴──▶ LanguageSpec + its index
+                                                              │
+                        purecoder --lang X code "..." ────────┘
+                          docs retrieved, harness assembled,
+                          tests designed fresh per request
+```
+
+Worth being precise about what is stored and what is not. The **harness** and
+the **tester's instructions** live on the spec, so they are written once. The
+**tests for your feature** are not: they are designed per request, code-blind
+from the spec or contract, and never cached — a stored test suite would be a
+test that stopped tracking what it was asked to check.
+
+**What is drafted and what is not, and why.** The drafting prompts carry the
+existing C++, JavaScript and Rust entries as *worked examples* rather than a
+prose description of what a harness should look like. That is measured, not
+stylistic: across six models, explicit translation rules scored **below
+baseline** on a third of runs while translation examples improved every model
+above 1B ([arXiv:2501.19085](https://arxiv.org/abs/2501.19085)). The tester
+prompt is templated for the same reason — a model writing its own instructions
+is precisely the technique that measured worst — and the file extension is
+asked for on the command line rather than inferred.
+
+**The writer gets a demand too, and it is derived rather than drafted.** A
+learned language used to leave `writer_system` empty, so a harness that needs a
+*shape* had no way to say so: the writer emitted a wrapper or its own entry
+point, the assembled file did not build, and the fix loop was handed a linker
+error about `main` for logic that was correct. The demand is now filled in from
+two things the probes already established — the helper's name, which
+`draft_check_call` matched against the preamble, and whether the drafted tail is
+the thing that runs the tests (a tail that calls a name the test snippets define
+is an entry point; one that calls nothing of theirs is reached *after* the tests
+have run). Nothing is asked of the model, and the claim it makes is about
+`assemble()`, not about the language: four pieces really are pasted into one
+file in that order.
+
+The asymmetry with the hand-written entries is deliberate. A built-in leaves
+this field empty when a person read the harness and judged nothing extra was
+needed; C# is the one that needed it. A drafted entry has had nobody read
+anything.
+
+It is narrower than C#'s hand-written demand, which also forbids `using`
+directives — that is a fact about C#, not about `assemble()`, and banning
+imports outright would break a language whose implementation needs one. It also
+applies only to languages learned from here on: an entry already on disk keeps
+the field empty, because filling it needs the drafted fixture, which is not
+stored.
+
+**And when the demand is ignored anyway, the retry says what collided.**
+`harness_collision` compares block definitions in the implementation against
+those in the rest of the assembled file — preamble, tail *and* the tests, which
+is where the likeliest collision lives, since a C++ tail calls `pc_tests()`
+without defining it — and names the overlap, plus the check helper if the
+implementation touches it at all. It is a hint on an already-failed attempt --
+the same slot and the same discipline as the documentation hint -- never a gate,
+because it is textual across languages this project does not parse.
+
+**The gate is the point.** A drafted spec is a claim; six probes turn it into a
+fact. Five are mechanical, run against a trivial `add(a, b)`: a correct
+implementation passes, a wrong one fails, an empty suite reports "no checks
+ran", a broken one produces a diagnostic the fix loop can use, and a
+deliberately failing check fails the run. Then one live round on a bubble sort,
+which is a different claim — the probes prove the harness *can* fail wrong
+code, the live round proves the writer and tester can work *inside* it.
+
+The two negative probes carry the weight. A check helper that prints on failure
+but exits 0 compiles clean, runs clean, and reports success on wrong code; an
+epilogue with no "no checks ran" tail does the same for an empty suite. Both
+are the false-green class this project keeps rediscovering, and both are now
+caught mechanically rather than by someone reading generated code.
+
+**Trust boundary.** Build and run commands are the one place a local model's
+output becomes a process. They are argv rather than a shell string, shell
+syntax is refused on the raw line before `shlex` sees it, the command must name
+`{src}` or `{bin}` or it is not running the candidate at all, and the user
+confirms explicitly before the first execution. Silence is a no.
+
+**Storage.** One JSON file per learned language under `$PURECODER_HOME` or XDG,
+registered at import, recording where it was drafted from. It can never shadow
+a built-in entry — that guard holds at save time *and* at load time, since the
+file is editable by hand.
+
+**The docs are kept, not consumed.** The index built to draft the harness used
+to be discarded, so getting that documentation back at generation time meant
+`ingest`ing the same directory again into a store nothing connected to the
+language. It is now written beside the saved language and named on the spec, so
+the whole flow is one command then the next:
+
+```
+purecoder learn zig ./zig-docs --ext .zig   # index -> draft -> probe -> keep both
+purecoder --lang zig code "..."             # reads those docs, no --store
+```
+
+The spec stores a *stem*, never a path — the location follows
+`PURECODER_HOME`, and an absolute path baked into a saved language breaks the
+moment that moves. The index is written only after the probes pass: a failed
+run must not leave files belonging to a language that was never registered.
+`ask` uses the same index when no `--store` is given; an explicit `--store`
+still wins, which is why that flag defaults to `None` rather than a string.
+
+Every way this can fail is ordinary, and none of them stop a generation.
+Retrieval is an optional install, and an index can be absent, unreadable, or
+built by a different embedding model. For `code` each prints a line and
+continues ungrounded — **the harness is what proves a learned language's
+output, and it needs neither an index nor `sentence-transformers`.** For `ask`,
+whose whole purpose is the documentation, a missing index is still an error.
+`--no-docs` opts out; a hand-written language has no `docs_store` and is
+untouched.
+
+**A project layout, drafted and proven separately.** A language that runs is
+not a language whose projects are laid out — those are two claims, so they get
+two gates. `learn` also drafts a `ProjectSpec` (entry filename, the four make
+targets, and an entry stub for languages that need one to link) and probes it
+two-sided against a real `make`: a project of correct code must build and run,
+and a project of code that cannot parse must fail. The second is the one that
+matters — a `test` recipe that never touches the source passes the first and
+proves nothing.
+
+**A make recipe is a shell line, and that is a wider door than the build and
+run commands.** Those are argv, and `_parse_command` refuses shell syntax
+outright. A recipe cannot be: `g++ ... && ./main` needs `&&`. So this is the one
+place drafted output reaches a shell, and the shell's other powers are denied by
+name — pipes, redirection, `;`, command substitution, and a lone `&` that would
+let `make test` exit before the program ran. `run` and `test` must additionally
+name the entry file, since a recipe that never touches the project cannot be
+building it. The denylist is calibrated against the five hand-written
+`ProjectSpec`s, all of which pass it, and a test asserts they still do — a rule
+the built-in entries could not meet would be a rule about taste, not safety.
+
+`make install` is deliberately never run. It installs software, and a drafted
+command is not reason enough to do that on someone's machine, so it is shown at
+the confirmation and taken on trust. What the probe proves is narrower than it
+looks and worth stating: for a one-file project `make test` *builds and runs*
+that file. It does not run a test suite — neither does the hand-written C++ or
+JavaScript entry.
+
+A failed layout costs only itself. The language is still registered without a
+`ProjectSpec`, so `project` refuses it and `code` and `ask` do not notice.
+Losing an entry the harness probes already earned, because a Makefile recipe
+did not work, would be the wrong trade.
+
+**Boundary.** The probes check that the harness works. They cannot check
+*idiom*: a spec can pass every probe and still produce code no practitioner of
+that language would write. And a language with no local runner, or one whose
+tests need a framework or a project file, remains out of reach — the harness
+assembles exactly one file.
+
+**Compared against prior art.** [MultiPL-E](https://github.com/nuprl/MultiPL-E)
+solves the adjacent problem with one hand-written translator per language; its
+`LanguageTranslator` interface independently agrees on extension, preamble,
+epilogue and entry stub. It names two things PureCoder lacks — a per-language
+deep-equality primitive (hidden here in prose inside the JavaScript tester
+prompt) and per-language stop tokens. Its literal renderers are deliberately
+*not* adopted: that was the anchors layer.
+
 ### 4. Project scaffolding (`purecoder/scaffold.py`)
 Composes the per-artifact loops into a whole project, generated in dependency
 order (code first, then Makefile/.env see the code for coherence, README last).
 One focused low-token call per artifact — "one agent per task."
+
+**Retrieval reaches exactly one of the four.** `scaffold_project` takes `docs`
+separately from `description`, and that separation is the design rather than a
+signature detail: only the execution-validated module gets the documentation.
+The Makefile's targets come from `ProjectSpec`, the `.env` is derived from the
+code it is already shown, and the README is prose. Folding the context into the
+description instead — the obvious shape — sent it to the README prompt as well,
+which a test caught and review did not.
 
 **Lesson:** context is double-edged. Feeding full code into the Makefile prompt
 triggered degeneration on the tight card. Fix: give each artifact only the slice
@@ -137,10 +379,72 @@ per task*, not just low tokens.
 
 ### 5. Retrieval (`purecoder/rag.py`)
 Code-aware chunking (AST: functions/classes/methods as units) for `.py`,
-markdown chunking for docs. A small embedding model (bge-small → EmbeddingGemma)
-on GPU, brute-force cosine over a persisted index. A **retrieve-when-needed
-gate**: if nothing clears the similarity threshold, inject nothing — saving
-tokens and avoiding misleading context.
+markdown chunking for docs, tree-sitter for every other language a grammar
+exists for. A small embedding model (bge-small) on GPU — falling back to CPU
+when llama-server has taken the card — and brute-force cosine over a persisted
+index. A **retrieve-when-needed gate**: if nothing clears the similarity
+threshold, inject nothing.
+
+That gate spent a while unable to refuse anything, and the cause is worth
+keeping: the lexical score dropped query tokens the corpus had never seen from
+its denominator, so a chunk matching one incidental word scored as well as one
+matching every word — `cheapest flights to Lisbon in March` scored a perfect
+1.000 against OCaml documentation. Counting unseen tokens against the match
+separates relevant queries (1.10–1.34) from unrelated ones (0.50–0.70), which
+is what makes the 0.8 threshold meaningful rather than decorative. Measured
+live: seven of seven real questions retrieve, none of five unrelated ones do.
+The cost of the broken version was not theoretical — a doc-grounded `sum_list`
+failed four attempts where the ungrounded one passed first try.
+
+**Two ranking signals, not one.** Cosine answers *is this about the same
+thing*; an IDF-weighted lexical score answers *does this contain the exact name
+you typed*. Embeddings are weakest on precisely the query this tool gets most —
+an API symbol, spelled exactly — so the second signal is not a refinement, it
+decides those cases. It is bounded in `[0,1]` absolutely, never normalised per
+query, which is what lets it share the gate's threshold: a chunk containing
+every rare token of the query clears the gate on the lexical signal alone. A
+token appearing in *every* chunk weighs zero, so a query of stopwords matches
+nothing. `DocStore.explain(query)` shows the two separately.
+
+The lexical index is *inverted* — token → the chunks holding it — so a query
+touches only chunks that contain one of its tokens. A per-chunk token set gives
+identical scores and visits everything: measured over 7500 chunks, a rare
+symbol reached three of them and paid for the other 7497, at **400–500× the
+cost**. It is rebuilt from the chunks on load rather than persisted — a third
+file on disk is a third thing that can drift out of step, and drift is what
+`load` exists to refuse.
+
+**A symbol library, and the check it cannot support** (`purecoder/symbols.py`).
+Every qualified name the docs mention — `Printf.eprintf`, `os.path.join` — is
+extracted at ingest and shown in the review, because the modules listed there
+are the fastest way to tell a docs directory that covers the API from one that
+does not.
+
+The obvious use of that library does not work, and the measurement came before
+the belief. Flagging names whose module the docs describe but whose member they
+never mention was run against this project's own source with its own docs as
+the corpus: **45 findings, every one wrong.** `re.escape`, `ast.walk` and
+`json.dump` are all real; the docs simply had no reason to mention them. The
+rule assumes documentation *enumerates* a module, and prose never does — so the
+check cannot tell an invented name from an undocumented one.
+
+Inverting who decides makes it sound. The toolchain already knows a name is
+wrong ("Unbound value List.fold"); it just cannot say what to use instead,
+never having read the docs. So the compiler rules on wrongness and the library
+only answers *did you mean*, which needs no completeness assumption. It is
+reached solely from a failed run, its text goes to the retry prompt and never
+into `error` — so the no-progress signal keeps reading the toolchain's own
+message — and it stays silent unless a name in the error is a near miss for one
+the docs name. `ask` wires it; `code` does not, having no index to consult.
+
+**Indexing is reviewed before it is paid for.** `plan_ingest` walks and chunks;
+`ingest_plan` embeds. Only the second costs anything, so `purecoder ingest`
+shows the plan — every file, its chunk count, what was pruned, excluded,
+skipped as binary, or dropped as duplicate — and takes `[y] / [e] exclude /
+[n]`, re-planning for free after each exclusion. It prints the `--exclude`
+flags equivalent to the session so it can be replayed non-interactively. `-y`
+and a non-tty both skip the prompt; `learn` never prompts, since its index is
+thrown away and it already has a confirmation.
 
 **Boundary:** retrieval only visibly helps where the model is *ignorant* — new
 or obscure APIs, a project's own functions. It can't improve an answer the model
