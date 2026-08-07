@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-517 tests, all green, none of them needing a GPU or a running server
+559 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -27,6 +27,7 @@ _Snapshot of what's built, tested, and what's next._
 | 9 | tree-sitter chunking | ✅ tested | C++/Rust/OCaml chunked by definition; ingest now sees those files at all |
 | 10 | OCaml execution | ✅ tested | hand-written entry; passes the five bootstrap probes; 4 of 5 live tasks generate and validate |
 | 10 | the fix loop shows its own output | ✅ tested | quoted source around a diagnostic, plus the previous attempt, bounded |
+| 11 | test-first mode (`code --tdd`) | ✅ tested | the suite must fail against a stub before any code is written; confirmed on screen |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -88,6 +89,21 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Known boundaries (by design, documented)
 
+- **Test-first proves the tests can fail, not that they are right.** `--tdd`
+  runs the designed suite against a stub -- a function that exists and returns
+  None -- and refuses it unless a check ran AND failed. That kills the whole
+  class of suite no static gate can see (`assert True` parses, names the
+  target, is not degenerate). What it cannot do is judge the EXPECTATION: a
+  live run produced `assert word_count(' ') == 1` against a correct
+  implementation, and a red suite full of wrong expectations is red for the
+  wrong reason. The confirmation step exists for exactly that gap -- it is the
+  one moment a person can read what will judge the code, before the code
+  exists -- and `-y` skips it, which is a choice with a cost.
+- **Test-first is Python only.** A stub needs a real signature in C++, Rust or
+  OCaml, which the contract does not supply; there the empty-implementation run
+  is a compile error, which is not evidence about assertions. Refused with the
+  reason rather than approximated.
+
 - Test gate catches *structural* bad tests, not plausible-but-wrong values.
 - Assertion *reachability* is proven at runtime, not by the gate. The tests
   are instrumented to count checks that actually execute, so a suite whose
@@ -146,6 +162,11 @@ _Snapshot of what's built, tested, and what's next._
 - The first live run of the bootstrap layer and its five defects, all now
   fixed, are written up in
   [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
+- The test-first mode and the model comparison are written up in
+  [docs/live-runs/2026-08-06-tdd-and-the-model-question.md](live-runs/2026-08-06-tdd-and-the-model-question.md),
+  including the run where a contract's own example (`parse_ports('80,443') ->
+  [443, 80]`, unsorted, for a spec that says sorted) was caught on screen
+  before any implementation existed.
 - **A second live run, over everything built since, found three more** --
   [docs/live-runs/2026-08-04-five-steps.md](live-runs/2026-08-04-five-steps.md).
   SQL's writer was never told the database starts empty (and saying so in
@@ -155,8 +176,25 @@ _Snapshot of what's built, tested, and what's next._
   declaration in a real OCaml `.mli`, because `val` parses as
   `value_specification` and the suffix list said `_specifier`. All three were
   invisible to 450 passing tests and were found by pointing the pipeline at
-  real input. Note the run used Q5_K_M at 20/29 layers offloaded, not the
-  Q4_K_M every earlier finding here assumes.
+  real input. That run used Q5_K_M at 20/29 layers, where the older findings
+  above were made on Q4_K_M -- a mismatch at the time, and since resolved the
+  other way: Q5_K_M is now the documented model, because Q4 was measured and
+  rejected (finding 9).
+- **A third live run found eight, and they were failing correct code** --
+  [docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md](live-runs/2026-08-07-the-harness-was-the-bottleneck.md).
+  A capitalised `Let` at the head of a statement; a gate anchored so that
+  valid doubly-parenthesised OCaml was refused; a repair that mangled a check
+  written with no label; "these tests never call the target" unreachable
+  outside Python, so a suite testing `List.sort` instead of `insertion_sort`
+  was accepted; one target mention enough to pass that check; the writer
+  answering retrieved documentation instead of using it; the test designer
+  doing the same, which was the other half of it; and a `[docs]` hint that
+  printed its header and withheld the names. All nine were invisible to 536
+  passing tests, and every one was found by reading a failing run's transcript
+  rather than its verdict. The benchmark that found them is versioned now, at
+  [scripts/bench/](../scripts/bench/), transcripts and all -- an earlier
+  version discarded them and a batch of correct implementations was nearly
+  recorded as a capability result.
 - **The bootstrap's own prompts were three of its four failure modes.** Six
   `learn ocaml` runs against real stdlib `.mli` files produced: a model
   explanation compiled as source (`unfence` strips fences, not prose); a
@@ -352,10 +390,15 @@ _Snapshot of what's built, tested, and what's next._
   it cannot read; `search` refuses a query of the wrong dimension. What it
   cannot detect is an index that is merely *stale* — docs edited since the last
   `ingest` are still answered from the old text.
-- **The contract layer is now measurable, and still unmeasured.** `bench.py`
-  holds five deliberately ambiguous specs, each with a hidden hand-written
-  oracle encoding the intended reading, and runs every task through both arms
-  (`--contract` on and off). Spec-divergence is defined mechanically as *the
+- **The contract layer has been measured, and the measurement could not see
+  what it exists to see.** `bench.py` holds five deliberately ambiguous specs,
+  each with a hidden hand-written oracle encoding the intended reading, and
+  runs every task through both arms (`--contract` on and off). Run twice
+  against a live server it returned ZERO divergence in both arms, because nine
+  of ten arms ended in the loop refusing -- spec-divergence can only occur
+  downstream of a passing run. The instrument is sound and the task set is
+  starved: that is a result about this model and these specs, not about
+  contracts, and the next step names the three ways out. Spec-divergence is defined mechanically as *the
   loop reported success and the oracle disagreed*, with a separate bucket for
   code the oracle cannot call at all (a `NameError` is not a misreading) and
   another for tasks the loop never finished (a dead server must not read as a
@@ -388,32 +431,73 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
-   runner is free, but SQL has no `assert`, and the check idiom every other
-   language gets from its harness needs real design rather than a `1/0` trick.
-2. **Run the contract measurement.** The instrument exists (`purecoder
-   measure`); the numbers do not. It needs a live llama-server, and one pass
-   over five tasks in two arms is ~10 model rounds. Until it is run, the
-   layer's central claim stays argued rather than measured.
-3. **A per-run venv, if the declaration ever needs to install anything.**
+1. **Make the contract measurement conclusive.** The instrument is built and
+   has been RUN -- twice -- and it could not see what it exists to see: zero
+   divergence in both arms, because nine of ten arms ended in the loop
+   refusing. Spec-divergence only exists downstream of a passing run, so a
+   model that fails closed on these specs starves the measurement. It needs a
+   larger or easier task set, more repeats, or a stronger model, and the
+   choice between those is a real decision rather than a chore.
+2. **The tester, which every measurement now points at.** Eight of ten
+   measured arms ended in "suspecting the tests". Two of today's three
+   mechanical wins were tester-shaped (`test_lint`, `test_fix`), and test-first
+   proves a suite CAN fail without judging whether its expectations are right.
+   This is where the next real gain is, and it is not a model problem: a
+   `--tdd` suite is confirmed by a human precisely because nothing mechanical
+   can check an expectation.
+
+   Six of the nine defects found on 2026-08-07 were in this same component,
+   and the largest was that the test designer had been handed the retrieved
+   documentation along with the request -- so it wrote tests about the docs.
+   The remaining known gap is narrower than it was: the gate can now tell that
+   a suite is aimed at the target, in any language, but still not that its
+   expectations are right.
+3. **HTML in `ingest`.** It matches prose and source extensions, and the web's
+   documentation is HTML -- skipped whole rather than stripped and indexed. The
+   ocaml.org tutorials only worked because they are markdown in their source
+   repository, which is not how most projects publish.
+4. **A per-run venv, if the declaration ever needs to install anything.**
    `--with` covers what the environment already has; anything else is still a
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-4. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
+5. **Merge the branch stack.** Twelve branches, `feat/03-audit-and-deslop`
+   through `feat/14-multilang-bench`, 111 commits, strictly linear -- each one
+   contains the last, verified link by link. They are open as a stacked chain
+   of PRs, each based on its predecessor so a reviewer sees only that branch's
+   own commits; they must merge bottom-up, and each merge retargets the next
+   onto `main` automatically. `feat/14` alone would carry the lot in one merge,
+   at the cost of any reviewability.
+
+   **This entry used to say "Nothing is on `main`", and that was false from
+   2026-08-02 onward.** PR #1 merged `feat/spec-contracts` into `main` that
+   day; the stack had been cut from `80f4776`, the commit *before* it, and the
+   local `origin/main` ref was never refetched, so every subsequent check
+   agreed with a stale answer. It surfaced only when `chore/harden-ci` merged
+   on 2026-08-07, GitHub retargeted the next PR onto `main`, and a branch that
+   adds nothing reported a conflict in 12 files -- because `feat/01` and
+   `feat/02` were a rewritten twin of work `main` already had under different
+   SHAs. `git diff origin/main origin/feat/02-multi-language` was EMPTY, which
+   is what settled it. The two redundant PRs are closed and everything from
+   `feat/03` up was rebased onto `main`: 111 commits, no conflicts, every
+   branch tree-identical to its pre-rebase tip. The lesson is not about
+   rebasing. A claim about a remote was read from a cached local ref for five
+   days, and nothing in the project could tell the difference -- `git fetch`
+   before believing anything about `main`.
+6. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
    [docs/superpowers/specs/2026-08-04-specialization-plan.md](superpowers/specs/2026-08-04-specialization-plan.md).
    It needs the fp16 checkpoint (~15 GB) and GPU hours this machine does not
-   have, and writing the pipeline without running it would ship exactly the
-   unexecuted artifact this project refuses everywhere else. What the plan does
-   fix in advance is the part that is easy to get wrong later: the go/no-go
-   bars, and the rule that specialization is evaluated with the instruments
-   this project already owns -- the 15-task baseline, `purecoder measure`, and
-   an OCaml bootstrap -- rather than a benchmark written to suit the result.
-   The bar that matters most is the test-gate rejection rate: a pruned model
-   that writes the same code and worse tests is a regression here, whatever a
-   code benchmark says.
+   have. Worth reading beside finding 9: a quantisation step down already cost
+   more capability than its speed bought back, which is the same trade pruning
+   proposes at a larger scale, and the plan's go/no-go bars exist for exactly
+   that reason.
+
+   The 30B result changes the case for it. The context room this track exists
+   to reclaim was reclaimed for free by a mixture-of-experts model -- 1.9 GB of
+   VRAM against the 7B's 4.7 -- so the scarcity that motivated pruning is no
+   longer the binding one. Worth revisiting before any GPU hours are spent.
 
 Done since the last snapshot: the reachability false green (runtime check
 instrumentation), the `.env` guard (grammar bound plus a looser validator),
@@ -433,3 +517,25 @@ what its harness already provides -- derived from the helper name and the shape
 of the drafted tail, never asked of the model -- and a failed attempt that
 collides with the harness anyway is told which name collided instead of being
 handed a linker error about a file it never saw.
+
+Done since, in one long live session: SQL wired (a check is a row, since SQL
+has no assertion); the contract measurement built and run; declared packages
+(`--with`) verified before any model call; tree-sitter chunking, and then the
+`ingest` pattern that had been skipping every file it exists for; OCaml wired
+BY HAND after six drafting attempts failed, and held to the same five probes a
+learned entry must pass; truncation detection repaired after llama.cpp renamed
+the field it read, which had made every truncation retry unreachable; the
+retrieval gate repaired -- it could not refuse because unknown query tokens
+were dropped from the lexical denominator, not because the threshold was wrong;
+the fix loop taught to show the writer its own previous output and the source a
+diagnostic points at; test-first mode; and the context window measured up from
+4k to 16k, with Q4_K_M weights tried and rejected on capability.
+
+Done in the session after that: nine harness defects that were failing correct
+code, and the model question settled. Qwen3-Coder-30B-A3B at Q3_K_M runs on
+this 6 GB card with `-ngl 99 --cpu-moe` -- experts in system RAM, ~3B activated
+per token -- in **1864 MiB at 33.3 tok/s**, which is less VRAM and more speed
+than the 7B it replaces. It passes all five OCaml tasks at one attempt each.
+But so does Q5_K_M on the fixed harness, having scored 4, 3, 4, 3 on the broken
+one: the model was never the bottleneck, and the 30B's case rests on halving
+the attempts, not on the score.

@@ -166,6 +166,18 @@ to prose chunking rather than failing an ingest. And `ingest`'s file pattern is
 derived from the chunker's own extension table, because the previous hardcoded
 one skipped every file the chunker exists for.
 
+**Test-first, when asked for it** (`code --tdd`). The gate above is static: it
+reads the tests. The one question it cannot answer is whether they can fail at
+all, and that question is the whole of TDD. So `--tdd` runs the designed suite
+against a stub -- a function that exists and returns `None` -- and accepts it
+only if a check ran and failed. Three details decide whether that works: the
+stub must be a function rather than an empty file (a missing name fails the run
+without any assertion executing), red must mean an assertion failed rather than
+any non-zero exit, and the mode is Python-only because a stub elsewhere needs a
+signature the contract does not carry. The suite and its failure are then shown
+for confirmation, which is where a user can catch a contract that misread them
+before any code exists.
+
 **Design line:** if it cannot be executed, it is not emitted. A missing
 toolchain is refused with the binary named; Power Query M is refused
 permanently, because it runs only inside Excel and Power BI. There is no
@@ -367,10 +379,22 @@ per task*, not just low tokens.
 
 ### 5. Retrieval (`purecoder/rag.py`)
 Code-aware chunking (AST: functions/classes/methods as units) for `.py`,
-markdown chunking for docs. A small embedding model (bge-small → EmbeddingGemma)
-on GPU, brute-force cosine over a persisted index. A **retrieve-when-needed
-gate**: if nothing clears the similarity threshold, inject nothing — saving
-tokens and avoiding misleading context.
+markdown chunking for docs, tree-sitter for every other language a grammar
+exists for. A small embedding model (bge-small) on GPU — falling back to CPU
+when llama-server has taken the card — and brute-force cosine over a persisted
+index. A **retrieve-when-needed gate**: if nothing clears the similarity
+threshold, inject nothing.
+
+That gate spent a while unable to refuse anything, and the cause is worth
+keeping: the lexical score dropped query tokens the corpus had never seen from
+its denominator, so a chunk matching one incidental word scored as well as one
+matching every word — `cheapest flights to Lisbon in March` scored a perfect
+1.000 against OCaml documentation. Counting unseen tokens against the match
+separates relevant queries (1.10–1.34) from unrelated ones (0.50–0.70), which
+is what makes the 0.8 threshold meaningful rather than decorative. Measured
+live: seven of seven real questions retrieve, none of five unrelated ones do.
+The cost of the broken version was not theoretical — a doc-grounded `sum_list`
+failed four attempts where the ungrounded one passed first try.
 
 **Two ranking signals, not one.** Cosine answers *is this about the same
 thing*; an IDF-weighted lexical score answers *does this contain the exact name

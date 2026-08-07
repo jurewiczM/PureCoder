@@ -170,17 +170,41 @@ def learned(store, monkeypatch):
     return spec
 
 
+def test_learning_a_reserved_language_costs_no_ingest(tmp_path, capsys):
+    """`learn ocaml` used to embed the whole docs directory and only then
+    report that the name is reserved. The work was done, an index was written,
+    and the answer was always going to be no. The scaffolder already refuses an
+    unwired language before creating its directory; same rule, same grounds."""
+    from purecoder.cli import cmd_learn
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("some documentation\n")
+
+    class Args:
+        name = "ocaml"
+        docs_dir = str(docs)
+        ext = ".ml"
+        device = "cpu"
+
+    rc = cmd_learn(None, Args())
+    assert rc == 1
+    assert "reserved language" in capsys.readouterr().out
+    assert not list(tmp_path.glob("*.npy")), "an index was built anyway"
+
+
 def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys):
     """The claim the whole feature exists for: `code --lang X` is grounded with
     no second ingest and no --store."""
-    from purecoder.cli import _grounded, ground_in_docs
+    from purecoder.cli import ground_in_docs
 
     context, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
     assert "Relevant documentation:" in context
     assert "Zig.print" in context
     assert "using the ziglike docs from `learn`" in capsys.readouterr().out
-    # and the caller puts it in front of the task rather than around it
-    assert _grounded(context, "alpha").endswith("alpha")
+    # The caller hands it to generate_validated_python as `context`, kept
+    # apart from the request so it can reach the writer without reaching the
+    # test designer -- see test_loops for the behaviour that depends on it.
 
 
 def test_the_docs_answer_did_you_mean_for_that_language(learned):
@@ -460,3 +484,67 @@ def test_declared_packages_reach_the_loop_and_default_to_none():
     finally:
         cli.generate_validated_python = real
     assert seen["packages"] == ("numpy",)
+
+
+def test_tdd_flag_reaches_the_loop_with_a_confirmation():
+    """`code --tdd` turns the need into a contract, the contract into tests,
+    and proves those tests fail before any implementation is written."""
+    from purecoder import cli
+
+    class Args:
+        spec = "add two numbers"
+        lang = "python"
+        retries = 1
+        contract = None
+        show_tests = False
+        store = None
+        no_docs = True
+        packages = None
+        tdd = True
+        yes = False
+
+    seen = {}
+
+    def spy(pc, description, **kw):
+        seen.update(kw)
+        return {"ok": True, "text": "", "tests": "", "contract": None,
+                "attempts": 1, "error": ""}
+
+    real = cli.generate_validated_python
+    cli.generate_validated_python = spy
+    try:
+        cli.cmd_code(None, Args())
+    finally:
+        cli.generate_validated_python = real
+    assert seen["tdd"] is True
+    assert seen["use_contract"] is True, "test-first without a contract cannot stub"
+    assert callable(seen["confirm_tests"])
+
+    # -y is the same run without the question, which is what a script needs.
+    Args.yes = True
+    seen.clear()
+    cli.generate_validated_python = spy
+    try:
+        cli.cmd_code(None, Args())
+    finally:
+        cli.generate_validated_python = real
+    assert seen["confirm_tests"] is None
+
+
+def test_the_tests_and_their_failure_are_shown_before_confirming(capsys, monkeypatch):
+    from purecoder import cli
+
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    ok = cli.confirm_tests("assert add(1, 2) == 3\n",
+                           "AssertionError\n", ask=input)
+    out = capsys.readouterr().out
+    assert ok
+    assert "assert add(1, 2) == 3" in out
+    assert "AssertionError" in out
+    assert "fail" in out.lower()
+
+
+def test_anything_but_yes_declines_the_tests(capsys):
+    from purecoder import cli
+
+    assert cli.confirm_tests("assert x", "boom", ask=lambda _: "n") is False

@@ -67,6 +67,12 @@ class LanguageSpec:
     project: ProjectSpec | None = None
     unvalidatable: str = ""              # non-empty: refuse permanently, w/ reason
     check_call: str = ""                 # textual marker the gate counts
+    # A regex whose first group is the name of a top-level definition. Python
+    # needs none -- it is parsed -- but every other language had no way at all
+    # to say what its own code defines, so the gate's "these tests never touch
+    # the thing under test" rule was unreachable outside Python and outside a
+    # contract. Empty leaves a language exactly as it was.
+    definition: str = ""
     # (regex, reason) pairs the test gate rejects on, for a malformation this
     # language's compiler would catch anyway but late and expensively. Only
     # OCaml needs one: its application syntax makes `pc_check ((expr) "label")`
@@ -512,8 +518,11 @@ register(LanguageSpec(
         "prose, no fences. pc_check is already defined and takes a boolean and "
         "a label: e.g. let () = pc_check (add 1 2 = 3) \"add\". The label goes "
         "OUTSIDE the parentheses -- `pc_check ((add 1 2 = 3) \"add\")` applies "
-        "the label to a boolean and does not compile. Assume the thing under "
-        "test is already defined above your statements."
+        "the label to a boolean and does not compile. For a call that should "
+        "RAISE, catch it: let () = pc_check (try ignore (f []); false with "
+        "Failure _ -> true) \"raises on empty\" -- never compare a value "
+        "against a raise. Assume the thing under test is already defined above "
+        "your statements."
     ),
     project=ProjectSpec(
         entry="main.ml",
@@ -523,12 +532,41 @@ register(LanguageSpec(
         clean="rm -f main *.cmi *.cmo",
     ),
     check_call="pc_check",
+    # Anchored hard at column zero: `let rec aux` nested inside a function is
+    # an implementation detail, not the thing under test, and `let () =` is a
+    # statement rather than a definition -- neither can match.
+    definition=r"(?m)^let\s+(?:rec\s+)?([a-z_][A-Za-z0-9_']*)",
     # Repaired first, then gated. The gate alone was tried live and the
     # designer reproduced the same malformation on every attempt, ending the
     # run at attempts=0 without ever reaching the writer.
-    test_fix=((r"pc_check\s*\((\(.*?\))\s*(\"[^\"]*\")\s*\)",
-               r"pc_check \1 \2"),),
-    test_lint=((r"pc_check\s*\(\(",
+    # What distinguishes the malformation is not `pc_check ((` -- that opening
+    # is ordinary -- but WHERE the label sits. Malformed, the label is followed
+    # by the closing paren and the statement ends: `... "label")`. Correct, the
+    # label ends the statement: `... ) "label"`. Anchoring on the tail tells the
+    # two apart; anchoring on the head cannot, and rejected valid tests.
+    # Group 1 must close its own parenthesis. Without that requirement a check
+    # written with no label at all -- `pc_check (rev_string "ab" = "ba")` --
+    # matched, the greedy group took `rev_string "ab" =`, the final string was
+    # read as the label, and the repair emitted `pc_check rev_string "ab" =
+    # "ba"`: parentheses gone, meaning changed. The malformation's group 1 is
+    # `(expr)` and ends in `)`; the label-less case's does not, which is
+    # exactly what tells them apart.
+    test_fix=((r"(?m)pc_check\s*\((.*\))\s+(\"[^\"]*\")[ \t]*\)[ \t]*$",
+               r"pc_check \1 \2"),
+              # `Let () = ...` -- a capitalised keyword at the start of a
+              # statement. OCaml reads `Let` as a constructor and reports
+              # "Unbound constructor Let"; a model that begins a line the way
+              # it begins a sentence fails every task in a batch this way. The
+              # anchor is deliberately narrow: only the exact `Let ()` opening
+              # this harness's statements use, so a genuine constructor named
+              # `Let` in some other position is untouched.
+              (r"(?m)^(\s*)Let(\s+\(\)\s*=)", r"\1let\2"),),
+    test_lint=((r"=\s*raise\b",
+                "a check compares a value against `raise`, which is not valid "
+                "OCaml -- test an expected exception by catching it: "
+                "pc_check (try ignore (f []); false with Failure _ -> true) "
+                "\"raises\""),
+               (r"(?m)pc_check\s*\(.*\"[ \t]*\)[ \t]*$",
                 "a check reads `pc_check ((expr) \"label\")`, which applies "
                 "the label to a boolean and does not compile -- the label goes "
                 "OUTSIDE the parentheses: pc_check (expr) \"label\""),),

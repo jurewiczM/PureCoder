@@ -579,3 +579,109 @@ def test_a_previous_attempt_too_large_to_show_is_left_out():
                                     verbose=False)
     assert res["ok"]
     assert "x = 1\n    x = 1" not in pc.prompts[1]
+
+
+def test_documentation_reaches_the_writer_and_not_the_test_designer():
+    """The two were one string, docs first. Live, asked for `rev_string` with
+    OCaml documentation in front of the request, four consecutive designs never
+    mentioned rev_string at all -- they tested a StringSet module the docs
+    happened to describe, and the run ended having judged no implementation.
+
+    Tests come from the SPEC. Documentation is how the writer learns an
+    unfamiliar idiom; it is not part of what was asked for."""
+    docs = "Relevant documentation:\nStringSet.of_list builds a set."
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", context=docs,
+                                    verbose=False)
+    assert res["ok"], res["error"]
+
+    designer, writer = pc.prompts[0], pc.prompts[1]
+    assert "StringSet" not in designer, "the designer was handed the docs"
+    assert "add two numbers" in designer
+    assert "StringSet" in writer, "the writer lost its grounding"
+
+
+# ---- TDD mode -------------------------------------------------------------
+
+# Every line calls `add` and asserts something true of any return value at
+# all, so a stub returning None satisfies the suite entire. It has to CALL the
+# target: the static gate now requires that, and a suite failing to would be
+# rejected before the red step ever ran -- proving the wrong thing here.
+TAUTOLOGY = ("assert add(1, 2) == add(1, 2)\n"
+             "assert add(0, 0) == add(0, 0)\n"
+             "assert add(2, 3) is add(2, 3)\n")
+
+
+def test_tdd_rejects_a_suite_a_do_nothing_implementation_satisfies():
+    """The static gate cannot see this: it parses, is not degenerate, and
+    calls the target three times. Only running it against a stub does."""
+    contract = {"name": "add", "summary": "adds two numbers",
+                "params": [{"name": "a", "type": "int"},
+                           {"name": "b", "type": "int"}],
+                "returns": "int", "raises": [],
+                "examples": [{"in": "1, 2", "out": "3"}]}
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(contract), TAUTOLOGY, GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=True, tdd=True)
+    assert res["ok"], res["error"]
+    assert res["tests"].strip() == GOOD_TESTS.strip(), "the tautology was used"
+    assert any("does nothing" in p for p in pc.prompts), \
+        "the designer was never told why its suite was rejected"
+
+
+def test_tdd_needs_a_contract_to_know_what_to_stub():
+    """The stub is `def <name>(*a, **kw)`, and the name comes from the
+    contract. Without one there is nothing to stub, and TDD mode says so
+    instead of quietly generating the ordinary way."""
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=False, tdd=True)
+    assert not res["ok"]
+    assert "contract" in res["error"]
+
+
+def test_tdd_refuses_a_language_it_cannot_stub():
+    from purecoder.languages import get
+
+    res = generate_validated_python(FakeModel(), "add two numbers",
+                                    verbose=False, spec=get("c++"), tdd=True)
+    assert not res["ok"]
+    assert "stub" in res["error"]
+
+
+def test_the_red_evidence_reaches_the_caller_for_confirmation():
+    """"Based on the user's need" means the user sees the tests, and sees them
+    failing, before any implementation exists. The loop hands both to a
+    callback; the CLI decides how to ask."""
+    contract = {"name": "add", "summary": "adds", "params": [],
+                "returns": "int", "raises": [],
+                "examples": [{"in": "", "out": "3"}]}
+    seen = {}
+
+    def confirm(tests, evidence):
+        seen["tests"], seen["evidence"] = tests, evidence
+        return True
+
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(contract), GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=True, tdd=True,
+                                    confirm_tests=confirm)
+    assert res["ok"], res["error"]
+    assert "assert add(1, 2) == 3" in seen["tests"]
+    assert "AssertionError" in seen["evidence"], seen["evidence"]
+
+
+def test_declining_the_tests_stops_before_any_code_is_written():
+    contract = {"name": "add", "summary": "adds", "params": [],
+                "returns": "int", "raises": [],
+                "examples": [{"in": "", "out": "3"}]}
+    pc = FakeModel(code_outputs=[GOOD_CODE],
+                   completions=[json.dumps(contract), GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", verbose=False,
+                                    use_contract=True, tdd=True,
+                                    confirm_tests=lambda t, e: False)
+    assert not res["ok"]
+    assert "declined" in res["error"]
+    assert pc.code_kwargs == [], "code was written after the tests were declined"

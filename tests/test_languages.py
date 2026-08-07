@@ -436,3 +436,24 @@ def test_another_language_is_not_held_to_ocamls_rule():
            '  PC_CHECK((add(-1, 1)) == 0);\n}')
     ok, err = lint_tests(cpp, spec=L.get("c++"))
     assert ok, err
+
+
+def test_the_ocaml_tester_is_told_how_to_check_an_exception():
+    """Live: asked for a function that raises Failure on an empty list, the
+    tester wrote `pc_check (last_element [] = raise Failure) "empty"` --
+    comparing a value against a raise, which does not compile. Python's tester
+    prompt has carried the try/except idiom for months; OCaml's said nothing
+    about exceptions at all."""
+    text = L.get("ocaml").test_system
+    assert "try" in text and "with" in text
+
+
+def test_the_ocaml_gate_rejects_a_comparison_against_a_raise():
+    """The prompt half of this has been ignored often enough today to be worth
+    a mechanical catch. `= raise` in a check is never valid OCaml."""
+    bad = ('let () = pc_check (f [] = raise Failure) "a"\n'
+           'let () = pc_check (f [1] = 1) "b"\n'
+           'let () = pc_check (f [2] = 2) "c"\n')
+    ok, err = lint_tests(bad, spec=L.get("ocaml"))
+    assert not ok
+    assert "raise" in err

@@ -370,6 +370,65 @@ def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
             "found there:\n" + "\n".join(out))
 
 
+def defined_names(spec, code: str):
+    """Top-level names `code` defines, in any language that can say how.
+
+    Python is parsed. Everything else consults the spec's `definition` regex,
+    which most languages do not have -- and for them this returns [], leaving
+    the gate exactly as permissive as it was. That silence was the bug: the
+    rule "these tests never touch the thing under test" existed and could not
+    reach any language but Python, so an OCaml suite that tested `List.sort`
+    instead of the requested `insertion_sort` was accepted.
+    """
+    if spec.name == "python":
+        return public_names(code)
+    if not spec.definition:
+        return []
+    seen = []
+    for name in re.findall(spec.definition, code):
+        if name not in seen and not name.startswith("_"):
+            seen.append(name)
+    return seen
+
+
+def defines_target(code: str, name: str, tests: str = ""):
+    """(ok, reason). Whether the implementation mentions the name it was asked
+    for at all.
+
+    Retrieval can be answered instead of used. Live, asked for `rev_string`
+    with OCaml documentation in the prompt, the writer returned
+
+        let curry4 f w x y z = f (w, x, y, z)
+        module StringSet = Set.Make(String)
+
+    -- fragments of the retrieved docs, and no `rev_string` anywhere. The
+    toolchain then reports an unbound name, which reads like a coding mistake
+    and is not one: nothing was written to be wrong.
+
+    Deliberately weak. Absence is decidable without parsing, in any language,
+    and absence is enough -- if the name is not there, the tests cannot call
+    it and the run is already lost. Whether what IS there is a correct
+    definition is left to the compiler, which answers it properly.
+
+    The demand is made only where the tests make it. In SQL the contract's
+    name is not an identifier the code can contain at all -- the
+    implementation is DDL and the checks are rows in a table -- so requiring
+    it would have failed every correct SQL run. Asking "does the code provide
+    what the tests call" keeps the rule true in a language without functions,
+    and needs no per-language exception to say so.
+    """
+    if not name:
+        return True, ""
+    named = re.compile(rf"\b{re.escape(name)}\b")
+    if tests and not named.search(tests):
+        return True, ""          # the tests never call it; nothing to provide
+    if named.search(code):
+        return True, ""
+    return False, (f"the implementation never defines {name!r} -- it looks "
+                   f"like documentation was copied instead of used. Output "
+                   f"only the implementation of {name!r}.")
+
+
 def lint_implementation(code: str):
     """Reject an implementation that has smuggled its tests inside itself.
 
@@ -472,7 +531,8 @@ def public_names(code: str):
             and not n.name.startswith("_")]
 
 
-def _lint_tests_textual(tests, targets, min_assertions, spec):
+def _lint_tests_textual(tests, targets, min_assertions, spec,
+                        strict_targets=False):
     """The gate for languages we do not parse.
 
     Every non-Python harness injects its own check helper and the tester prompt
@@ -506,7 +566,86 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     if targets and not any(t in tests for t in targets):
         return False, (f"tests never mention any of {sorted(targets)} -- "
                        f"they are not testing the target")
+
+    # One mention is not a test suite. Live, a 17-check OCaml suite for
+    # rev_string was accepted whose checks were mostly about a `StringSet`
+    # module that does not exist -- retrieved documentation answered instead
+    # of used. A single conforming check satisfied "any", and the rest failed
+    # the build on behalf of code that was correct.
+    #
+    # Counted per check rather than per line, so setup lines are not held
+    # against a suite, and only a MINORITY is refused: a sanity check that
+    # touches nothing under test is ordinary, a suite of them is not.
+    #
+    # Only when the targets came from the CODE. A contract-derived name is a
+    # weaker claim: on the scaffold path a C# suite builds `new Counter()` in
+    # a setup line and then checks `c.Add(1)`, so no check names the class at
+    # all and every one of them is testing it. Refusing that would regenerate
+    # the suite until the gate gave up -- attempts=0, the failure this kind of
+    # rule exists to prevent.
+    if strict_targets and targets and lines and len(lines) >= min_assertions:
+        aimed = [ln for ln in lines if any(t in ln for t in targets)]
+        if len(aimed) * 2 < len(lines):
+            return False, (f"only {len(aimed)} of {len(lines)} checks "
+                           f"exercise {sorted(targets)} -- the rest test "
+                           f"something else")
     return True, ""
+
+
+def stub_for(spec, name: str) -> str:
+    """An implementation that exists and does nothing. "" if impossible here.
+
+    Not an empty file, which is the obvious thing and the wrong one: with no
+    definition at all Python raises NameError and C++ fails to compile, so the
+    run "fails" without a single assertion having executed. That is not
+    evidence that the tests can catch a wrong answer -- only that a name is
+    missing, which the gate's target check already covers.
+
+    Python only, and deliberately. A stub in C++, Rust or OCaml needs a real
+    signature and a real return type, which the contract does not supply, so
+    the registry's own idiom applies: refuse with the reason rather than
+    approximate. A language can earn this later by declaring how to stub
+    itself.
+    """
+    if spec.name != "python" or not name.isidentifier():
+        return ""
+    return f"def {name}(*a, **kw):\n    return None\n"
+
+
+def red_check(spec, tests: str, name: str, timeout: int = 10):
+    """Does this suite fail against an implementation that does nothing?
+    -> (red, reason).
+
+    The step this project's own discipline demands and the pipeline never took:
+    a test you have not watched fail is a test you cannot trust. A suite that a
+    do-nothing implementation satisfies has demonstrated nothing about the
+    behaviour that was asked for, and no static gate can see that -- `assert
+    True` parses, calls the target often enough, and is not degenerate.
+
+    Red means a check RAN and FAILED. A suite that dies before reaching an
+    assertion is not red: the same three-way distinction `bench.py` draws
+    between a wrong answer and an unusable one.
+    """
+    stub = stub_for(spec, name)
+    if not stub:
+        return False, (f"{spec.name} cannot be stubbed, so the tests cannot be "
+                       f"watched failing before the implementation exists")
+
+    ok, err = run_candidate(spec, stub, tests, timeout=timeout, require_checks=1)
+    if ok:
+        return False, ("these tests pass against an implementation that does "
+                       "nothing and returns None -- they assert nothing about "
+                       "the behaviour that was asked for")
+    # Red means an ASSERTION failed. Anything else -- a NameError from a
+    # helper the suite invented, a TypeError from calling the stub wrongly --
+    # kills the run before a check can execute, and the instrumentation cannot
+    # report "no checks ran" from a script that never reached its own tail.
+    # Both were mistaken for red on the first attempt at this.
+    if "no checks ran" in err or "AssertionError" not in err:
+        return False, ("no check ran against the stub: the suite fails before "
+                       "reaching an assertion, which proves a name is missing "
+                       "rather than that the tests can catch a wrong answer")
+    return True, err
 
 
 def repair_tests(spec, tests: str) -> str:
@@ -528,7 +667,7 @@ def repair_tests(spec, tests: str) -> str:
 
 
 def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
-               spec=PYTHON):
+               spec=PYTHON, strict_targets=False):
     """Reject structurally bad tests BEFORE they get to judge code.
 
     Returns (ok, reason). Catches the five failure modes seen in development:
@@ -543,7 +682,8 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
         return False, "empty test output"
 
     if spec.name != "python":
-        return _lint_tests_textual(tests, targets, min_assertions, spec)
+        return _lint_tests_textual(tests, targets, min_assertions, spec,
+                                   strict_targets)
 
     # mode 1: doesn't parse -- a test file that can't run proves nothing.
     try:
@@ -618,24 +758,39 @@ def generate_tests(pc, description: str, n_predict: int = 512,
 
 
 def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
-                 n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON):
+                 strict_targets=False,
+                 n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON,
+                 red_target="", timeout=10):
     """Generate tests and put them through the quality gate, regenerating with
     the reason fed back on rejection. Returns (tests, ok, reason).
 
     The designer stays code-blind: only the GATE ever sees names from the
     implementation, and only to check the tests call them at all.
+
+    `red_target` names the function to stub, which turns the gate from static
+    to empirical: the suite must FAIL against an implementation that does
+    nothing. That is the one check no amount of parsing can make -- `assert
+    True` is well-formed, mentions the target and is not degenerate.
     """
-    task, tests, reason = description, "", ""
+    task, tests, reason, evidence = description, "", "", ""
     for attempt in range(1, max_retries + 1):
         tests = repair_tests(spec, generate_tests(pc, task, n_predict=n_predict,
                                                   spec=spec))
         ok, reason = lint_tests(tests, targets=targets,
+                                strict_targets=strict_targets,
                                 min_assertions=min_assertions, spec=spec)
+        if ok and red_target:
+            ok, detail = red_check(spec, tests, red_target, timeout=timeout)
+            if ok:
+                evidence = detail
+            else:
+                reason = detail
         if ok:
             if verbose:
+                red = " and failing against a stub" if red_target else ""
                 print(f"[tests] accepted on attempt {attempt} "
-                      f"({len(tests.splitlines())} lines)")
-            return tests, True, ""
+                      f"({len(tests.splitlines())} lines{red})")
+            return tests, True, evidence
         if verbose:
             print(f"[tests] attempt {attempt} rejected: {reason} -> regenerating")
         task = (f"{description}\n\n"
@@ -649,7 +804,8 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
-                              error_hint=None, packages=(), **kw):
+                              error_hint=None, packages=(), tdd=False,
+                              confirm_tests=None, context="", **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -672,6 +828,24 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     if not ok:
         return {"ok": False, "text": "", "tests": "", "contract": None,
                 "attempts": 0, "error": f"cannot generate {spec.name}: {why}"}
+
+    # TDD mode, refused before any model call when it cannot be honoured. It
+    # needs two things: a language that can be stubbed, and a contract to take
+    # the name from. Neither can be improvised, and generating the ordinary way
+    # while the caller believes the tests were proven would be the worst of the
+    # available outcomes.
+    if tdd:
+        if not stub_for(spec, "probe"):
+            return {"ok": False, "text": "", "tests": "", "contract": None,
+                    "attempts": 0,
+                    "error": f"cannot run test-first for {spec.name}: it has no "
+                             f"stub form, so the tests cannot be watched "
+                             f"failing before an implementation exists"}
+        if not use_contract and contract is None:
+            return {"ok": False, "text": "", "tests": "", "contract": None,
+                    "attempts": 0,
+                    "error": "test-first needs a contract: the stub is built "
+                             "from the name it declares. Use --contract."}
 
     # Declared packages, checked before a single model call. Two refusals, both
     # cheap: a language with no import story cannot honour the request at all,
@@ -723,9 +897,46 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                      f"installed: {allowed}. Nothing else outside the standard "
                      f"library.")
 
+    # Retrieved documentation goes to the WRITER and not to the tester.
+    #
+    # The two were one string, docs first, and the tester answered them. Live,
+    # asked for `rev_string` with OCaml documentation in front of the request,
+    # four consecutive designs never mentioned rev_string at all -- they
+    # tested a StringSet module the docs happened to describe, and the run
+    # ended having never judged the implementation. This module's first
+    # principle is that tests come from the SPEC; the docs are how the writer
+    # learns an unfamiliar idiom, and they are not part of the request.
+    writing = f"{context}\n\n{grounded}" if context else grounded
+
+    # The name to stub, once the contract exists. A contract that failed to
+    # derive leaves TDD mode with nothing to build a stub from, and saying so
+    # beats silently dropping the guarantee the caller asked for.
+    # The contract names the thing under test, and that name is knowable
+    # before any code exists. Two things below need it: the gate, to require
+    # that the designed tests actually exercise it, and test-first mode, to
+    # know what to stub.
+    target_name = str(contract.get("name", "")) if contract else ""
+    red_target = ""
+    if tdd:
+        if contract is None:
+            return {"ok": False, "text": "", "tests": "", "contract": None,
+                    "attempts": 0,
+                    "error": "test-first needs a contract and none could be "
+                             "derived, so there is no name to stub"}
+        red_target = target_name
+
     if tests is None:
+        # Gated against the contract's name from the start. Previously the
+        # only source of targets was `public_names`, which parses Python: for
+        # every other language it returned [] and the "never tests the target"
+        # check silently did nothing. Live, an OCaml suite for insertion_sort
+        # asserted on `List.sort` throughout and was accepted -- the sort was
+        # the standard library's, and the implementation under test was never
+        # called at all.
         designed, gate_ok, gate_reason = design_tests(
-            pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec)
+            pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec,
+            targets=[target_name] if target_name else None,
+            red_target=red_target, timeout=timeout)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
@@ -737,7 +948,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     else:
         designed = tests
 
-    task = grounded
+    # The ritual made visible: the user sees the tests, and sees them failing,
+    # before any implementation exists. `gate_reason` carries the stub run's
+    # own output on the success path -- that failure IS the evidence.
+    if tdd and confirm_tests is not None:
+        if not confirm_tests(designed, gate_reason):
+            return {"ok": False, "text": "", "tests": designed,
+                    "contract": contract, "attempts": 0,
+                    "error": "declined: the tests were not accepted, so no "
+                             "implementation was written"}
+
+    task = writing
     code, error = "", ""
     regated = False          # the target-name check runs once, after code exists
     redesigned = False       # the tests get one second chance, not a loop
@@ -756,7 +977,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         if res["truncated"]:
             error = "output was cut off (hit n_predict)"
-            task = (f"{grounded}{constraints}\n\n"
+            task = (f"{writing}{constraints}\n\n"
                     f"Previous output was cut off. Be complete but concise.")
             if verbose:
                 print(f"[attempt {attempt}] truncated -> retrying")
@@ -766,10 +987,14 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # actually call it -- the one check that needs a name from the code.
         if not regated:
             regated = True
-            targets = public_names(code)
+            # public_names parses Python; for any other language it is [],
+            # so fall back to the name the contract already gave us.
+            from_code = defined_names(spec, code)
+            targets = from_code or ([target_name] if target_name else [])
             if targets:
-                gate_ok, gate_reason = lint_tests(designed, targets=targets,
-                                                  spec=spec)
+                gate_ok, gate_reason = lint_tests(
+                    designed, targets=targets, spec=spec,
+                    strict_targets=bool(from_code))
                 # Tests the caller supplied are theirs. Redesigning them here
                 # discarded the one thing they asked the code to be checked
                 # against, and then reported success against tests they never
@@ -786,7 +1011,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
                     designed, redo_ok, redo_reason = design_tests(
                         pc, grounded, targets=targets, max_retries=max_retries,
-                        verbose=verbose, spec=spec)
+                        verbose=verbose, spec=spec,
+                        strict_targets=bool(from_code))
                     if not redo_ok:
                         if verbose:
                             print(f"[tests] gate never satisfied: {redo_reason} "
@@ -804,11 +1030,16 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # executor already reports clearly.
         impl_ok, impl_reason = (lint_implementation(code)
                                 if spec.name == "python" else (True, ""))
+        # Checked in every language, unlike the above: an answer that never
+        # names the function asked for is wrong before it is compiled.
+        if impl_ok:
+            impl_ok, impl_reason = defines_target(code, target_name,
+                                                  designed)
         if not impl_ok:
             if verbose:
                 print(f"[attempt {attempt}] {impl_reason} -> retrying")
             error = impl_reason
-            task = (f"{grounded}{constraints}\n\n"
+            task = (f"{writing}{constraints}\n\n"
                     f"Your previous output was rejected: {impl_reason}\n"
                     f"Output only the implementation, nothing else.")
             continue
@@ -839,7 +1070,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     f"library.{allowed} {dep!r} is not installed and cannot be "
                     f"validated here. No other third-party imports at all, in "
                     f"any later attempt.")
-                task = f"{grounded}{constraints}"
+                task = f"{writing}{constraints}"
                 continue
             if verbose:
                 print(f"[attempt {attempt}] still missing {dep!r} -- "
@@ -881,15 +1112,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 if verbose:
                     print(f"[attempt {attempt}] the same failure on different "
                           f"code -- suspecting the tests, redesigning them")
+                from_code = defined_names(spec, code)
                 designed, redo_ok, redo_reason = design_tests(
-                    pc, grounded, targets=public_names(code),
-                    max_retries=max_retries, verbose=verbose, spec=spec)
+                    pc, grounded, targets=from_code,
+                    max_retries=max_retries, verbose=verbose, spec=spec,
+                    strict_targets=bool(from_code))
                 if not redo_ok:
                     return {"ok": False, "text": code, "tests": designed,
                             "contract": contract, "attempts": attempt,
                             "error": f"test design failed the quality gate: "
                                      f"{redo_reason}"}
-                task = f"{grounded}{constraints}"
+                task = f"{writing}{constraints}"
                 continue
 
             if verbose:
@@ -908,7 +1141,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # unchanging failure look like a moving one.
         hint = error_hint(error) if error_hint else ""
         if hint and verbose:
-            print(f"[docs] {hint.splitlines()[0]}")
+            # Every line, not just the first. The first line is the header --
+            # "The documentation does not contain every name in that error:" --
+            # and the names it promises are on the lines beneath it, so
+            # printing one line announced a hint and then withheld it.
+            print("\n".join(f"[docs] {line}" for line in hint.splitlines()))
         # Added to the same slot and for the same reason: a hint offered only
         # after the toolchain has already refused, never a gate of its own.
         hint += harness_collision(spec, code, full)
@@ -932,7 +1169,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # small card. A large implementation is described by its error alone.
         previous = (f"\n\nYour previous implementation, which failed:\n{code}"
                     if len(code) <= 2000 else "")
-        task = (f"{grounded}{constraints}{previous}\n\n"
+        task = (f"{writing}{constraints}{previous}\n\n"
                 f"It failed these tests, which are run separately and must NOT "
                 f"appear in your output:\n{full}\n\n"
                 f"With this error:\n{error}\n"

@@ -296,3 +296,19 @@ def test_a_function_with_no_params_may_of_course_take_none():
         "examples": [{"in": "", "out": "1712345678.0"}],
     })
     assert ok, err
+
+
+def test_an_example_with_no_outcome_is_refused():
+    """Live, in a test-first run: the contract came back with
+    `word_count('hello world') -> ` and nothing after the arrow. An example
+    that states no outcome grounds neither the writer nor the tester -- it is
+    the same emptiness `examples: []` is already refused for, one level down."""
+    ok, err = validate_contract({
+        "name": "word_count", "summary": "counts words",
+        "params": [{"name": "text", "type": "str"}],
+        "returns": "int", "raises": [],
+        "examples": [{"in": "'a b'", "out": "2"},
+                     {"in": "'hello world'", "out": "   "}],
+    })
+    assert not ok
+    assert "outcome" in err

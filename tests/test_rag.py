@@ -6,6 +6,8 @@ download -- a deterministic fake stands in for sentence-transformers.
 
 import json
 import os
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -792,3 +794,55 @@ def test_the_default_threshold_is_the_calibrated_one():
 
     default = inspect.signature(rag.DocStore.search).parameters["min_score"].default
     assert default >= 0.8
+
+
+def _stub_sentence_transformers(monkeypatch, cls):
+    """Stand a fake `sentence_transformers` in sys.modules. -> nothing.
+
+    `Embedder.__init__` imports the package lazily, inside the constructor, so
+    a stub in `sys.modules` is the same patch point the real module would be --
+    and what these two tests exercise is PureCoder's fallback branch, not the
+    library's. Importing the real package to patch an attribute on it made them
+    the only two tests in the suite that needed the `rag` extra, which pulls in
+    torch and which CI deliberately does not install: they passed on a machine
+    that had run an ingest and failed on every runner. `importorskip` would
+    have gone green by testing nothing, and the branch under test exists
+    because the card really did run out of room mid-ingest.
+    """
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = cls
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+
+def test_an_embedder_that_cannot_fit_on_the_gpu_falls_back_to_cpu(monkeypatch,
+                                                                  capsys):
+    """Found by giving the LLM more context. At 16k tokens and full offload the
+    server takes 5.5 GB of a 6 GB card, and the embedder -- which needs about
+    275 MB, mostly torch's CUDA context -- dies with a raw
+    `torch.OutOfMemoryError` traceback in the middle of an ingest. The card is
+    shared; the small model is the one that should yield."""
+    calls = []
+
+    class FakeST:
+        def __init__(self, name, device="cuda"):
+            calls.append(device)
+            if device == "cuda":
+                raise RuntimeError("CUDA out of memory. Tried to allocate 20 MiB")
+
+    _stub_sentence_transformers(monkeypatch, FakeST)
+    embedder = rag.Embedder(device="cuda")
+    assert calls == ["cuda", "cpu"]
+    assert embedder.device == "cpu"
+    assert "cpu" in capsys.readouterr().out.lower()
+
+
+def test_a_failure_that_is_not_about_memory_still_raises(monkeypatch):
+    """Falling back on every error would hide a wrong model name behind a
+    silent, very slow CPU run."""
+    class FakeST:
+        def __init__(self, name, device="cuda"):
+            raise RuntimeError("model not found on the hub")
+
+    _stub_sentence_transformers(monkeypatch, FakeST)
+    with pytest.raises(RuntimeError, match="not found"):
+        rag.Embedder(device="cuda")

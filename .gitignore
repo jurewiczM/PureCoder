@@ -33,3 +33,6 @@ venv/
 
 # live e2e scratch output
 dashboardTest/
+
+# local agent notes, not part of the repo
+CLAUDE.md
