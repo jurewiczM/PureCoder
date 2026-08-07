@@ -124,3 +124,59 @@ def test_env_grammar_bounds_line_length():
     assert bounds, "env.gbnf no longer bounds line length"
     assert all(int(b) < MAX_ENV_LINE for b in bounds), \
         "the grammar must be stricter than the validator it feeds"
+
+
+# ---- truncation, which stopped being reported ----------------------------
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def _completion(monkeypatch, payload):
+    import purecoder.client as C
+
+    monkeypatch.setattr(C.requests, "post",
+                        lambda *a, **kw: _FakeResponse(payload))
+    return C.PureCoder().complete(system="s", user="u")
+
+
+def test_a_generation_cut_off_at_n_predict_is_reported(monkeypatch):
+    """Found live. llama.cpp now reports `stop_type: "limit"`; the boolean the
+    client read -- `stopped_limit` -- is simply absent, so `.get(..., False)`
+    said "complete" for every cut-off generation. Every truncation retry in the
+    project was dead: a .env cut mid-comment validated clean and was returned
+    as ok."""
+    out = _completion(monkeypatch, {"content": "KEY=val", "stop_type": "limit"})
+    assert out["truncated"] is True
+
+
+def test_the_older_field_still_works(monkeypatch):
+    """A server predating `stop_type` must not start reporting every
+    generation as truncated, or the loops would retry forever."""
+    assert _completion(monkeypatch, {"content": "x",
+                                     "stopped_limit": True})["truncated"] is True
+    assert _completion(monkeypatch, {"content": "x",
+                                     "stopped_limit": False})["truncated"] is False
+
+
+def test_a_natural_stop_is_not_truncation(monkeypatch):
+    for payload in ({"content": "x", "stop_type": "eos"},
+                    {"content": "x", "stop_type": "word"},
+                    {"content": "x"}):
+        assert _completion(monkeypatch, payload)["truncated"] is False
+
+
+def test_a_truncated_prompt_is_not_a_truncated_answer(monkeypatch):
+    """llama.cpp's own `truncated` flag means the PROMPT was cut to fit the
+    context -- a different failure, and reading it as ours would make every
+    long-context call retry."""
+    out = _completion(monkeypatch, {"content": "x", "truncated": True,
+                                    "stop_type": "eos"})
+    assert out["truncated"] is False

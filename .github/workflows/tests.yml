@@ -46,6 +46,13 @@ jobs:
       - name: Lint
         run: ruff check purecoder tests examples
 
+      # OCaml is wired but is NOT on the runner image, unlike the other three.
+      # Without this its execution tests skip, and the check below would pass
+      # while proving nothing about the newest language in the registry --
+      # exactly the hole that check exists to close.
+      - name: Install OCaml
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ocaml-nox
+
       # A skip is not a pass. The runner image ships g++, node and rustc, so
       # the per-language execution tests MUST run here. If a toolchain quietly
       # left the image those tests would skip and the suite would still go
@@ -53,7 +60,7 @@ jobs:
       - name: Toolchains present
         run: |
           set -eu
-          for binary in g++ node rustc; do
+          for binary in g++ node rustc ocamlc; do
             command -v "$binary" >/dev/null \
               || { echo "::error::$binary missing -- language tests would skip"; exit 1; }
             echo "$binary: $("$binary" --version 2>&1 | head -1)"

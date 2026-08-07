@@ -36,6 +36,70 @@ from .languages import (
 # probe asks whether an error reaches the fix loop at all.
 SYNTAX_GARBAGE = "\n@@@ purecoder syntax probe @@@\n"
 
+# English function words that are ordinary in a sentence and rare as bare
+# tokens in code. `if`, `not` and `then` are deliberately absent -- they are
+# OCaml.
+_ENGLISH = frozenset(("the", "a", "an", "of", "this", "which", "its", "these",
+                      "that", "it", "is", "are", "was", "will"))
+
+# Punctuation a line of code almost always carries and a sentence does not.
+_CODE_PUNCT = set("={};")
+
+
+def _is_prose(line: str) -> bool:
+    words = re.findall(r"[A-Za-z_]+", line)
+    if len(words) < 10 or _CODE_PUNCT & set(line):
+        return False
+    return sum(1 for w in words if w.lower() in _ENGLISH) >= 3
+
+
+def strip_prose(text: str) -> str:
+    """Drop the explanation a drafting model wrote around its code.
+
+    Observed live: every drafting prompt says "output only source code, no
+    prose", and the model appended a paragraph beginning "This OCaml code
+    declares a mutable reference..." anyway. `unfence` removes fence markers
+    only, so the paragraph reached `ocamlc` as `Error: Syntax error` at line
+    14. Two probes failed for it, and the redraft was handed the compiler
+    complaining about the model's own English -- which it did not read as an
+    instruction to stop writing English.
+
+    The test is conservative in the direction that matters: a filter that eats
+    code would fail a probe for a line nobody can see, which is far worse than
+    the prose it removes. So a line must be long, carry none of `= { } ;`, and
+    use several English function words that are rare as bare tokens in code.
+    A comment stays -- it is short, or it carries punctuation, and either way
+    the compiler does not mind it.
+    """
+    return "\n".join(ln for ln in text.splitlines() if not _is_prose(ln))
+
+
+def strip_echo(text: str, prompt: str) -> str:
+    """Drop lines the model copied out of its own instructions.
+
+    Observed live, after the prose filter was already in place: a fixture came
+    back containing "and ends with this, which runs the tests:" -- a line of the
+    drafting prompt -- and ocamlc failed on it. Eight words, no code
+    punctuation, so it sits under the prose filter's threshold, and lowering
+    that threshold would start eating real comments.
+
+    This test is exact instead of statistical: the line was in the request. It
+    only fires on lines that also look like instructions rather than code, so
+    the worked examples -- which are real harness source, quoted in the prompt
+    precisely so the model can copy them -- survive.
+    """
+    request = prompt.lower()
+    keep = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        wordy = len(re.findall(r"[A-Za-z_]+", stripped)) >= 5
+        if (len(stripped) >= 20 and wordy and not _CODE_PUNCT & set(stripped)
+                and stripped.lower() in request):
+            continue
+        keep.append(line)
+    return "\n".join(keep).strip()
+
+
 # A fence marker with its optional language tag, wherever it appears.
 _FENCE = re.compile(r"```[A-Za-z0-9_+-]*")
 
@@ -52,8 +116,14 @@ def unfence(text: str) -> str:
 
     Safe because a triple backtick is not valid syntax in any language the
     executor can run -- if it appears, it is markup.
+
+    It also removes an explanation paragraph, for the same reason and from the
+    same live run: markup and prose both reach the compiler as a syntax error
+    about something the model did not get wrong. Everything that cleans a
+    drafted snippet goes through here, so a new drafting call cannot forget one
+    of the two.
     """
-    return _FENCE.sub("", text).strip()
+    return strip_prose(_FENCE.sub("", text)).strip()
 
 
 @dataclass(frozen=True)
@@ -150,9 +220,20 @@ def draft_preamble(pc, name: str, context: str, feedback: str = "") -> str:
         f"at zero; define a helper named PC_CHECK taking one boolean "
         f"expression; on failure print \"CHECK FAILED: \" plus the expression "
         f"to standard error and exit with status 1; on success increment the "
-        f"counter. Output only that code.{feedback}")
-    return unfence(pc.complete(system=system, user=user, grammar=None,
-                               n_predict=512)["text"])
+        f"counter.\n"
+        # The name is a request, not a rule, and saying so is the fix for a
+        # live failure: OCaml reserves capitalised identifiers for
+        # constructors, so `let PC_CHECK cond =` is `Unbound constructor
+        # PC_CHECK`, and four drafting attempts failed on an instruction that
+        # could not be followed. `draft_check_call` matches the name case
+        # -insensitively, so nothing downstream ever needed the capitals.
+        f"If {name}'s naming rules forbid that spelling -- some languages "
+        f"reserve capitalised identifiers -- use the closest legal form, such "
+        f"as pc_check, and keep it consistent.\n"
+        f"Output only that code.{feedback}")
+    return strip_echo(unfence(pc.complete(system=system, user=user,
+                                          grammar=None,
+                                          n_predict=512)["text"]), user)
 
 
 def draft_check_call(pc, name: str, preamble: str) -> str:
@@ -211,8 +292,9 @@ def draft_epilogue(pc, name: str, preamble: str, context: str,
         f"Then, if the counter is still zero, print \"no checks ran\" to "
         f"standard error and exit with status 2. Use fully qualified names for "
         f"anything you did not define. Output only that code.{feedback}")
-    return unfence(pc.complete(system=system, user=user, grammar=None,
-                               n_predict=512)["text"])
+    return strip_echo(unfence(pc.complete(system=system, user=user,
+                                          grammar=None,
+                                          n_predict=512)["text"]), user)
 
 
 _SECTIONS = ("WRONG", "TESTS", "EMPTY", "ALWAYS_FAILS")
@@ -253,8 +335,8 @@ def draft_fixture(pc, name: str, preamble: str, epilogue: str,
         f"5. a test body containing exactly one check that must fail\n\n"
         f"Output the five snippets in that order, with the separator lines "
         f"between them and nothing else.{feedback}")
-    text = pc.complete(system=system, user=user, grammar=None,
-                       n_predict=768)["text"]
+    text = strip_echo(pc.complete(system=system, user=user, grammar=None,
+                                  n_predict=768)["text"], user)
 
     parts = [text]
     for marker in _SECTIONS:
@@ -353,13 +435,51 @@ def _parse_command(label: str, line: str) -> tuple:
     if found:
         raise ValueError(f"the {label} command uses shell syntax ({''.join(found)}) "
                          f"and argv is not a shell: {line!r}")
+    # `{src}.ml` passes every other check -- it names {src}, and a build using
+    # it still writes to {bin} -- and then asks the toolchain for
+    # `candidate.ml.ml`, because the executor's file already carries the
+    # extension. Observed live: two probes failed with `I/O error: no such file
+    # or directory`, which tells a redrafting model nothing about the cause.
+    # Normalised rather than refused, like `./{bin}` already is: the model
+    # produced `{src}.ml` on three redrafts running, and a refusal it cannot
+    # act on is just a slower failure. Dropping the suffix is safe because the
+    # placeholder is a complete path -- there is no reading of `{src}.ml` that
+    # is correct.
+    line = re.sub(r"(\{(?:src|bin)\})\.[A-Za-z0-9]+", r"\1", line)
     try:
         return tuple(shlex.split(line))
     except ValueError as e:
         raise ValueError(f"the {label} command does not parse: {e}") from e
 
 
-def draft_commands(pc, name: str, extension: str, context: str):
+def draft_commands_with_retry(pc, name: str, extension: str, context: str,
+                              max_retries: int = 2):
+    """`draft_commands`, with the refusal fed back. -> (build, run, toolchain).
+
+    The harness has been redrafted with its probe diagnostics since the first
+    live run; the commands were not, and a single bad sample ended the whole
+    run. Observed live: `ocamlc {src}` with no `-o {bin}` -- rejected correctly
+    by a check that exists because a build writing nowhere leaves the run
+    command with no binary -- on a machine where the previous run had drafted
+    the same command correctly. The checks are strict on purpose, which is
+    exactly why one sample should not be the verdict.
+
+    The last refusal is raised unchanged when the attempts run out, so a
+    language that genuinely cannot be described still fails with the reason.
+    """
+    feedback = ""
+    for attempt in range(1, max(1, max_retries) + 1):
+        try:
+            return draft_commands(pc, name, extension, context, feedback)
+        except ValueError as e:
+            if attempt >= max_retries:
+                raise
+            feedback = (f"\n\nYour previous answer was rejected: {e}. "
+                        f"Correct it and output the three lines again.")
+
+
+def draft_commands(pc, name: str, extension: str, context: str,
+                   feedback: str = ""):
     """How this language compiles and runs ONE file. -> (build, run, toolchain).
 
     Placeholders are `{src}`, `{bin}` and `{python}`, filled in by the executor.
@@ -379,7 +499,7 @@ def draft_commands(pc, name: str, extension: str, context: str):
         f"otherwise {{src}}\n"
         f"TOOLCHAIN: the name of the binary that must be installed for those "
         f"commands to work, on its own\n"
-        f"Use no shell features: no pipes, no redirection, no &&.")
+        f"Use no shell features: no pipes, no redirection, no &&.{feedback}")
     text = strip_fences(pc.complete(system=system, user=user, grammar=None,
                                     n_predict=128)["text"])
 
@@ -769,8 +889,9 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
     log(f"[learn] drafting a {name} harness")
     try:
         harness = draft_harness(pc, name, retrieve)
-        build, run, toolchain = draft_commands(pc, name, extension,
-                                               retrieve(QUERIES["commands"]))
+        build, run, toolchain = draft_commands_with_retry(
+            pc, name, extension, retrieve(QUERIES["commands"]),
+            max_retries=max_retries)
     except ValueError as e:
         return _failed(f"drafting failed: {e}")
 

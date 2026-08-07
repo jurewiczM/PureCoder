@@ -1,5 +1,6 @@
 """Config validators: they must reject the degenerate output `make` accepts."""
 
+import re
 import shutil
 
 import pytest
@@ -127,3 +128,18 @@ def test_env_rejects_a_repeated_block():
 def test_env_allows_a_line_repeated_a_few_times():
     ok, err = validate_env("# a note\n# a note\nKEY=1\n")
     assert ok, err
+
+
+def test_the_env_grammar_bounds_how_many_lines_it_can_emit():
+    """Live finding, exposed the moment truncation detection was repaired: the
+    root rule was `line*`, so a .env generation ran until it hit n_predict --
+    every time, in a project scaffold, three attempts running. The prompt
+    asking for "a shorter, complete file" was ignored three times, which is
+    the same lesson as the rambling comment: bound the shape in the grammar,
+    where it costs nothing and cannot be ignored."""
+    from pathlib import Path
+
+    grammar = Path("purecoder/grammars/env.gbnf").read_text()
+    root = next(ln for ln in grammar.splitlines() if ln.startswith("root"))
+    assert "line*" not in root, "an unbounded root truncates rather than ends"
+    assert re.search(r"line\{\d+,\d+\}", root), root

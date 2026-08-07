@@ -39,6 +39,30 @@ def test_a_known_good_language_passes_every_probe():
     assert len(results) == 5
 
 
+OCAML_FIXTURE = bootstrap.Fixture(
+    correct="let add a b = a + b",
+    wrong="let add a b = a - b",
+    tests='let () = pc_check (add 1 2 = 3) "add"\n'
+          'let () = pc_check (add 0 0 = 0) "zero"',
+    empty="",
+    always_fails='let () = pc_check false "always"',
+)
+
+
+def test_the_hand_written_ocaml_entry_passes_the_gate_a_learned_one_must():
+    """OCaml is the language the bootstrap layer was built for, and six live
+    runs never registered it. The entry is hand-written now -- and held to the
+    same five probes, because the gate does not care who wrote a spec. A
+    hand-written harness that cannot fail wrong code is exactly as worthless as
+    a drafted one."""
+    spec = L.get("ocaml")
+    ok, why = spec.available()
+    if not ok:
+        pytest.skip(why)
+    passed, results = bootstrap.probe_language(spec, OCAML_FIXTURE)
+    assert passed, [r.name for r in results if not r.ok]
+
+
 def test_a_harness_that_cannot_fail_is_rejected():
     """The probe that matters. A check helper that prints on failure but exits
     0 passes "it compiles", "it runs" and "it reports" -- and is worthless.
@@ -388,11 +412,13 @@ def test_a_reserved_name_is_refused_before_any_model_call(store, name):
 def test_a_placeholder_name_is_accepted(store):
     """`learn ocaml` was refused because the placeholder that exists so a
     refusal can name the language also reserved it -- found on the first live
-    run, and worked around with the name `ocaml5`."""
+    run, and worked around with the name `ocaml5`. OCaml is wired by hand now,
+    so `go` carries the case: a declared-but-unimplemented name must stay
+    learnable."""
     _cpp()
-    res = _learn(FakeModel(completions=DRAFTS), store, name="ocaml")
+    res = _learn(FakeModel(completions=DRAFTS), store, name="go")
     assert res["ok"], res["error"]
-    assert (store / "ocaml.json").is_file()
+    assert (store / "go.json").is_file()
 
 
 def test_a_draft_that_does_not_parse_is_reported_not_raised(store):
@@ -882,3 +908,140 @@ def test_the_layout_prompt_asks_its_own_question():
     reusing the commands context would be convenience, not design."""
     assert "Makefile" in bootstrap.QUERIES["layout"]
     assert bootstrap.QUERIES["layout"] != bootstrap.QUERIES["commands"]
+
+
+# ---- prose that reached the compiler -------------------------------------
+
+OBSERVED = (
+    "let pc_checks = ref 0\n"
+    "let pc_check cond =\n"
+    "  if not cond then begin\n"
+    "    prerr_endline \"CHECK FAILED\";\n"
+    "    exit 1\n"
+    "  end else incr pc_checks\n"
+    "\n"
+    "This OCaml code declares a mutable reference `pc_checks` initialized to "
+    "zero. The function `pc_check` takes a boolean expression as an argument. "
+    "If the expression evaluates to false, it prints \"CHECK FAILED:\" "
+    "followed by the string representation of the condition.\n"
+)
+
+
+def test_an_explanation_appended_to_drafted_code_is_removed():
+    """Observed live. Every drafting prompt says "no prose", and the model
+    wrote its explanation anyway; `unfence` strips fences only, so the
+    paragraph reached ocamlc as `Error: Syntax error` on line 14. Two probes
+    failed for it, the redraft was handed the compiler's complaint about its
+    own English, and the language did not register."""
+    cleaned = bootstrap.strip_prose(OBSERVED)
+    assert "This OCaml code declares" not in cleaned
+    assert "let pc_check cond =" in cleaned
+    assert "incr pc_checks" in cleaned
+
+
+@pytest.mark.parametrize("line", [
+    "let () = if !pc_checks < 1 then (prerr_endline \"no checks ran\"; exit 2)",
+    "#define PC_CHECK(x) do { if (!(x)) { std::exit(1); } } while (0)",
+    "    return a + b;",
+    "// adds two numbers and returns the result",
+    "(* the number of checks that have run so far *)",
+    "macro_rules! pc_check {",
+])
+def test_code_and_comments_survive(line):
+    """A filter that eats code is far worse than the prose it removes -- the
+    harness would fail a probe for a line nobody can see."""
+    assert line in bootstrap.strip_prose(line)
+
+
+def test_a_rejected_command_draft_is_retried_with_the_reason():
+    """Live gap. The harness is redrafted with its probe diagnostics, but a
+    command draft that failed a structural check killed the whole run -- and
+    these checks are strict by design, so one bad sample was fatal. Observed:
+    `ocamlc {src}` with no `-o {bin}`, after a previous run had drafted the
+    same command correctly."""
+    pc = FakeModel(completions=[
+        "BUILD: ocamlc {src}\nRUN: {bin}\nTOOLCHAIN: ocamlc",       # rejected
+        "BUILD: ocamlc -o {bin} {src}\nRUN: {bin}\nTOOLCHAIN: ocamlc",
+    ])
+    build, run, toolchain = bootstrap.draft_commands_with_retry(
+        pc, "ocaml", ".ml", "DOCS", max_retries=2)
+    assert build == ("ocamlc", "-o", "{bin}", "{src}")
+    assert toolchain == "ocamlc"
+    assert "{bin}" in pc.calls[1][1], "the retry never saw why it was rejected"
+
+
+def test_a_command_draft_that_never_improves_still_gives_up():
+    """The retry must not turn a refusal into a loop. Two attempts, then the
+    same ValueError the single-shot path raised."""
+    pc = FakeModel(completions=["BUILD: ocamlc {src}\nRUN: {bin}\n"
+                                "TOOLCHAIN: ocamlc"])
+    with pytest.raises(ValueError, match="{bin}"):
+        bootstrap.draft_commands_with_retry(pc, "ocaml", ".ml", "DOCS",
+                                            max_retries=2)
+
+
+def test_the_helper_name_bends_to_the_language_naming_rules():
+    """Live finding, and the prompt was causing it. The drafting prompt
+    dictated a helper "named PC_CHECK", every worked example is uppercase, and
+    OCaml reserves capitalised identifiers for constructors -- so the model
+    wrote `let PC_CHECK cond =` and ocamlc said `Unbound constructor
+    PC_CHECK`. Four drafting attempts, all failing the same way, because the
+    instruction itself was invalid in the target language.
+
+    `draft_check_call` already matches the name case-insensitively, so nothing
+    downstream needed the capitals."""
+    pc = FakeModel(completions=["let pc_check cond = ..."])
+    bootstrap.draft_preamble(pc, "ocaml", "DOCS")
+    _system, user = pc.calls[0]
+    assert "naming rules" in user or "lower-case" in user.lower()
+    assert "pc_check" in user, "no lower-case alternative offered"
+
+
+def test_a_line_echoed_from_the_prompt_is_removed():
+    """Live finding, after the prose filter. The model copied a line of its own
+    instructions into the fixture -- "and ends with this, which runs the
+    tests:" -- and ocamlc failed on it. Too short for the prose filter (8
+    words) and it carries no code punctuation, so the exact test is the honest
+    one: this line was in the request."""
+    prompt = ("A test harness for ocaml defines this:\n\nPREAMBLE\n\n"
+              "and ends with this, which runs the tests:\n\nEPILOGUE\n")
+    answer = ("let add a b = a + b\n"
+              "and ends with this, which runs the tests:\n"
+              "let sub a b = a - b\n")
+    cleaned = bootstrap.strip_echo(answer, prompt)
+    assert "and ends with this" not in cleaned
+    assert "let add a b = a + b" in cleaned
+    assert "let sub a b = a - b" in cleaned
+
+
+def test_code_the_prompt_also_contains_is_kept():
+    """The worked examples ARE the prompt, so a filter that dropped anything
+    appearing there would delete the harness it asked for."""
+    prompt = "static int pc_checks = 0;\nlet pc_check cond = exit 1\n"
+    answer = "static int pc_checks = 0;\nlet pc_check cond = exit 1\n"
+    assert bootstrap.strip_echo(answer, prompt) == answer.strip()
+
+
+@pytest.mark.parametrize("line,want", [
+    ("ocamlc -o {bin} {src}.ml", ("ocamlc", "-o", "{bin}", "{src}")),
+    ("gcc {src}.c -o {bin}", ("gcc", "{src}", "-o", "{bin}")),
+    ("node {src}.js", ("node", "{src}")),
+])
+def test_a_placeholder_with_an_extension_glued_on_is_normalised(line, want):
+    """Live finding. The drafted OCaml build was `ocamlc -o {bin} {src}.ml`,
+    which passes every existing check -- it names {src}, it writes to {bin} --
+    and then asks the compiler for `candidate.ml.ml`, because the executor's
+    file already carries the extension. Two probes failed with `I/O error: no
+    such file`, which tells the redrafting model nothing about the cause.
+
+    Normalised rather than refused, the way `./{bin}` already is: the model
+    glued the suffix back on across three redrafts, and there is no reading of
+    `{src}.ml` that is correct."""
+    assert bootstrap._parse_command("build", line) == want
+
+
+@pytest.mark.parametrize("line", ["g++ -std=c++17 {src} -o {bin}",
+                                  "rustc -o {bin} {src}", "{bin}",
+                                  "dotnet run {src}"])
+def test_an_ordinary_command_is_untouched(line):
+    assert bootstrap._parse_command("build", line)
