@@ -125,6 +125,40 @@ def test_execution_loop_gives_up_and_reports_the_error():
     assert "AssertionError" in res["error"]
 
 
+def test_an_error_hint_reaches_the_retry_prompt():
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_hint=lambda err: "the documentation defines List.fold_left")
+    assert res["ok"]
+    assert "List.fold_left" in pc.prompts[1]
+
+
+def test_an_error_hint_cannot_change_a_verdict():
+    """It is consulted only after a run has already failed, and its text goes
+    to the prompt rather than to `error` -- so a hint can neither fail a
+    passing run nor pass a failing one."""
+    said = []
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_hint=lambda err: said.append(err) or "invented nonsense")
+    assert res["ok"] and said == [], "a passing run must not consult the docs"
+
+
+def test_a_hint_does_not_disturb_the_no_progress_signal():
+    """The stop-when-stuck check compares the toolchain's last line across
+    attempts. Enriching `error` would make an unchanging failure look like a
+    moving one, and the loop would keep burning calls."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=6, verbose=False,
+        error_hint=lambda err: f"hint about attempt {len(pc.prompts)}")
+    assert not res["ok"]
+    assert "identical failures" in res["error"]
+    assert "hint about" not in res["error"]
+
+
 def test_execution_loop_designs_tests_when_none_are_given():
     pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
     res = generate_validated_python(pc, "add two numbers", verbose=False)
@@ -360,6 +394,33 @@ def test_the_stdlib_constraint_survives_a_later_unrelated_failure():
         "the constraint was dropped by a later rebuild"
 
 
+def test_a_duplicate_entry_point_is_explained_not_just_reported():
+    """The other half of the writer demand. A linker saying "multiple
+    definition of `main'" is about the assembled file, and the writer only ever
+    sees its own output -- so the retry prompt names what the harness already
+    provides rather than leaving the model to infer it."""
+    import pytest
+
+    from purecoder.languages import get
+
+    spec = get("c++")
+    ok, why = spec.available()
+    if not ok:
+        pytest.skip(why)
+
+    tests = ("int add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); }")
+    with_main = ("int add(int a,int b){return a+b;}\n"
+                 "int main() { return 0; }\n")
+    clean = "int add(int a,int b){return a+b;}\n"
+    pc = FakeModel(code_outputs=[with_main, clean], completions=[tests])
+    res = generate_validated_python(pc, "add two numbers", spec=spec,
+                                    tests=tests, max_retries=3, verbose=False,
+                                    timeout=60)
+    assert res["ok"], res["error"]
+    assert "main" in pc.prompts[-1]
+    assert "already provides" in pc.prompts[-1]
+
+
 def test_the_loop_stops_when_the_same_failure_repeats():
     """Observed live: 5x "API endpoint is unreachable", 4x an identical
     AttributeError, 3x an identical KeyError -- twelve model calls spent after
@@ -382,3 +443,52 @@ def test_a_loop_that_makes_progress_is_not_cut_short():
                                     max_retries=5, verbose=False)
     assert res["ok"], res["error"]
     assert res["attempts"] == 3
+
+
+def test_a_failure_that_survives_new_code_is_blamed_on_the_tests():
+    """The tests do not change between attempts, so an identical failure across
+    DIFFERENT generated code is evidence the tests are at fault. Observed live
+    on OCaml: the tester emitted invalid source, the compiler said "Syntax
+    error", and that went to the writer three times while the writer's own
+    output was fine each time."""
+    broken_tests = "assert add(1, 2) == 3\nassert add(0 0) == 0\n"   # will not parse
+    pc = FakeModel(
+        code_outputs=[GOOD_CODE, "def add(a, b):\n    return b + a\n"],
+        completions=[broken_tests, GOOD_TESTS],
+    )
+    res = generate_validated_python(pc, "add two numbers", verbose=False)
+    assert res["ok"], res["error"]
+    assert res["tests"] == GOOD_TESTS.strip(), "the tests were never redesigned"
+
+
+def test_the_tests_get_one_second_chance_not_a_loop():
+    """A redesign that does not help must not restart the cycle -- that would
+    turn a decided outcome into an unbounded spend."""
+    broken_tests = "assert add(1, 2 == 3\n"
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[broken_tests])
+    res = generate_validated_python(pc, "add two numbers", max_retries=6,
+                                    verbose=False)
+    assert not res["ok"]
+    # 6 attempts were allowed; the run stops well short of spending them.
+    assert res["attempts"] < 6
+
+
+def test_supplied_tests_that_fail_the_gate_are_reported_not_replaced():
+    """A caller who passed tests in owns them. The post-code gate used to
+    redesign them, discarding the one thing they asked the code to be checked
+    against and then reporting success against tests they never wrote."""
+    thin = "assert add(1, 2) == 3\n"          # one assertion; the floor is three
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "add two numbers", tests=thin,
+                                    max_retries=4, verbose=False)
+    assert not res["ok"]
+    assert "tests you supplied" in res["error"]
+    assert res["tests"] == thin, "the caller's tests were swapped out"
+
+
+def test_supplied_tests_that_pass_the_gate_are_used_as_given():
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                                    verbose=False)
+    assert res["ok"]
+    assert res["tests"] == GOOD_TESTS

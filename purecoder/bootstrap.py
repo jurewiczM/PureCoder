@@ -11,13 +11,25 @@ harness that cannot fail a wrong implementation is not a language entry, it is
 a rubber stamp, and it would make every later run report success.
 """
 
+import dataclasses
+import os
 import re
 import shlex
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from .client import strip_fences
 from .execute import generate_validated_python, run_candidate
-from .languages import BUILTIN_NAMES, LanguageSpec, get, register
+from .languages import (
+    RESERVED_NAMES,
+    LanguageSpec,
+    ProjectSpec,
+    get,
+    register,
+)
 
 # Appended to a correct implementation to produce one that cannot possibly build
 # or parse, in any language. Deliberately not a language-specific mistake: this
@@ -120,7 +132,7 @@ def worked_examples(field: str) -> str:
                        for n in EXAMPLE_LANGUAGES)
 
 
-def draft_preamble(pc, name: str, context: str) -> str:
+def draft_preamble(pc, name: str, context: str, feedback: str = "") -> str:
     """The check helper: prints the failed expression to stderr, exits non-zero,
     and counts successes.
 
@@ -138,7 +150,7 @@ def draft_preamble(pc, name: str, context: str) -> str:
         f"at zero; define a helper named PC_CHECK taking one boolean "
         f"expression; on failure print \"CHECK FAILED: \" plus the expression "
         f"to standard error and exit with status 1; on success increment the "
-        f"counter. Output only that code.")
+        f"counter. Output only that code.{feedback}")
     return unfence(pc.complete(system=system, user=user, grammar=None,
                                n_predict=512)["text"])
 
@@ -177,7 +189,8 @@ def draft_check_call(pc, name: str, preamble: str) -> str:
                      f"defines -- the harness and its invocation disagree")
 
 
-def draft_epilogue(pc, name: str, preamble: str, context: str) -> str:
+def draft_epilogue(pc, name: str, preamble: str, context: str,
+                   feedback: str = "") -> str:
     """The tail that fails the run when nothing was checked.
 
     Without it an empty suite exits 0 and the pipeline reports success on
@@ -197,7 +210,7 @@ def draft_epilogue(pc, name: str, preamble: str, context: str) -> str:
         f"run by the time your tail is reached, so do not call them again. "
         f"Then, if the counter is still zero, print \"no checks ran\" to "
         f"standard error and exit with status 2. Use fully qualified names for "
-        f"anything you did not define. Output only that code.")
+        f"anything you did not define. Output only that code.{feedback}")
     return unfence(pc.complete(system=system, user=user, grammar=None,
                                n_predict=512)["text"])
 
@@ -206,7 +219,7 @@ _SECTIONS = ("WRONG", "TESTS", "EMPTY", "ALWAYS_FAILS")
 
 
 def draft_fixture(pc, name: str, preamble: str, epilogue: str,
-                  check_call: str) -> Fixture:
+                  check_call: str, feedback: str = "") -> Fixture:
     """The five snippets the probes run.
 
     Delimited rather than parsed: we do not have a parser for this language and
@@ -239,7 +252,7 @@ def draft_fixture(pc, name: str, preamble: str, epilogue: str,
         f"@@ALWAYS_FAILS@@\n"
         f"5. a test body containing exactly one check that must fail\n\n"
         f"Output the five snippets in that order, with the separator lines "
-        f"between them and nothing else.")
+        f"between them and nothing else.{feedback}")
     text = pc.complete(system=system, user=user, grammar=None,
                        n_predict=768)["text"]
 
@@ -271,6 +284,48 @@ def test_system_for(name: str, check_call: str) -> str:
         f"with {check_call}(expr), which is already defined: e.g. "
         f"{check_call}(add(1, 2) == 3). Use {check_call} and nothing else. "
         f"Assume the thing under test is already defined in the same file.")
+
+
+def writer_system_for(check_call: str, tail_entry: bool) -> str:
+    """The writer's extra demand, filled in from what the probes proved.
+
+    Templated for the same reason the tester prompt is, and asymmetric with the
+    hand-written entries on purpose. A built-in leaves this empty when a person
+    read the harness and judged nothing extra was needed -- C# is the one that
+    needed it. A drafted entry has had nobody read anything, and the failure it
+    guards is silent: the writer emits a wrapper or a second entry point, the
+    assembled file does not build, and the fix loop is handed a linker error
+    about `main` for code whose logic was correct.
+
+    Both facts here come from artifacts the probes already ran: `check_call` is
+    the helper `draft_check_call` matched against the preamble, and `tail_entry`
+    is read off the drafted tail. The concatenation claim is not a claim about
+    the language at all -- `LanguageSpec.assemble` really does paste four pieces
+    into one file, in that order.
+    """
+    tail = ("and, below it, the entry point that runs the tests"
+            if tail_entry else
+            "and runs its statements in order at top level")
+    return (f"Your implementation is pasted into a file that already defines "
+            f"{check_call} {tail} -- write neither, and put no wrapper class or "
+            f"module around your code")
+
+
+def tail_provides_the_entry_point(harness) -> bool:
+    """Whether the drafted tail is the thing that runs the tests.
+
+    Two harness shapes, the same distinction `dangling_calls` draws: a tail
+    that calls a name the test snippets define is an entry point (C++'s
+    `int main() { pc_tests(); ... }`), and one that calls nothing of theirs is
+    reached after the tests have already run (JavaScript's counter check).
+
+    Read from the drafted text rather than asked of the model, because the
+    answer is already written down by the time this is needed.
+    """
+    called = {name for name, opens_block in _APPLIED.findall(harness.epilogue)
+              if not opens_block}
+    defined = harness.fixture.tests + "\n" + harness.fixture.empty
+    return any(re.search(rf"\b{re.escape(name)}\b", defined) for name in called)
 
 
 # ---- the trust boundary --------------------------------------------------
@@ -363,17 +418,297 @@ def _strip_dot_slash(argv: tuple) -> tuple:
     return tuple(a[2:] if a.startswith("./{") else a for a in argv)
 
 
-def confirm_commands(build, run, ask=input) -> bool:
+def confirm_commands(build, run, project=None, ask=input) -> bool:
     """Show the drafted commands and require an explicit yes.
 
     This is the only place a local model's output becomes a process on the
-    user's machine. It is shown in full, and silence is a no.
+    user's machine. It is shown in full, and silence is a no. The project
+    recipes are shown here too: they end up in a generated Makefile, and the
+    layout probe runs `make test` against them.
     """
     print("\nThese commands were drafted from the documentation and will be "
           "run on your machine:")
     print(f"  build : {' '.join(build) if build else '(none)'}")
     print(f"  run   : {' '.join(run)}")
+    if project is not None:
+        print(f"  and a project of one file, {project.entry}:")
+        for target in ("run", "test", "clean"):
+            print(f"    make {target:<8}{getattr(project, target)}")
+        # Never executed here, so never probed either -- see probe_project.
+        print(f"    make install  {project.install}   (never run by purecoder)")
     return ask("Run these? [y/N] ").strip().lower() in ("y", "yes")
+
+
+# ---- the project layout --------------------------------------------------
+
+# A make recipe IS a shell line -- `g++ ... && ./main` needs `&&`, so the argv
+# discipline `_parse_command` enforces cannot apply here. That makes this the
+# one place drafted output reaches a shell, so the shell's other powers are
+# denied by name. Calibrated against the five hand-written ProjectSpecs: `&&`
+# is the only metacharacter any of them uses, plus a `*` glob in one `clean`.
+_RECIPE_FORBIDDEN = frozenset("|;<>$`\n")
+
+
+def _check_recipe(label: str, recipe: str, entry: str = ""):
+    """A drafted make recipe, or a refusal naming what it did."""
+    found = sorted(set(recipe) & _RECIPE_FORBIDDEN)
+    if found:
+        raise ValueError(f"the {label} recipe uses shell features "
+                         f"({''.join(found)}) that a project of one file has no "
+                         f"reason to need: {recipe!r}")
+    # `&&` chains two commands and is unavoidable; a single `&` backgrounds one,
+    # which would make `make test` exit before the program had run.
+    if recipe.replace("&&", "").count("&"):
+        raise ValueError(f"the {label} recipe backgrounds a command, so its "
+                         f"result would not be waited for: {recipe!r}")
+    if entry and entry not in recipe:
+        raise ValueError(f"the {label} recipe never names {entry}, so it is not "
+                         f"building or running the project at all: {recipe!r}")
+    return recipe
+
+
+def draft_project(pc, name: str, extension: str, context: str):
+    """How a one-file project of this language is laid out. -> ProjectSpec.
+
+    Worked examples, like every other prompt here. Three of them, chosen to
+    span the axis that matters: Python needs no build, C++ needs one and an
+    entry point, JavaScript needs neither but has a real install step.
+
+    Every recipe is checked before it can reach a shell -- see `_check_recipe`,
+    and `probe_project` for why `install` is never run at all.
+    """
+    system = "You output exactly five lines and nothing else."
+    user = (
+        f"Reference documentation for {name}:\n\n{context}\n\n"
+        f"A project in this language is exactly ONE source file. Describe how "
+        f"it is laid out and driven by a Makefile.\n\n"
+        f"For Python:\n"
+        f"ENTRY: main.py\n"
+        f"INSTALL: pip install -r requirements.txt\n"
+        f"RUN: python main.py\n"
+        f"TEST: python main.py\n"
+        f"CLEAN: rm -rf __pycache__\n\n"
+        f"For C++:\n"
+        f"ENTRY: main.cpp\n"
+        f"INSTALL: @echo nothing to install\n"
+        f"RUN: g++ -std=c++17 main.cpp -o main && ./main\n"
+        f"TEST: g++ -std=c++17 main.cpp -o main && ./main\n"
+        f"CLEAN: rm -f main\n\n"
+        f"For JavaScript:\n"
+        f"ENTRY: main.js\n"
+        f"INSTALL: npm install\n"
+        f"RUN: node main.js\n"
+        f"TEST: node main.js\n"
+        f"CLEAN: rm -rf node_modules\n\n"
+        f"Now for {name}, whose source files end in {extension}. TEST builds "
+        f"and runs the single file -- there is no separate test file to find. "
+        f"Write exactly those five lines and nothing else.")
+    text = strip_fences(pc.complete(system=system, user=user, grammar=None,
+                                    n_predict=192)["text"])
+
+    fields = {}
+    for raw in text.splitlines():
+        key, sep, value = raw.partition(":")
+        key = key.strip().upper()
+        if sep and key in ("ENTRY", "INSTALL", "RUN", "TEST", "CLEAN"):
+            fields.setdefault(key, value.strip())
+
+    missing = [k for k in ("ENTRY", "RUN", "TEST") if not fields.get(k)]
+    if missing:
+        raise ValueError(f"the project draft has no {', '.join(missing)}: {text!r}")
+
+    entry = fields["ENTRY"]
+    # The scaffolder writes this name; a path would escape the project
+    # directory, and the wrong suffix would mean the toolchain never sees it.
+    if os.path.basename(entry) != entry or entry.startswith("."):
+        raise ValueError(f"the entry filename is a path, not a name: {entry!r}")
+    if not entry.endswith(extension):
+        raise ValueError(f"the entry file {entry!r} does not end in "
+                         f"{extension}, so the toolchain would not read it")
+    # `run` and `test` additionally have to name the file: a recipe that never
+    # touches the entry cannot be building it, and `test` is the one thing here
+    # that purecoder itself executes.
+    return ProjectSpec(
+        entry=entry,
+        install=_check_recipe("install",
+                              fields.get("INSTALL") or "@echo nothing to install"),
+        run=_check_recipe("run", fields["RUN"], entry),
+        test=_check_recipe("test", fields["TEST"], entry),
+        clean=_check_recipe("clean",
+                            fields.get("CLEAN") or "@echo nothing to clean"),
+    )
+
+
+def draft_entry_stub(pc, name: str, context: str, project) -> str:
+    """What a built program of this language needs beyond the code itself.
+
+    C++ is why this exists: a scaffolded project compiled clean during
+    validation and then failed `make test` with "undefined reference to
+    `main`", because the sandbox harness supplies an entry point and the file
+    written to disk does not. Observed live.
+    """
+    system = f"You output only {name} code, or the single word none."
+    user = (
+        f"Reference documentation for {name}:\n\n{context}\n\n"
+        f"A file `{project.entry}` holds one function and nothing else. It is "
+        f"then run with: {project.run}\n\n"
+        f"If this language needs an entry point for that to work, output it and "
+        f"nothing else -- in C++ that is `int main() {{ return 0; }}`. If a "
+        f"file of plain definitions runs as it is, as in Python or JavaScript, "
+        f"output the single word none.")
+    text = unfence(pc.complete(system=system, user=user, grammar=None,
+                               n_predict=128)["text"]).strip()
+    if not text or text.strip().lower().rstrip(".") == "none":
+        return ""
+    return "\n\n" + text + "\n"
+
+
+def _makefile(project) -> str:
+    """The four targets, tab-indented, written here rather than by the model.
+
+    The probe is asking whether the RECIPES work. Generating the Makefile with
+    the model would put its Makefile-writing between the question and the
+    answer.
+    """
+    return "".join(f"{t}:\n\t{getattr(project, t)}\n"
+                   for t in ("install", "run", "test", "clean"))
+
+
+def probe_project(spec, fixture: Fixture, timeout: int = 60):
+    """Does a project of this layout actually build and run? -> (ok, [Probe]).
+
+    Two-sided, like every other probe here: a correct file must make
+    `make test` succeed, and a file that cannot possibly parse must make it
+    fail. The second is the one that matters -- a `test` recipe that never
+    touches the source passes the first probe and proves nothing.
+
+    `make install` is deliberately never run. It installs software, and a
+    drafted command is not a good enough reason to do that on someone's
+    machine. So the layout is proven to build and run; its install step is
+    shown to the user and taken on trust.
+
+    What this does NOT prove is that `make test` runs any tests. For a
+    single-file project it builds and runs that file -- which is exactly what
+    the hand-written C++ and JavaScript entries do too.
+    """
+    if not shutil.which("make"):
+        return False, [Probe("make is available", False,
+                             "make is not installed, so a project layout "
+                             "cannot be proven here")]
+
+    results = []
+    for label, source, want_ok in (
+            ("a project of correct code builds and runs", fixture.correct, True),
+            ("a project of broken code fails", fixture.correct + SYNTAX_GARBAGE,
+             False)):
+        with tempfile.TemporaryDirectory(prefix="pc-project-") as tmp:
+            Path(tmp, spec.project.entry).write_text(
+                source.rstrip() + spec.project.entry_stub + "\n")
+            Path(tmp, "Makefile").write_text(_makefile(spec.project))
+            try:
+                proc = subprocess.run(["make", "test"], cwd=tmp, timeout=timeout,
+                                      capture_output=True, text=True)
+                ok, detail = proc.returncode == 0, (proc.stderr or proc.stdout)
+            except subprocess.TimeoutExpired:
+                ok, detail = False, f"`make test` did not finish in {timeout}s"
+        results.append(Probe(label, ok is want_ok, detail[-800:]))
+    return all(p.ok for p in results), results
+
+
+# ---- redrafting ----------------------------------------------------------
+
+@dataclass(frozen=True)
+class Harness:
+    """The four drafted pieces that make one candidate, kept together because
+    they are drafted, redrafted and probed as a unit."""
+
+    preamble: str
+    check_call: str
+    epilogue: str
+    fixture: Fixture
+
+
+def draft_harness(pc, name: str, retrieve, feedback: str = "") -> Harness:
+    """All four pieces, in dependency order.
+
+    Redrafted whole rather than in part: a compile error on the first probe
+    could be the helper, the tail or the fixture, and there is no way to
+    attribute it without a parser for the language -- which is the per-language
+    surface the registry exists to avoid.
+    """
+    preamble = draft_preamble(pc, name, retrieve(QUERIES["helper"]), feedback)
+    check_call = draft_check_call(pc, name, preamble)
+    epilogue = draft_epilogue(pc, name, preamble, retrieve(QUERIES["entry"]),
+                              feedback)
+    fixture = draft_fixture(pc, name, preamble, epilogue, check_call, feedback)
+    return Harness(preamble, check_call, epilogue, fixture)
+
+
+# An identifier applied to arguments, with whatever follows the closing paren.
+# A definition is followed by a block (`int main() {`, `fn main() {`); a call is
+# not (`pc_tests ();`). Without that distinction the tail's own entry point
+# looks like something it failed to define.
+_APPLIED = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*(\{)?")
+
+
+def dangling_calls(harness) -> list:
+    """Names the tail calls that nothing else defines.
+
+    Two harness shapes exist. A language needing an entry point has the tail
+    provide it and call the tests; a language that runs top-level statements in
+    order has the tests already run by the time the tail is reached. Two of the
+    three worked examples are the first kind, so the model generalises that
+    shape onto languages of the second -- OCaml got a tail calling `pc_tests ()`
+    with the tests written as bare statements, three drafts running.
+
+    Feeding back "Unbound value pc_tests" was not enough: the model reads it as
+    "define pc_tests" rather than "stop calling it". Naming the contradiction
+    is what makes the choice explicit.
+    """
+    defined = harness.preamble + harness.fixture.tests + harness.fixture.empty
+    return sorted({
+        name for name, opens_block in _APPLIED.findall(harness.epilogue)
+        if not opens_block and not re.search(rf"\b{re.escape(name)}\b", defined)
+    })
+
+
+def shape_feedback(harness) -> str:
+    """The hint that turns a repeated dangling call into a decision."""
+    dangling = dangling_calls(harness)
+    if not dangling:
+        return ""
+    names = ", ".join(repr(n) for n in dangling)
+    return (f"\n\nSpecifically: your ending calls {names}, which nothing else "
+            f"defines. Either the test snippets must define it, or -- if this "
+            f"language runs top-level statements in order, so the tests have "
+            f"already run before the ending is reached -- the ending must not "
+            f"call it at all. Choose one and be consistent.")
+
+
+def probe_feedback(probes, max_lines: int = 8) -> str:
+    """What the toolchain said, shaped for the next drafting prompt.
+
+    The probes assemble harness + implementation + tests + tail into one file,
+    so the diagnostic is about the whole assembly. Saying that plainly is the
+    difference between the model fixing the helper and it rewriting `add`.
+    """
+    failures = [p for p in probes if not p.ok]
+    if not failures:
+        return ""
+
+    lines = ["\n\nYour previous attempt was rejected. The harness, an "
+             "implementation and its tests are assembled into ONE file and "
+             "built, and these checks failed:"]
+    for probe in failures:
+        lines.append(f"\n- {probe.name}")
+        detail = probe.detail.strip()
+        if detail:
+            lines.extend("  " + ln for ln in
+                         detail.splitlines()[:max_lines])
+        else:
+            lines.append("  (the run succeeded when it should have failed)")
+    lines.append("\nFix the cause and output only the corrected code.")
+    return "\n".join(lines)
 
 
 # ---- the orchestrator ----------------------------------------------------
@@ -386,6 +721,8 @@ QUERIES = {
               "macro or function taking a boolean",
     "entry": "program entry point, main function, top-level statements",
     "commands": "compile and run a single source file from the command line",
+    "layout": "project layout, build and run a program with a Makefile, "
+              "install dependencies, clean build output",
 }
 
 BUBBLE_SORT = ("a function that takes an array of integers and returns them "
@@ -398,7 +735,8 @@ def _failed(error, probes=()):
 
 def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
                    confirm=confirm_commands, verbose=True, live_check=True,
-                   timeout=60):
+                   timeout=60, max_retries=2, docs_store="",
+                   want_project=True):
     """Draft a language entry, prove it, and save it.
 
     -> {ok, probes, error}. Nothing is registered unless every probe passes:
@@ -407,6 +745,15 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
 
     `retrieve` takes a query and returns context, injected so the drafting path
     is testable without an embedding model.
+
+    `docs_store` names an index of the same documentation, so generating in
+    this language later can read what it was learned from. Recorded on the spec
+    rather than assumed from the name: the caller owns the index, and a run
+    that never built one must not leave a spec pointing at nothing.
+
+    `want_project` also drafts a one-file project layout. It is proven
+    separately and its failure is not the language's: a layout that does not
+    build is dropped, and the entry the harness probes earned is still saved.
     """
     from .langstore import save
 
@@ -414,38 +761,81 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
         if verbose:
             print(message)
 
-    if name in BUILTIN_NAMES:
-        return _failed(f"{name!r} is a built-in language -- a drafted spec may "
-                       f"not replace a hand-written one")
+    if name in RESERVED_NAMES:
+        return _failed(f"{name!r} is a reserved language -- it is either wired "
+                       f"already or refused on purpose, and a drafted spec may "
+                       f"not replace either")
 
     log(f"[learn] drafting a {name} harness")
     try:
-        preamble = draft_preamble(pc, name, retrieve(QUERIES["helper"]))
-        check_call = draft_check_call(pc, name, preamble)
-        epilogue = draft_epilogue(pc, name, preamble, retrieve(QUERIES["entry"]))
-        fixture = draft_fixture(pc, name, preamble, epilogue, check_call)
+        harness = draft_harness(pc, name, retrieve)
         build, run, toolchain = draft_commands(pc, name, extension,
                                                retrieve(QUERIES["commands"]))
     except ValueError as e:
         return _failed(f"drafting failed: {e}")
 
-    if not confirm(build, run):
+    # Drafted before the confirmation so its recipes are shown alongside the
+    # build and run commands -- they become a Makefile the user runs, and the
+    # layout probe runs `make test` against them.
+    #
+    # A failure here is not fatal. The layout is a SEPARATE claim from "this
+    # language can be generated and validated", and losing the second because
+    # the first could not be drafted would throw away work the probes proved.
+    project = None
+    if want_project:
+        # Its own query. "compile one file" and "lay a project out" are
+        # different questions, and reusing the first context here would be
+        # convenience rather than design.
+        context = retrieve(QUERIES["layout"])
+        try:
+            project = draft_project(pc, name, extension, context)
+            project = dataclasses.replace(
+                project, entry_stub=draft_entry_stub(pc, name, context, project))
+        except ValueError as e:
+            log(f"[learn] no project layout drafted ({e}) -- the language can "
+                f"still be generated and validated")
+            project = None
+
+    # Asked once, outside the retry loop. It prompts on stdin, and the commands
+    # are not what a probe failure implicates -- the build ran.
+    if not confirm(build, run, project):
         return _failed("declined: the drafted commands were not confirmed, so "
                        "nothing was run and nothing was saved")
 
-    spec = LanguageSpec(
-        name=name, extension=extension, probe=(toolchain, "--version"),
-        build=build, run=run, preamble=preamble, epilogue=epilogue,
-        test_system=test_system_for(name, check_call), check_call=check_call,
-    )
+    probes = []
+    for attempt in range(1, max_retries + 1):
+        spec = LanguageSpec(
+            name=name, extension=extension, probe=(toolchain, "--version"),
+            build=build, run=run, preamble=harness.preamble,
+            epilogue=harness.epilogue, check_call=harness.check_call,
+            test_system=test_system_for(name, harness.check_call),
+            writer_system=writer_system_for(
+                harness.check_call, tail_provides_the_entry_point(harness)),
+            docs_store=docs_store,
+        )
 
-    log("[learn] probing the candidate")
-    ok, probes = probe_language(spec, fixture, timeout=timeout)
-    for probe in probes:
-        log(f"[learn]   {'pass' if probe.ok else 'FAIL'}  {probe.name}")
-    if not ok:
+        log(f"[learn] probing the candidate (attempt {attempt})")
+        ok, probes = probe_language(spec, harness.fixture, timeout=timeout)
+        for probe in probes:
+            log(f"[learn]   {'pass' if probe.ok else 'FAIL'}  {probe.name}")
+        if ok:
+            break
+
         failed = ", ".join(p.name for p in probes if not p.ok)
-        return _failed(f"the candidate failed a probe: {failed}", probes=probes)
+        if attempt == max_retries:
+            return _failed(f"the candidate failed a probe: {failed}",
+                           probes=probes)
+
+        # Every other layer in this pipeline feeds its error back and tries
+        # again; this one used to refuse on the first bad draft. A live OCaml
+        # run reached four of five probes on a single malformed snippet.
+        log(f"[learn] {failed} -> redrafting with the diagnostic")
+        try:
+            harness = draft_harness(
+                pc, name, retrieve,
+                probe_feedback(probes) + shape_feedback(harness))
+        except ValueError as e:
+            return _failed(f"redrafting failed: {e}", probes=probes)
 
     # The probes prove the harness can fail wrong code. This proves the writer
     # and the tester can actually work inside it, which is a different claim.
@@ -459,6 +849,25 @@ def learn_language(pc, name: str, extension: str, docs_dir, *, retrieve,
             return _failed(f"the harness runs, but the writer and tester could "
                            f"not work inside it: {result['error']}",
                            probes=probes)
+
+    # Attached only once it has been proven, and its failure costs only itself.
+    # `project` refusing a language is a smaller loss than `code` refusing it,
+    # so a layout that does not build is dropped rather than allowed to sink
+    # the entry the harness probes already earned.
+    if project is not None:
+        candidate = dataclasses.replace(spec, project=project)
+        log("[learn] probing the project layout")
+        ok, layout_probes = probe_project(candidate, harness.fixture,
+                                          timeout=timeout)
+        probes += layout_probes
+        for probe in layout_probes:
+            log(f"[learn]   {'pass' if probe.ok else 'FAIL'}  {probe.name}")
+        if ok:
+            spec = candidate
+        else:
+            log(f"[learn] the drafted layout does not build -- registering "
+                f"{name} without one, so `project` will refuse it and `code` "
+                f"will not")
 
     path = save(spec, docs_dir=str(docs_dir) if docs_dir else "")
     register(spec)

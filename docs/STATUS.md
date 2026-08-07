@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-290 tests, all green, none of them needing a GPU or a running server
+410 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -15,7 +15,7 @@ _Snapshot of what's built, tested, and what's next._
 | 3 | `validate.py` (config validators + loop) | ✅ tested | catches degeneration & malformed targets |
 | 3 | `execute.py` (execution validation) | ✅ tested | executor cases + convergence via a scripted fake model |
 | 3 | test-quality gate (`lint_tests`) | ✅ tested | one test per observed bad-test mode, all 5 |
-| 4 | `rag.py` chunking + retrieval + gate | ✅ tested | search/gate/persistence proven w/ fake embedder |
+| 4 | `rag.py` chunking + retrieval + gate | ✅ tested | search/gate/persistence proven w/ fake embedder; index-integrity refusals and ingest pruning covered |
 | 4 | code-aware AST chunker | ✅ tested | function/class/method/preamble boundaries verified |
 | 5 | `contract.gbnf` + `validate_contract` | ✅ tested | schema guards past the grammar; grammar verified against a live llama-server |
 | 5 | `derive_contract` + fallback | ✅ tested | retries, feeds errors back, degrades on a dead server |
@@ -25,6 +25,10 @@ _Snapshot of what's built, tested, and what's next._
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
 | 7 | `learn` drafting + CLI | ✅ tested | drafts scripted; probes run g++ end to end |
+| 8 | hybrid ranking + reviewed ingest | ✅ tested | exact-name signal decides where cosine is blind; nothing embedded before the user accepts |
+| 8 | drafted project layout + its probe | ✅ tested | two-sided against real make; a recipe that touches nothing is rejected |
+| 8 | a learned language keeps its docs | ✅ tested | `code --lang X` grounded with no second ingest; every failure path degrades instead of stopping |
+| 8 | the writer's shape demand, derived | ✅ tested | templated from the proven helper and tail shape, carried to the live round and through the store |
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
@@ -106,41 +110,123 @@ _Snapshot of what's built, tested, and what's next._
   live round decide it, and a harness that cannot fail wrong code is refused.
   What the probes cannot see is *idiom*: a spec can pass every one and still
   produce code no practitioner of that language would write.
-- The first live run of the bootstrap layer, its five defects and the two
-  gaps still open, are written up in
+- The first live run of the bootstrap layer and its five defects, all now
+  fixed, are written up in
   [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
-- **Bootstrap drafts once and never retries.** Every other layer in the
-  pipeline feeds its error back and tries again; this one refuses on the first
-  bad draft. A live OCaml run reached 4 of 5 probes with one malformed fixture
-  snippet, which a single retry carrying the compiler's message would very
-  likely have fixed. This is the largest known gap in the layer.
-- **The worked examples bias the harness shape.** Two of the three (C++, Rust)
-  need an entry point and call `pc_tests()`; JavaScript does not. Asked for
-  OCaml, which runs top-level statements, the model generalised the majority
-  and emitted a tail calling a function the tests never defined. Correcting
-  only that tail by hand made all five probes pass, so the drafting is close
-  and the bias is the thing in the way.
-- **A learned language can be generated and validated, but not scaffolded.**
-  It arrives with no `ProjectSpec` -- proving a language runs says nothing
-  about how a project of it is laid out -- so `project` refuses it and points
-  at `code`. It also has no `writer_system`, so a language whose harness needs
-  a shape constraint (C#'s "no class wrapper, no Main" is the built-in example)
-  has no way to express one.
-- **The drafted build/run commands are the one place model output becomes a
-  process.** They are argv rather than a shell string, shell syntax is refused,
-  and the user confirms before the first execution. That is a closed door, not
-  a sandbox — the executor's isolation is still a temp dir and a process group.
+- **A learned language is only as good as its tester.** OCaml now registers on
+  the first attempt with all five probes green, but generating *with* it stalls
+  on test quality: the writer produced correct OCaml every time while the
+  tester produced source the compiler rejected. The loop refuses honestly
+  rather than emitting it. That is the expected outcome, not an open defect --
+  `ocaml` is a placeholder entry (no runner, no test idiom, `available()` says
+  so), and it meets the project's oldest finding, that the writer is stronger
+  than the tester, for a language the model barely saw. Wiring OCaml properly
+  is separate work.
+- **Retrieval reaches the code artifact of a project, and only that one.**
+  `code`, `ask` and `project` share one resolver, so an explicit `--store` or a
+  learned language's own index grounds all three. Inside a scaffold the
+  documentation goes to the execution-validated module alone: the Makefile's
+  targets come from `ProjectSpec`, the `.env` is derived from the code it is
+  shown, and the README is prose. Folding the context into the description
+  instead of passing it separately sent it to the README prompt too -- caught
+  by a test, not by review.
+- **A learned language is now scaffoldable, when its layout can be proven.**
+  `learn` drafts a `ProjectSpec` and probes it two-sided against a real `make`:
+  correct code must build and run, code that cannot parse must fail. If it does
+  not hold, the language is still registered without one -- `project` refuses
+  it, `code` and `ask` do not notice. What the probe proves is narrower than it
+  sounds: for a one-file project `make test` builds and runs the file rather
+  than running a suite, exactly as the hand-written C++ and JavaScript entries
+  do. `make install` is never run, so it is trusted rather than proven.
+  A learned language now gets a `writer_system`, but see the boundary below for
+  what that is and is not evidence of.
+- **The writer's demand is derived and exercised; nothing proves it was
+  needed.** A drafted entry now tells the writer that the file already defines
+  the check helper and either supplies the entry point or runs at top level, and
+  that it should add no wrapper. Both facts come from artifacts the probes
+  proved, and the live bubble-sort round exercises the demand end to end -- but
+  that round only shows the writer can work *with* it. There is no mechanical
+  two-sided probe of *necessity* here, and the obvious one does not work:
+  pasting the tail into the implementation slot to see whether duplication
+  breaks the build fails a top-level-statement language for the wrong reason
+  (two tails, so the counter check runs before the tests, so "no checks ran"),
+  which would manufacture a constraint for a language that needed none. The
+  hand-written entries stay asymmetric on purpose -- a built-in is empty because
+  a person judged it unnecessary; a drafted one is filled because nobody judged
+  anything. Two further limits. It is *narrower than C#'s hand-written demand*,
+  which also forbids `using` directives: that is a fact about C#, not about
+  `assemble()`, and a derived demand that banned imports outright would break a
+  language whose implementation legitimately needs one. And it applies to
+  languages learned from here on -- an entry already saved under
+  `$PURECODER_HOME` keeps the field empty, since filling it needs the fixture,
+  which is not stored. Re-running `learn` is the only way to backfill.
+- **A collision is explained after the fact, not prevented by a gate.** When a
+  failed attempt defines something the harness already provides, the retry
+  prompt names it -- the toolchain reports that as "multiple definition of
+  `main'" in a file the writer has never seen. The check is textual (it runs for
+  languages with no parser here), so it can miss, and it is deliberately only a
+  hint on an already-failed run: a false positive would cost a line of context
+  and point the model at code that is fine.
+- **Drafted commands reach the machine two ways, and they are not equally
+  narrow.** Build and run are argv, and shell syntax is refused outright. A
+  project recipe cannot be argv -- `g++ ... && ./main` needs `&&` -- so it is a
+  shell line with the shell's other powers denied by name (pipes, redirection,
+  `;`, command substitution, a backgrounding `&`), and `run`/`test` must name
+  the entry file. The denylist is calibrated against the five hand-written
+  layouts and a test keeps it there. The user confirms both before anything
+  runs, and `make install` is never run at all. That is a closed door, not a
+  sandbox — the executor's isolation is still a temp dir and a process group.
 - The doc chunker is Python-and-markdown only, so a language's own code samples
   are chunked as prose. tree-sitter chunking remains the real fix, and it
   matters more here than anywhere else in the pipeline.
-- **A compile error from the TEST section is fed back to the writer.** For
-  any compiled language the fix loop treats a build failure as the
-  implementation's fault, so a tester that emits invalid C++/Rust/C#/OCaml
-  sends the writer round the loop until NO_PROGRESS_LIMIT stops it. The
-  textual gate cannot catch it: it counts check calls and has no parser.
-  Observed live on OCaml.
 - RAG only helps where the model is ignorant (new/obscure/own-project APIs).
+- **Ranking is two signals, and the gate is shared.** Cosine plus an
+  IDF-weighted exact-name score, the latter bounded in `[0,1]` absolutely so it
+  can share `min_score`. The consequence is deliberate: a chunk containing
+  every rare token of the query clears the gate on the lexical signal alone,
+  with a cosine of zero. A token in every chunk weighs nothing, so stopwords
+  cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
+  that decide this, and neither is tuned against a benchmark — there isn't one.
+- **Retrieval cost is the model call, not the search.** Over 7495 chunks --
+  this repo with `llama.cpp/` in it, which is a deliberately pathological
+  corpus, not a docs directory -- the lexical signal is ~0.005 ms (inverted
+  index), cosine ~3 ms (brute-force matmul), and loading an index ~220 ms. The
+  embedding of the query dominates all of it. Worth being plain about the
+  scale: a real docs directory is the OCaml case at 15 chunks, where the old
+  per-chunk walk cost microseconds and the inverted index buys nothing
+  measurable. It is headroom for a large corpus, not a fix for something
+  anyone was waiting on. Brute-force cosine stays for the same reason: an ANN
+  index would trade exactness and a dependency for milliseconds nobody needs.
+- **Documentation names an API; it does not enumerate one.** The symbol library
+  extracted from the docs cannot decide that a name is wrong — judging code
+  against it produced 45 findings on this project's own source, all of them
+  correct code the docs had no reason to mention. What it can do is answer *did
+  you mean* once the toolchain has already rejected a name, which needs no
+  completeness. That inversion is the whole design of `purecoder/symbols.py`,
+  and there is deliberately no function in it that takes code. It would not
+  have helped either recorded OCaml failure — both were `Syntax error` from the
+  tester's output, and the one name error was `Unbound value pc_tests`, a
+  harness name no documentation contains. Its value is `ask` over a real
+  library's docs, which is not the case that motivated writing it.
+- **Measured, and the result is weaker than the motivation.** Run over this
+  repo (7128 chunks, real bge-small embeddings) on six queries — five exact
+  symbols and one prose control — the lexical signal changed the ranking in
+  four, but it never *rescued* a query: cosine already put a chunk containing
+  the symbol first, and every query cleared the gate on cosine alone. So the
+  guarantee this buys ("the page defining the symbol cannot be ranked out by a
+  page merely about it") is real, but on this corpus it was not yet needed.
+  Related, and more interesting: bge-small's cosine floor is high enough that
+  `min_score=0.3` almost never fires. The gate is looser in practice than the
+  number suggests.
 - Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
+- **An index is refused rather than half-trusted.** The vectors and the chunk
+  metadata are two files, and `search` pairs them by row index, so a count
+  mismatch used to inject documentation under a filename it never came from —
+  no exception, right-looking score. `load` now refuses on a count or shape
+  mismatch, on a model other than the one that built the index, and on a file
+  it cannot read; `search` refuses a query of the wrong dimension. What it
+  cannot detect is an index that is merely *stale* — docs edited since the last
+  `ingest` are still answered from the old text.
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call
@@ -149,19 +235,18 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **Wire RAG into the scaffolder** — doc-grounded whole projects.
-2. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
+1. **SQL**, once it has an assertion form. `sqlite3` ships with Python so the
    runner is free, but SQL has no `assert`, and the check idiom every other
    language gets from its harness needs real design rather than a `1/0` trick.
-3. **Measure the contract layer** — does grounding actually reduce
+2. **Measure the contract layer** — does grounding actually reduce
    spec-divergence, or only make it visible? Needs a small task set with
    known-ambiguous specs. This is the claim the whole layer rests on and it
    is still unmeasured.
-4. **A dependency story for the executor** — today anything outside the
+3. **A dependency story for the executor** — today anything outside the
    stdlib is unvalidatable. A per-run venv, or declaring allowed packages in
    the spec, would widen execution validation past its current ceiling.
-5. **tree-sitter chunking** — multi-language code retrieval.
-6. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
+4. **tree-sitter chunking** — multi-language code retrieval.
+5. **Specialization track** — prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
 
 Done since the last snapshot: the reachability false green (runtime check
@@ -169,3 +254,16 @@ instrumentation), the `.env` guard (grammar bound plus a looser validator),
 test leakage into the implementation (`lint_implementation`), the discarded
 gate verdict, dependency thrash (one stdlib retry then stop), and sandbox
 process-group cleanup.
+
+Done in the retrieval pass after that: an index that could pair a chunk with
+another chunk's source is now refused rather than answered from; the gate can
+no longer inject a heading with no documentation under it; `ingest` prunes
+caches and shows what it will index before embedding anything; ranking gained
+an exact-name signal; the lexical index was inverted (400-500x on a large
+corpus); and a learned language keeps the docs it was learned from.
+
+Done in the bootstrap pass after that: a learned language now tells its writer
+what its harness already provides -- derived from the helper name and the shape
+of the drafted tail, never asked of the model -- and a failed attempt that
+collides with the harness anyway is told which name collided instead of being
+handed a linker error about a file it never saw.

@@ -134,8 +134,74 @@ purecoder ingest ./some_library/docs --store lib
 purecoder ask "write code using <that library> to do X" --store lib
 ```
 
+`ingest` shows you what it is about to index and waits — every file with its
+chunk count, plus what it pruned, skipped as binary, or dropped as a duplicate.
+`[e]` drops paths or globs and re-plans; nothing is embedded until you accept,
+because chunking is free and embedding is not. It prints the `--exclude` flags
+matching your choices so the same index can be rebuilt in one command. `-y`
+skips the review, as does a non-interactive stdin.
+
 Embedding is the slow part, so the index persists to `<store>.npy` / `.json` —
 ingest once, reuse across runs.
+
+Ranking uses two signals: embedding similarity for *what this is about*, and an
+exact-name score for *what you literally typed*. Embeddings are worst at API
+symbols, which is most of what gets asked here — `Printf.eprintf` retrieves the
+page defining it even when a page merely about output formatting embeds closer.
+
+`ingest` also collects every qualified name the docs use. It cannot tell you a
+name is wrong — prose documentation never enumerates a module, and assuming
+otherwise flagged 45 pieces of correct code in the measurement that settled it
+— but once the compiler has rejected a name, it answers *did you mean* from the
+real API instead of leaving the fix loop guessing.
+
+## Teaching it a language it has never run
+
+Five languages exist because someone wrote five registry entries. `learn` points
+the pipeline at a language's own documentation and has it draft the sixth:
+
+```bash
+purecoder learn zig ./zig-docs --ext .zig
+purecoder --lang zig code "a function add(a, b) returning their sum"
+```
+
+What the model drafts from those docs: the check helper, the harness tail that
+fails a run where no check executed, and the build/run commands (shown to you as
+argv, confirmed before anything is executed). What it does **not** draft is the
+tester's own instructions — those are templated, because a model writing its own
+instructions is the technique that measured worst. The writer's extra demand is
+templated too, but from the drafted harness rather than from prose: it is told
+that the file already defines the check helper, and either supplies the entry
+point or runs statements at top level, so it should write neither and wrap
+nothing. Without it a writer that emits its own `main` produces a link error
+about a file it never saw; with it, and when it happens anyway, the retry names
+what collided.
+
+Then the gate. Five mechanical probes must pass before anything is registered:
+correct code passes, **wrong code fails**, an empty suite fails, a suite that
+never runs a check fails. A harness that cannot fail wrong code is a rubber
+stamp, not a language entry, and is refused with the compiler's own message.
+Plus one live round — a real generate-and-validate cycle — unless you pass
+`--no-live`.
+
+`learn` also drafts a **project layout** — entry filename, make targets, and an
+entry point for languages that need one to link — and probes that separately:
+a project of correct code must build and run, and one of code that cannot parse
+must fail. If it does not hold the language is still registered without a
+layout, so `project` refuses it and `code` is unaffected. `make install` is
+shown to you but never run: it installs software, and a drafted command is not
+reason enough. `--no-project` skips the whole thing.
+
+A learned language **keeps the index of its documentation**, so the second
+command above is doc-grounded automatically: no second `ingest`, no `--store` to
+remember, and once the toolchain rejects a name, the docs answer *did you mean*.
+`--no-docs` opts out. A registered language is two things on disk under
+`$PURECODER_HOME` (or XDG) — `languages/<name>.json` and its index at
+`docs/<name>.npy` / `.json` — so removing one by hand means removing both:
+
+```bash
+rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
+```
 
 ## Commands
 
@@ -145,10 +211,19 @@ ingest once, reuse across runs.
 | `env "<spec>"`     | grammar-valid `.env` |
 | `make "<spec>"`    | validated Makefile |
 | `project <name> "<spec>" [dir]` | scaffold a whole project (code + Makefile + .env + README) |
-| `ingest <dir>`     | build a RAG index over docs/code |
+| `ingest <dir>`     | build a RAG index over docs/code, after showing you what it will index |
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
-| `learn <name> <docs>` | draft a language entry from its docs, and probe it |
+| `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
 | `status`           | live system status |
+
+Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
+(otherwise a learned language uses its own); `--no-docs` ignores it; `-y` skips
+the ingest review; `--exclude GLOB` leaves paths out of an index.
+
+`code`, `ask` and `project` all ground themselves the same way — one resolver,
+so they cannot drift apart. In a scaffold the documentation reaches the
+execution-validated module only; the Makefile, `.env` and README are generated
+without it on purpose.
 
 `project` derives a spec contract by default; `code` does not. Add
 `--contract` to opt in, `--no-contract` to opt out, or set
@@ -165,13 +240,14 @@ purecoder/
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
   rag.py         code/doc-aware chunking + retrieval
+  symbols.py     the names the docs use, and what they can honestly decide
   status.py      live system probe
   bootstrap.py   draft a language entry from its docs, then probe it
-  langstore.py   where a learned language lives between runs
+  langstore.py   where a learned language and its docs live between runs
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           290 tests (no GPU, no server; toolchain ones self-skip)
+tests/           410 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

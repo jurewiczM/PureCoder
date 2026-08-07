@@ -32,7 +32,7 @@ def _write(outdir: str, filename: str, content: str) -> str:
 
 def scaffold_project(pc, name, description, outdir="build",
                      entry=None, max_retries=5, verbose=True,
-                     use_contract=True, spec=PYTHON):
+                     use_contract=True, spec=PYTHON, docs="", error_hint=None):
     # Refuse before creating anything. A declared-but-unwired language has no
     # ProjectSpec, so it cannot even name its entry file -- and a directory
     # created then abandoned is worse than a refusal that explains itself.
@@ -64,12 +64,24 @@ def scaffold_project(pc, name, description, outdir="build",
             print(msg)
 
     # 1. main code -- execution-validated (the hard one)
+    #
+    # `docs` arrives separately from `description` rather than folded into it,
+    # and that separation is the whole point: this is the ONLY artifact that
+    # gets the documentation. Folding it in sent it to the README prompt too,
+    # which is prose and cannot use it -- caught by a test, not by review.
+    #
+    # The other three are left out deliberately. The Makefile's targets come
+    # from spec.project rather than from any doc, the .env is derived from the
+    # code it is shown, and the README is prose. Retrieval would spend tokens
+    # there without adding constraint, on a card where "context is
+    # double-edged" is a lesson this project already paid for once.
     log(f"\n=== {name}: {entry} (execution-validated) ===")
+    grounded = f"{docs}\n\n{description}" if docs else description
     code_res = generate_validated_python(
         pc,
-        f"{description}\n\nThis is the main module `{entry}`.",
+        f"{grounded}\n\nThis is the main module `{entry}`.",
         use_contract=use_contract, spec=spec,
-        max_retries=max_retries, verbose=verbose,
+        max_retries=max_retries, verbose=verbose, error_hint=error_hint,
     )
     code = code_res["text"]
     # A compiled language needs an entry point to link. The sandbox supplies

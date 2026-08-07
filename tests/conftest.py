@@ -46,6 +46,33 @@ class FakeModel:
         return self.complete("", description)
 
 
+class FakeEmbedder:
+    """Bag-of-words unit vectors: similar text -> high cosine, no model needed.
+
+    Shared rather than local to test_rag.py because the CLI's grounding path
+    needs one too: `open_docs` builds a real `Embedder`, so proving that
+    generation actually reads a learned language's docs means standing in for
+    the model here as well.
+    """
+
+    VOCAB = ["alpha", "beta", "gamma", "delta"]
+
+    def _vec(self, text):
+        import numpy as np
+
+        v = np.array([float(text.lower().count(w)) for w in self.VOCAB])
+        norm = np.linalg.norm(v)
+        return v / norm if norm else v
+
+    def embed_docs(self, texts):
+        import numpy as np
+
+        return np.vstack([self._vec(t) for t in texts])
+
+    def embed_query(self, text):
+        return self._vec(text)
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     """A private language store, and a registry left exactly as it was found.

@@ -281,6 +281,65 @@ def lint_implementation(code: str):
     return True, ""
 
 
+# An identifier applied to arguments and followed by a block: `int main() {`,
+# `void pc_tests() {`, `fn main() {`. A call is not followed by one, which is
+# the same distinction `bootstrap.dangling_calls` draws from the other side.
+_DEFINITION = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*\{")
+
+# Words that look like a definition under that regex and are not one.
+_NOT_A_NAME = frozenset((
+    "if", "else", "for", "while", "do", "switch", "catch", "using", "lock",
+    "foreach", "return", "match", "when", "unsafe", "try", "with",
+))
+
+
+def _block_definitions(text: str) -> set:
+    return {name for name in _DEFINITION.findall(text)
+            if name not in _NOT_A_NAME}
+
+
+def harness_collision(spec, code: str, tests: str = "") -> str:
+    """What the implementation defines that the assembled file already has.
+
+    The writer's demand (`bootstrap.writer_system_for`) tries to prevent this;
+    this is what to say once it has happened anyway. The failure is reported at
+    the wrong address by every toolchain involved: the harness's tail defines
+    `main`, the writer defines one too, and the linker says "multiple definition
+    of `main'" about a file the writer has never seen. Feeding that back
+    unexplained sends the model to rewrite its own correct logic.
+
+    Textual on purpose -- it runs for languages this project does not parse, and
+    it only ever adds a sentence to a retry prompt that a failure already
+    triggered. A miss costs nothing; a false positive costs one line of context,
+    which is why keywords are excluded and Python (no harness at all) is exempt
+    rather than approximated.
+    """
+    if not spec.preamble and not spec.epilogue:
+        return ""
+
+    # The tests count as part of the file, and they are where the likeliest
+    # collision lives: a C++ tail calls `pc_tests()` without defining it, so a
+    # writer reading the shape defines one, and the redefinition is against the
+    # test snippet rather than against the harness. A forward declaration
+    # (`int add(int,int);`) has no block and so cannot collide with the
+    # implementation it declares.
+    already = spec.preamble + "\n" + spec.epilogue + "\n" + tests
+    clashes = sorted(_block_definitions(code) & _block_definitions(already))
+    # The helper belongs to the harness and to the tests. An implementation
+    # naming it at all is either asserting or redefining, and the writer prompt
+    # already forbids the first.
+    if spec.check_call and spec.check_call in code:
+        clashes.append(spec.check_call)
+    if not clashes:
+        return ""
+
+    names = ", ".join(repr(n) for n in clashes)
+    return (f"\n\nNote: your implementation defines or uses {names}, which the "
+            f"file it is pasted into already provides -- the harness supplies "
+            f"the check helper and the entry point. Remove it and output only "
+            f"the implementation.")
+
+
 # ---- test-quality gate: "who tests the tester" --------------------------
 
 def public_names(code: str):
@@ -443,13 +502,20 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
-                              use_contract=False, spec=PYTHON, **kw):
+                              use_contract=False, spec=PYTHON,
+                              error_hint=None, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
     With use_contract, the prose is first turned into a contract that both the
     writer and the test designer read. Returns {ok, text, tests, contract,
     attempts, error}.
+
+    `error_hint(error) -> str` may add context to a failure the toolchain has
+    already reported -- `ask` uses it to answer "did you mean" from the indexed
+    docs. It is consulted only when a run has failed, and only its text reaches
+    the retry prompt: the verdict stays the executor's, and the no-progress
+    signal keeps reading the toolchain's own message.
     """
     # A language with no test idiom cannot be validated, so generating for it
     # would emit unverified code. The CLI refuses such a spec before reaching
@@ -501,6 +567,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     task = grounded
     code, error = "", ""
     regated = False          # the target-name check runs once, after code exists
+    redesigned = False       # the tests get one second chance, not a loop
     asked_stdlib = False     # the stdlib-only nudge is offered at most once
     last_error = None
     repeats = 0              # identical failures in a row -- the loop is stuck
@@ -530,6 +597,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             if targets:
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
                                                   spec=spec)
+                # Tests the caller supplied are theirs. Redesigning them here
+                # discarded the one thing they asked the code to be checked
+                # against, and then reported success against tests they never
+                # wrote -- a green result that is not evidence of the request.
+                if not gate_ok and tests is not None:
+                    if verbose:
+                        print(f"[tests] supplied tests fail the gate: {gate_reason}")
+                    return {"ok": False, "text": code, "tests": designed,
+                            "contract": contract, "attempts": attempt,
+                            "error": f"the tests you supplied fail the quality "
+                                     f"gate: {gate_reason}"}
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
@@ -607,6 +685,34 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         repeats = repeats + 1 if first == last_error else 0
         last_error = first
         if repeats >= NO_PROGRESS_LIMIT:
+            # The tests do not change between attempts. An identical failure
+            # across DIFFERENT generated code is therefore evidence that the
+            # tests are at fault, not the implementation -- and for a compiled
+            # language they share a build, so a tester that emits invalid
+            # source fails the writer's work. Observed live on OCaml: the
+            # tester wrote `bubble_sort([||]) = ||`, the compiler said "Syntax
+            # error", and that went to the writer three times.
+            #
+            # Blaming by line number would need a diagnostic format per
+            # language. This needs none: it is the same no-progress signal the
+            # loop already computes, read for what it actually implies.
+            if tests is None and not redesigned:
+                redesigned = True
+                repeats, last_error = 0, None
+                if verbose:
+                    print(f"[attempt {attempt}] the same failure on different "
+                          f"code -- suspecting the tests, redesigning them")
+                designed, redo_ok, redo_reason = design_tests(
+                    pc, grounded, targets=public_names(code),
+                    max_retries=max_retries, verbose=verbose, spec=spec)
+                if not redo_ok:
+                    return {"ok": False, "text": code, "tests": designed,
+                            "contract": contract, "attempts": attempt,
+                            "error": f"test design failed the quality gate: "
+                                     f"{redo_reason}"}
+                task = f"{grounded}{constraints}"
+                continue
+
             if verbose:
                 print(f"[attempt {attempt}] same failure {repeats + 1}x in a "
                       f"row -- the fix loop is not converging, stopping")
@@ -618,6 +724,15 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         if verbose:
             print(f"[attempt {attempt}] tests failed: {first} -> retrying")
+        # Appended to the prompt, never to `error`: the no-progress check above
+        # reads the toolchain's last line, and enriching it would make an
+        # unchanging failure look like a moving one.
+        hint = error_hint(error) if error_hint else ""
+        if hint and verbose:
+            print(f"[docs] {hint.splitlines()[0]}")
+        # Added to the same slot and for the same reason: a hint offered only
+        # after the toolchain has already refused, never a gate of its own.
+        hint += harness_collision(spec, code, full)
         # The tests are shown so the model knows what it must satisfy, but
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run
@@ -625,7 +740,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         task = (f"{grounded}{constraints}\n\n"
                 f"Your previous implementation failed these tests, which are "
                 f"run separately and must NOT appear in your output:\n{full}\n\n"
-                f"With this error:\n{error}\n\n"
+                f"With this error:\n{error}\n"
+                f"{hint}\n\n"
                 f"Output only the corrected implementation, nothing else.")
 
     return {"ok": False, "text": code, "tests": designed,

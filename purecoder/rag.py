@@ -8,15 +8,27 @@ with a small model -> store vectors on disk -> at generation time retrieve the
 top-k relevant chunks ONLY IF they clear a similarity threshold (the "retrieve
 when needed" gate), injecting just that slice to stay inside context.
 
+Ranking uses two signals. Cosine similarity answers "is this about the same
+thing"; an IDF-weighted lexical score answers "does this contain the exact name
+you asked for". Embeddings are worst at precisely the queries this tool gets
+most -- an API symbol, spelled exactly -- so the second signal is not a
+refinement, it is the one that decides those.
+
 The Embedder is injectable so store/chunk logic is testable without a GPU.
 """
 
 import ast
+import fnmatch
 import json
+import math
 import os
 import re
+from collections import Counter
+from dataclasses import dataclass
 
 import numpy as np
+
+from .symbols import extract_symbols, modules
 
 # ---- markdown / prose chunking ------------------------------------------
 
@@ -39,10 +51,15 @@ def chunk_markdown(text, source, max_chars=800, overlap=150):
         if len(sec) <= max_chars:
             chunks.append(sec)
         else:
+            # An overlap at or above the window makes the stride zero or
+            # negative -- the loop never advances and the process hangs with no
+            # output. `chunk_markdown(text, src, max_chars=100)` against the
+            # default overlap of 150 is enough to do it.
+            stride = max(1, max_chars - overlap)
             start = 0
             while start < len(sec):
                 chunks.append(sec[start:start + max_chars].strip())
-                start += max_chars - overlap
+                start += stride
     return [(c, source) for c in chunks if c.strip()]
 
 
@@ -122,13 +139,34 @@ def chunk_file(path, source, max_chars_code=1200, max_chars_docs=800):
 
 # ---- embedder (needs sentence-transformers + a model) -------------------
 
+class MissingRetrieval(ImportError):
+    """sentence-transformers is not installed. It is not in the base install."""
+
+
+class StoreError(ValueError):
+    """The index on disk cannot be trusted -- absent, unreadable, or mismatched."""
+
+
 class Embedder:
     def __init__(self, model_name="BAAI/bge-small-en-v1.5", device="cuda",
                  query_prefix="Represent this sentence for searching "
                               "relevant passages: ",
                  doc_prefix=""):
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            # The retrieval extra pulls in torch (~2 GB), so it is deliberately
+            # optional -- which makes this the first wall a new user hits. It
+            # deserves the install command, not an import traceback.
+            raise MissingRetrieval(
+                "retrieval needs sentence-transformers, which the base install "
+                'does not include (it pulls in torch, ~2 GB).\n  pip install -e ".[rag]"'
+            ) from e
         self.model = SentenceTransformer(model_name, device=device)
+        # Kept so an index can name the model that built it: vectors from two
+        # different models are not comparable, and at equal dimensions nothing
+        # about that mismatch is visible at query time.
+        self.model_name = model_name
         self.query_prefix = query_prefix
         self.doc_prefix = doc_prefix
 
@@ -144,6 +182,182 @@ class Embedder:
 
 # ---- vector store (brute-force cosine) ----------------------------------
 
+# Caches, VCS metadata and vendored dependencies -- never the documentation
+# anyone meant to index. Deliberately excludes `build` and `dist`: generated
+# docs live there often enough that pruning them would be the wrong default.
+# Overridable per call for the directory this list gets wrong.
+SKIP_DIRS = frozenset({
+    ".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".ipynb_checkpoints", ".tox", ".eggs", "node_modules",
+    ".venv", "venv", "env", "site-packages",
+})
+
+
+# ---- the lexical signal -------------------------------------------------
+
+# How much an exact-name match is worth next to cosine similarity. At 0.5,
+# against the default min_score of 0.3, a chunk containing every rare token of
+# the query clears the gate on the lexical signal alone. That is the point:
+# `Printf.eprintf` should retrieve the page defining it even when a page merely
+# *about* output formatting embeds closer.
+LEXICAL_WEIGHT = 0.5
+
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+
+
+def tokenize(text):
+    """Lowercased tokens; a dotted name is kept whole AND split.
+
+    `Printf.eprintf` yields {printf.eprintf, printf, eprintf}, so a query hits
+    whether it spells the name qualified or bare. snake_case and camelCase are
+    deliberately not split: `pc_check` -> `pc` + `check` makes `check` worthless
+    as a signal and buys nothing the dotted split does not already give.
+    """
+    out = set()
+    for match in _TOKEN.findall(text.lower()):
+        token = match.strip(".")
+        if not token:
+            continue
+        out.add(token)
+        if "." in token:
+            out.update(part for part in token.split(".") if part)
+    return out
+
+
+def _is_binary(path, sniff=8192):
+    """A NUL byte in the first block. The same test `file` and grep use."""
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(sniff)
+    except OSError:
+        return True          # unreadable is not something to index either
+
+
+@dataclass(frozen=True)
+class IngestPlan:
+    """What an index WOULD contain -- everything except the embedding.
+
+    Chunking is cheap and embedding is not, so the split is where the user gets
+    to look. Nothing here has touched a model, which is what makes the review
+    step free and lets it be re-run after an exclusion without paying twice.
+    """
+    root: str
+    chunks: tuple
+    sources: tuple
+    skipped_dirs: tuple
+    binaries: tuple
+    duplicates: int
+    excluded: tuple
+
+    @property
+    def per_file(self):
+        """(path, chunk count), commonest first -- what the review shows."""
+        return Counter(self.sources).most_common()
+
+
+def plan_ingest(docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
+                skip_dirs=SKIP_DIRS, exclude=()):
+    pairs, rx, skipped, binaries, dropped = [], re.compile(pattern), [], [], []
+    for root, dirs, files in os.walk(docs_dir):
+        # Pruned in place -- os.walk reads `dirs` back to decide where to
+        # descend. Pointing this at a project root is the documented use,
+        # and .venv alone can outnumber the real docs a thousand to one:
+        # the index still looks fine, and every answer comes from
+        # site-packages.
+        if pruned := [d for d in dirs if d in skip_dirs]:
+            skipped += [os.path.relpath(os.path.join(root, d), docs_dir)
+                        for d in sorted(pruned)]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for fn in sorted(files):
+            if not rx.match(fn):
+                continue
+            p = os.path.join(root, fn)
+            rel = os.path.relpath(p, docs_dir)
+            if _excluded(rel, exclude):
+                dropped.append(rel)
+                continue
+            if _is_binary(p):
+                # errors="ignore" turns a binary file into text rather than
+                # refusing it, so a .txt that is really a blob became chunks
+                # of mojibake sitting in the index at whatever score they
+                # happen to earn.
+                binaries.append(rel)
+                continue
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                pairs += chunk_file(rel, f.read())
+    if not pairs:
+        raise ValueError(f"no files matched under {docs_dir}")
+
+    # Identical text indexed twice competes with itself for the k slots the
+    # gate has to spend. A vendored copy of a doc, or the same licence header
+    # on forty files, can fill every slot with one passage and crowd out the
+    # rest. First occurrence keeps the source.
+    seen, unique = set(), []
+    for chunk, source in pairs:
+        if chunk not in seen:
+            seen.add(chunk)
+            unique.append((chunk, source))
+
+    return IngestPlan(
+        root=docs_dir,
+        chunks=tuple(c for c, _ in unique),
+        sources=tuple(s for _, s in unique),
+        skipped_dirs=tuple(skipped),
+        binaries=tuple(binaries),
+        duplicates=len(pairs) - len(unique),
+        excluded=tuple(dropped),
+    )
+
+
+def _excluded(rel, patterns):
+    """A glob against the path, or a directory prefix of it."""
+    for pat in patterns:
+        bare = pat.rstrip("/" + os.sep)
+        if fnmatch.fnmatch(rel, pat) or rel == bare \
+                or rel.startswith(bare + os.sep):
+            return True
+    return False
+
+
+def plan_notices(plan):
+    """What the walk decided on its own, one line each."""
+    out = []
+    if plan.skipped_dirs:
+        shown = ", ".join(plan.skipped_dirs[:5])
+        more = (f" (+{len(plan.skipped_dirs) - 5} more)"
+                if len(plan.skipped_dirs) > 5 else "")
+        out.append(f"[rag] skipped {len(plan.skipped_dirs)} directories: {shown}{more}")
+    if plan.binaries:
+        out.append(f"[rag] skipped {len(plan.binaries)} binary files: "
+                   f"{', '.join(plan.binaries[:5])}")
+    if plan.excluded:
+        out.append(f"[rag] excluded {len(plan.excluded)} files: "
+                   f"{', '.join(plan.excluded[:5])}")
+    if plan.duplicates:
+        out.append(f"[rag] dropped {plan.duplicates} duplicate chunks")
+    return out
+
+
+def render_plan(plan, limit=25):
+    """The review: every file that would be indexed, and what was left out."""
+    lines = [f"\n{len(plan.chunks)} chunks from {len(plan.per_file)} files "
+             f"under {plan.root}"]
+    for path, count in plan.per_file[:limit]:
+        lines.append(f"  {count:>4}  {path}")
+    if len(plan.per_file) > limit:
+        lines.append(f"  ... {len(plan.per_file) - limit} more files")
+    lines += ["  " + n for n in plan_notices(plan)]
+
+    # The names the index will know. Shown because it is the fastest way to
+    # tell a docs directory that covers the API from one that does not: if the
+    # modules listed here are not the library's, neither is the index.
+    names = extract_symbols(plan.chunks)
+    if names:
+        top = ", ".join(f"{mod} ({n})" for mod, n in modules(names)[:6])
+        lines.append(f"  [rag] {len(names)} qualified names -- {top}")
+    return "\n".join(lines)
+
+
 class DocStore:
     def __init__(self, embedder, path="docstore"):
         self.embedder = embedder
@@ -151,44 +365,215 @@ class DocStore:
         self.vectors = None
         self.chunks = []
         self.sources = []
+        self._postings = {}
+        self._idf = {}
+        # Every qualified name the docs mention, derived on demand. Like the
+        # lexical index it is rebuilt from the chunks rather than stored --
+        # another file on disk is another thing that can drift out of step with
+        # the vectors -- but unlike it, nothing needs it until something fails.
+        self._symbols = None
 
-    def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
-                   verbose=True):
-        pairs, rx = [], re.compile(pattern)
-        for root, _, files in os.walk(docs_dir):
-            for fn in files:
-                if rx.match(fn):
-                    p = os.path.join(root, fn)
-                    with open(p, encoding="utf-8", errors="ignore") as f:
-                        pairs += chunk_file(os.path.relpath(p, docs_dir), f.read())
-        if not pairs:
-            raise ValueError(f"no files matched under {docs_dir}")
-        self.chunks = [c for c, _ in pairs]
-        self.sources = [s for _, s in pairs]
+    def ingest_plan(self, plan, verbose=True):
+        """Embed a reviewed plan. The expensive half of ingesting."""
+        self.chunks, self.sources = list(plan.chunks), list(plan.sources)
         self.vectors = self.embedder.embed_docs(self.chunks).astype("float32")
+        self._build_lexical()
+        self._symbols = None
         if verbose:
-            print(f"[rag] ingested {len(self.chunks)} chunks from {docs_dir}")
+            print(f"[rag] ingested {len(self.chunks)} chunks from {plan.root}")
         return len(self.chunks)
 
-    def search(self, query, k=3, min_score=0.3):
-        if self.vectors is None or not self.chunks:
-            return []
+    def ingest_dir(self, docs_dir, pattern=r".*\.(py|md|markdown|txt|rst)$",
+                   verbose=True, skip_dirs=SKIP_DIRS, exclude=()):
+        """Plan and embed in one step, for callers with nobody to ask."""
+        plan = plan_ingest(docs_dir, pattern=pattern, skip_dirs=skip_dirs,
+                           exclude=exclude)
+        if verbose:
+            for notice in plan_notices(plan):
+                print(notice)
+        return self.ingest_plan(plan, verbose=verbose)
+
+    # ---- lexical index ---------------------------------------------------
+
+    @property
+    def symbols(self):
+        """Every qualified name the docs mention.
+
+        Computed on first use, not at load: it costs a full pass over the
+        chunks, and its only consumer is the did-you-mean hint, which is
+        reached solely from a failed run. A generation that works first time
+        should not pay for it.
+        """
+        if self._symbols is None:
+            self._symbols = extract_symbols(self.chunks)
+        return self._symbols
+
+    def _build_lexical(self):
+        """Rebuilt from the chunks rather than stored.
+
+        Persisting it would add a third file to keep in step with the other
+        two, and a file that can drift is the thing `load` exists to refuse.
+        Recomputing costs a pass over text already in memory.
+
+        The result is an INVERTED index -- token -> the chunks holding it --
+        not a token set per chunk. Both answer the same question; only one
+        answers it without visiting every chunk.
+        """
+        postings = {}
+        for i, chunk in enumerate(self.chunks):
+            for token in tokenize(chunk):
+                postings.setdefault(token, []).append(i)
+        n = len(self.chunks)
+        # log((n+1)/(df+1)) rather than log(1 + n/df): a token in EVERY chunk
+        # weighs exactly zero. Without that, a query of nothing but stopwords
+        # scores near 1 against any chunk containing them, and clears the gate
+        # on words that distinguish nothing.
+        self._idf = {t: math.log((n + 1) / (len(rows) + 1))
+                     for t, rows in postings.items()}
+        self._postings = {t: np.asarray(rows, dtype=np.intp)
+                          for t, rows in postings.items()}
+
+    def _lexical(self, query):
+        """Share of the query's rare tokens each chunk contains, in [0, 1].
+
+        Absolute, not normalised per query -- which is what lets it share a
+        threshold with cosine. A token the corpus has never seen weighs
+        nothing, so a query of only unknown tokens scores 0 rather than
+        dividing by zero or trivially scoring 1.
+
+        Only chunks that actually contain a query token are touched. Every
+        other chunk scores zero by construction, and the old version proved
+        that by visiting all of them: a rare symbol reached three chunks out of
+        seven thousand and paid for the other 7487.
+        """
+        # Accumulated at float64 and cast once at the end. Summing weights
+        # into a float32 array instead put a full match at 0.99999988, which
+        # is harmless against a threshold and needlessly untidy in `explain`.
+        scores = np.zeros(len(self.chunks), dtype="float64")
+        total = 0.0
+        for token in tokenize(query):
+            weight = self._idf.get(token, 0.0)
+            if not weight:
+                continue
+            total += weight
+            # Safe as a plain scatter because a chunk contributes each token
+            # once: postings are built from a per-chunk token SET, so no index
+            # repeats and none of numpy's buffered-duplicate trap applies.
+            scores[self._postings[token]] += weight
+        if not total:
+            return np.zeros(len(self.chunks), dtype="float32")
+        return (scores / total).astype("float32")
+
+    def _scores(self, query):
+        """(combined, cosine, lexical) for every chunk."""
         qv = self.embedder.embed_query(query).astype("float32")
-        scores = self.vectors @ qv
+        # Two models at the same dimension produce comparable-looking garbage;
+        # at different dimensions numpy raises about shapes and says nothing
+        # about why. Either way the index was built by something else.
+        if qv.shape[0] != self.vectors.shape[1]:
+            raise StoreError(
+                f"this index holds {self.vectors.shape[1]}-dimensional vectors "
+                f"and the embedder produces {qv.shape[0]} -- it was built by a "
+                f"different model. Re-run `ingest`."
+            )
+        cosine = self.vectors @ qv
+        lexical = self._lexical(query)
+        return cosine + LEXICAL_WEIGHT * lexical, cosine, lexical
+
+    def search(self, query, k=3, min_score=0.3):
+        # An empty query embeds to something, and that something scores against
+        # every chunk. Whatever comes back is not a match for anything.
+        if self.vectors is None or not self.chunks or not query.strip():
+            return []
+        scores, _, _ = self._scores(query)
         order = np.argsort(-scores)[:k]
         return [(self.chunks[i], self.sources[i], float(scores[i]))
                 for i in order if scores[i] >= min_score]
 
-    def save(self):
-        np.save(self.path + ".npy", self.vectors)
-        with open(self.path + ".json", "w") as f:
-            json.dump({"chunks": self.chunks, "sources": self.sources}, f)
+    def explain(self, query, k=5):
+        """Top k with both signals separated -- why a hit ranked where it did.
 
-    def load(self):
-        self.vectors = np.load(self.path + ".npy")
-        with open(self.path + ".json") as f:
-            meta = json.load(f)
-        self.chunks, self.sources = meta["chunks"], meta["sources"]
+        The two answer different questions, and which one carried a hit is the
+        thing worth seeing: cosine says "about the same subject", lexical says
+        "contains the name you typed".
+        """
+        if self.vectors is None or not self.chunks or not query.strip():
+            return []
+        scores, cosine, lexical = self._scores(query)
+        return [(self.sources[i], float(scores[i]), float(cosine[i]),
+                 float(lexical[i])) for i in np.argsort(-scores)[:k]]
+
+    def save(self):
+        # Saving an un-ingested store writes `None` into the .npy as a pickled
+        # object, and np.load then refuses it with a message about pickles that
+        # names nothing real. Refuse here, where the cause is still visible.
+        if self.vectors is None:
+            raise StoreError("nothing to save -- ingest before saving")
+
+        meta = {"chunks": self.chunks, "sources": self.sources,
+                "embedder": getattr(self.embedder, "model_name", "")}
+
+        # Write beside the target and rename. Two renames are not atomic as a
+        # pair, so this shrinks the window rather than closing it -- what slips
+        # through is a vector/chunk count mismatch, which `load` refuses.
+        # The temp name ends in .npy on purpose: np.save appends the suffix to
+        # any name that lacks it, so `idx.npy.tmp` would land on disk as
+        # `idx.npy.tmp.npy` and the rename would find nothing.
+        npy_tmp, json_tmp = self.path + ".tmp.npy", self.path + ".json.tmp"
+        np.save(npy_tmp, self.vectors)
+        with open(json_tmp, "w") as f:
+            json.dump(meta, f)
+        os.replace(npy_tmp, self.path + ".npy")
+        os.replace(json_tmp, self.path + ".json")
+
+    def load(self, verbose=True):
+        npy, meta_path = self.path + ".npy", self.path + ".json"
+        for p in (npy, meta_path):
+            if not os.path.exists(p):
+                raise StoreError(f"no index at {p} -- run `ingest` first")
+
+        try:
+            # allow_pickle stays off (the numpy default): an index is plain
+            # floats, and a store file is exactly the kind of thing that should
+            # not be able to execute on load.
+            vectors = np.load(npy)
+            with open(meta_path) as f:
+                meta = json.load(f)
+            chunks, sources = meta["chunks"], meta["sources"]
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
+            raise StoreError(f"{self.path} is not a readable index: {e}") from e
+
+        # THE check. `search` looks chunks up by a vector's row index, so a
+        # count mismatch does not crash -- it pairs a chunk with someone else's
+        # source and someone else's score, and injects documentation under a
+        # filename it never came from. Silent, and wrong in the one direction
+        # retrieval must never be wrong in.
+        if vectors.ndim != 2 or len(chunks) != vectors.shape[0] \
+                or len(sources) != len(chunks):
+            raise StoreError(
+                f"{self.path} is inconsistent: {getattr(vectors, 'shape', '?')} "
+                f"vectors against {len(chunks)} chunks and {len(sources)} "
+                f"sources. Re-run `ingest`."
+            )
+
+        # An index built by another model scores nothing correctly. Compared
+        # only when both sides name themselves, so an injected fake embedder
+        # stays usable.
+        built_by, mine = meta.get("embedder", ""), getattr(self.embedder, "model_name", "")
+        if built_by and mine and built_by != mine:
+            raise StoreError(
+                f"{self.path} was built with {built_by}, this run embeds with "
+                f"{mine} -- the scores would be meaningless. Re-run `ingest`."
+            )
+        # Indexes written before the field existed are not corrupt, just
+        # unverifiable. Say so once rather than bricking them.
+        if "embedder" not in meta and verbose:
+            print(f"[rag] {self.path} predates model tracking -- "
+                  f"cannot confirm it was built with this embedder")
+
+        self.vectors, self.chunks, self.sources = vectors, chunks, sources
+        self._build_lexical()
+        self._symbols = None
         return self
 
 
@@ -201,8 +586,16 @@ def retrieve_context(store, query, k=3, min_score=0.3, max_chars=1500):
     blocks, used = [], 0
     for chunk, source, _score in hits:
         block = f"# doc: {source}\n{chunk}"
+        # `continue`, not `break`: one oversized top hit used to discard every
+        # smaller one below it. Prompt order stops matching score order, which
+        # is the cheaper of the two costs.
         if used + len(block) > max_chars:
-            break
+            continue
         blocks.append(block)
         used += len(block)
+    # A header with nothing under it is truthy, so the caller reported
+    # injecting context and the model was handed a promise of documentation
+    # followed by none of it.
+    if not blocks:
+        return ""
     return "Relevant documentation:\n\n" + "\n\n".join(blocks)

@@ -3,7 +3,7 @@
 **Date:** 2026-08-03
 **Feature under test:** `purecoder learn` (`purecoder/bootstrap.py`)
 **Model:** Qwen2.5-Coder-7B-Instruct, Q4_K_M, on an RTX 4050 Laptop (6 GB)
-**Target language:** OCaml, as `ocaml5` (see [The name was blocked](#the-name-was-blocked))
+**Target language:** OCaml (originally as `ocaml5`; the real name works since the fixes below)
 
 ## Why OCaml
 
@@ -121,46 +121,92 @@ My first fix **refused** the draft. That turned a mechanical formatting habit
 into a hard failure and became the blocker on the very next run. It has exactly
 one correct reading, so it is now normalised (`./{bin}` → `{bin}`).
 
-## Still open
+## Resolved (second session, same day)
 
-### Bootstrap drafts once and never retries
+All three items below were fixed and re-verified against a live server. The
+headline: **`purecoder learn ocaml ./ocaml-docs --ext .ml` now registers on the
+first attempt, five probes green, twice in a row.**
 
-Every other layer in this pipeline feeds its error back and tries again. This
-one refuses on the first bad draft. Run 7 reached 4 of 5 probes with a single
-malformed `empty` snippet — a retry carrying the compiler's message would very
-likely have closed it.
+### Bootstrap now redrafts — fixed
 
-**This is the largest known gap in the layer**, and the fix is the project's
-own established pattern rather than a new idea.
+`learn_language` loops: probe, and on failure redraft the whole harness with
+the failing probes' names and their toolchain output. Whole rather than in
+part, because a compile error on probe 1 could be the helper, the tail or the
+fixture and attributing it needs a parser per language. Confirmation stays
+outside the loop — it reads stdin, and a probe failure does not implicate the
+commands, since the build ran. `--draft-retries` defaults to 2.
 
-### The fix loop misattributes compile errors from the test section
+**Feeding back the diagnostic was necessary but not sufficient.** Told "Unbound
+value pc_tests", the model reads it as *define* `pc_tests` and keeps the tail
+that calls it — three drafts running. So the shape contradiction is now
+detected mechanically (`dangling_calls`) and named: an identifier the tail
+applies to arguments that nothing in the preamble or the tests defines. The
+redraft states the choice explicitly. Definitions are excluded by looking for a
+block after the closing paren, or `int main() {` reads as a call to something
+undefined and the hint fires on the shape that is correct.
 
-Run 5 passed every probe, then failed the live round. The *tester* wrote invalid
-OCaml:
+### Blame attribution — fixed, without a per-language parser
+
+The tests do not change between attempts, so an identical failure across
+*different* generated code is evidence the tests are at fault. The loop already
+computed that signal for `NO_PROGRESS_LIMIT` and read it only as "stop". The
+tests now get one redesign before it gives up.
+
+Deliberately **not** line-number attribution: g++, rustc, C# and OCaml all
+format diagnostics differently, and that is the per-language surface the
+registry exists to avoid.
+
+Seen live on the first real use of the learned entry:
 
 ```
-pc_check(bubble_sort([||]) = ||)
-                             ^^
-Error: Syntax error
+[attempt 3] the same failure on different code -- suspecting the tests, redesigning them
 ```
 
-The loop fed that compile error to the **writer**, who cannot fix it. The writer
-kept producing reasonable code, the tests stayed broken, and
-`NO_PROGRESS_LIMIT` correctly stopped after three identical failures — but the
-diagnosis was wrong.
+### Reserved names — fixed
 
-**This affects C++, Rust and C# too, not only learned languages.** For any
-compiled language, an error originating in the test section is fed back as
-though the implementation were at fault. The textual gate cannot catch it
-because it only counts `check_call` occurrences — it has no parser.
+One set was answering two questions: "was this hand-written?" and "may a draft
+take this name?" `RESERVED_NAMES` now covers wired entries and standing
+refusals only, so `go`, `java`, `swift` and `ocaml` — placeholders declared so a
+refusal can name them — are learnable. `learn ocaml` no longer needs the
+`ocaml5` workaround.
 
-### The name was blocked
+The snapshot keeps specs rather than names, because `register` replaces entries
+in place: once a learned `ocaml` lands there is no placeholder left to consult.
 
-`purecoder learn ocaml` is refused: `go`, `java`, `swift` and `ocaml` are
-declared-but-unwired placeholders sitting in `BUILTIN_NAMES`, so **the feature
-refuses the exact four languages it was built to enable**. Worked around here
-with the name `ocaml5`. Needs a decision: either placeholders become learnable,
-or `learn` offers to replace one.
+### Found while fixing: supplied tests were silently replaced
+
+Not in the original report, and worse than anything in it. The post-code gate
+redesigned tests the **caller** passed in — discarding the one thing they asked
+the code to be checked against, then reporting success against tests they never
+wrote. Supplied tests that fail the gate are now reported as a failure with the
+gate's reason.
+
+## Expected limit, not an open defect
+
+### OCaml is not an implemented language, and generating with it shows that
+
+Worth stating plainly, because the section this replaced read like a bug
+report: **`ocaml` is a placeholder entry.** In `purecoder/languages.py` it has
+an empty `build`, an empty `run` and an empty `test_system`, and `available()`
+answers `(False, "declared but not implemented yet")`. It exists so a refusal
+can name it. `go`, `java` and `swift` are the same kind of entry.
+
+So the observed behaviour is the expected one. Asked for a `double` function
+through the *learned* entry, the writer produced correct OCaml
+(`let double x = x * 2`) on every attempt while the tester produced source the
+compiler rejected — through a test redesign and six attempts, ending in an
+honest refusal rather than an unvalidated artifact.
+
+That is the gate working. Nothing here says the bootstrap layer is broken: it
+drafted a harness that passes five mechanical probes, and then refused to ship
+code it could not prove. What it ran into is the project's oldest finding —
+*the writer is stronger than the tester* — amplified for a language the model
+has thin exposure to and the harness never claimed to support.
+
+No harness change addresses it. Wiring OCaml properly is its own piece of work;
+until then, the levers are a stronger tester prompt per language, few-shot test
+examples in the target language, or a specialised model. A **probe or gate**
+failure would be a bootstrap defect. This is not one.
 
 ## Caveats on this run
 
@@ -168,8 +214,11 @@ or `learn` offers to replace one.
   transcribed ocaml.org reference text, but `syntax.md` and `running.md` were
   written by hand and are cleaner and more targeted than a real doc dump. The
   test is therefore somewhat favourable to the drafting.
-- **The live round never passed**, so the six-probe gate has still never been
-  cleared end to end by a drafted language.
+- **The live round still has not passed for OCaml.** The five mechanical
+  probes clear on the first attempt now, but the bubble-sort round depends on
+  the tester — the expected limit above, for a language that is a placeholder
+  entry rather than an implemented one. `--no-live` was used for the runs that
+  registered.
 - RAG required installing `sentence-transformers` (~2 GB with torch); it is not
   in the base install.
 
@@ -186,8 +235,9 @@ pip install -e ".[rag]"
 
 # 3. learn, answering the command confirmation
 echo y | PURECODER_HOME=/tmp/pchome \
-  purecoder learn ocaml5 ./ocaml-docs --ext .ml --no-live
+  purecoder learn ocaml ./ocaml-docs --ext .ml --no-live
 ```
 
-`--no-live` skips the bubble-sort round. Drop it to exercise the full gate.
+`--no-live` skips the bubble-sort round; drop it to exercise the full gate.
+`--draft-retries N` sets how many drafting attempts to allow.
 Set `PURECODER_HOME` to keep the learned entry out of the real store.

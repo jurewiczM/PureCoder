@@ -4,15 +4,22 @@ The Embedder is injectable precisely so this runs without a GPU or a model
 download -- a deterministic fake stands in for sentence-transformers.
 """
 
+import json
+
 import numpy as np
 import pytest
+from conftest import FakeEmbedder
 
 from purecoder.rag import (
     DocStore,
+    StoreError,
     chunk_file,
     chunk_markdown,
     chunk_python,
+    plan_ingest,
+    render_plan,
     retrieve_context,
+    tokenize,
 )
 
 # ---- markdown chunking ---------------------------------------------------
@@ -34,6 +41,15 @@ def test_markdown_splits_oversized_sections_with_overlap():
 
 def test_markdown_drops_empty_sections():
     assert chunk_markdown("\n\n   \n", "doc.md") == []
+
+
+def test_markdown_terminates_when_overlap_exceeds_the_window():
+    """Stride was `max_chars - overlap`. At or below zero the loop never
+    advances: no output, no error, the process simply stops responding. A
+    caller narrowing max_chars without touching the default overlap of 150 is
+    all it takes."""
+    chunks = chunk_markdown("# Big\n" + ("word " * 200), "doc.md", max_chars=100)
+    assert chunks
 
 
 # ---- code-aware chunking -------------------------------------------------
@@ -96,24 +112,128 @@ def test_chunk_file_routes_by_extension():
     assert not any("function" in c for c, _ in chunk_file("doc.md", "# H\ntext\n"))
 
 
+# ---- the lexical signal --------------------------------------------------
+
+def test_a_dotted_name_is_tokenised_whole_and_in_parts():
+    assert tokenize("Printf.eprintf fmt") == {"printf.eprintf", "printf",
+                                              "eprintf", "fmt"}
+
+
+def test_snake_case_is_left_alone():
+    """Splitting it would make `check` a token in every harness chunk, which
+    is worth nothing, and the dotted split already covers qualified names."""
+    assert tokenize("pc_check(x)") == {"pc_check", "x"}
+
+
+@pytest.fixture
+def api_store(tmp_path):
+    """Docs where the embedder is blind: the fake scores only alpha/beta/gamma,
+    so an API-symbol query has cosine 0 everywhere and the lexical signal is
+    the only thing that can find anything. That is the real case in
+    miniature -- embeddings are worst at exactly the queries this tool gets
+    most."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    # "the" appears in both on purpose: it is the ubiquitous-token case.
+    (d / "printf.md").write_text(
+        "# Output\nPrintf.eprintf writes the formatted string to stderr.\n")
+    (d / "stdlib.md").write_text(
+        "# Stdlib\nThe exit function ends the program with a status code.\n")
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d), verbose=False)
+    return s
+
+
+def test_an_exact_symbol_retrieves_its_page_when_cosine_is_blind(api_store):
+    assert [src for _, src, _ in api_store.search("Printf.eprintf")] == ["printf.md"]
+    # Nothing was found by similarity: every cosine is 0, so the hit is the
+    # lexical signal's alone.
+    assert all(cosine == 0.0
+               for _, _, cosine, _ in api_store.explain("Printf.eprintf"))
+
+
+def test_the_bare_name_finds_the_qualified_one(api_store):
+    assert [src for _, src, _ in api_store.search("eprintf")] == ["printf.md"]
+
+
+def test_a_word_the_corpus_never_saw_matches_nothing(api_store):
+    """No division by zero, and no trivial 1.0 either: a query made only of
+    unknown tokens is not a match for everything."""
+    assert api_store.search("mutex") == []
+
+
+def test_a_query_of_only_ubiquitous_words_clears_nothing(api_store):
+    """`the` is in every chunk, so it distinguishes nothing and must weigh
+    nothing. Weighted the other way, a stopword query scores near 1 against
+    any chunk containing it and walks straight through the gate."""
+    assert api_store.search("the") == []
+
+
+def test_explain_separates_the_two_signals(api_store):
+    source, combined, cosine, lexical = api_store.explain("Printf.eprintf")[0]
+    assert source == "printf.md"
+    assert cosine == 0.0 and lexical == 1.0
+    assert combined == pytest.approx(0.5)
+
+
+def test_only_chunks_holding_a_query_token_are_scored(api_store):
+    """The lexical index is inverted -- token -> the chunks holding it -- so a
+    rare symbol touches the chunks that contain it and nothing else. Walking
+    every chunk gave identical answers and cost 400x more at 7500 chunks.
+    """
+    scores = api_store._lexical("Printf.eprintf")
+    assert list(scores).count(0.0) == len(api_store.chunks) - 1
+    assert scores.max() == 1.0
+
+
+def test_a_token_the_corpus_lacks_reaches_no_postings(api_store):
+    """The lookup must miss cleanly rather than raise on an absent key."""
+    assert not api_store._lexical("mutex").any()
+
+
+def test_the_store_carries_the_names_the_docs_use(api_store):
+    assert "Printf.eprintf" in api_store.symbols
+
+
+def test_the_symbol_library_is_not_built_until_something_needs_it(api_store):
+    """Its only consumer is the did-you-mean hint, reached solely from a failed
+    run. A generation that works first time should not pay a full pass over
+    the chunks for it."""
+    assert api_store._symbols is None
+    assert api_store.symbols                 # first use builds it
+    assert api_store._symbols is not None
+
+
+def test_the_symbol_library_survives_a_round_trip(api_store):
+    """Derived from the chunks like the lexical index, and for the same
+    reason: a third file on disk is a third thing that can drift."""
+    api_store.save()
+    reloaded = DocStore(FakeEmbedder(), path=api_store.path).load()
+    assert reloaded.symbols == api_store.symbols
+
+
+def test_the_review_names_the_modules_it_found(tmp_path):
+    """The fastest way to tell a docs directory that covers the API from one
+    that does not: if these are not the library's modules, neither is the
+    index."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "api.md").write_text("# API\nPrintf.eprintf and Printf.sprintf\n")
+    assert "Printf (2)" in render_plan(plan_ingest(str(d)))
+
+
+def test_the_lexical_index_survives_a_round_trip(api_store):
+    """It is rebuilt from the chunks rather than stored, so the scores after a
+    load must equal the scores before a save -- otherwise `ask` ranks
+    differently from `ingest` and nothing says so."""
+    before = api_store.search("Printf.eprintf")
+    api_store.save()
+    after = DocStore(FakeEmbedder(), path=api_store.path).load().search(
+        "Printf.eprintf")
+    assert before == after
+
+
 # ---- store + gate, with a fake embedder ---------------------------------
-
-class FakeEmbedder:
-    """Bag-of-words unit vectors: similar text -> high cosine, no model needed."""
-
-    VOCAB = ["alpha", "beta", "gamma", "delta"]
-
-    def _vec(self, text):
-        v = np.array([float(text.lower().count(w)) for w in self.VOCAB])
-        norm = np.linalg.norm(v)
-        return v / norm if norm else v
-
-    def embed_docs(self, texts):
-        return np.vstack([self._vec(t) for t in texts])
-
-    def embed_query(self, text):
-        return self._vec(text)
-
 
 @pytest.fixture
 def store(tmp_path):
@@ -155,10 +275,31 @@ def test_gate_injects_context_when_relevant(store):
     assert "a.md" in ctx
 
 
-def test_retrieve_context_respects_char_budget(store):
-    assert len(retrieve_context(store, "alpha", max_chars=10)) <= len(
-        "Relevant documentation:\n\n")
+def test_retrieve_context_returns_nothing_when_no_block_fits(store):
+    """A header with no documentation under it is still truthy.
 
+    `cmd_ask` reads the return value as "was anything injected?", so this used
+    to print "[rag] injected 25 chars" and hand the model the sentence
+    "Relevant documentation:" followed by nothing at all.
+    """
+    assert retrieve_context(store, "alpha", max_chars=10) == ""
+
+
+def test_an_oversized_top_hit_does_not_discard_the_ones_below_it(tmp_path):
+    d = tmp_path / "docs"
+    d.mkdir()
+    # Ranked apart on purpose: big.md is pure alpha and scores 1.0, small.md
+    # dilutes with beta and comes second. Only the ordering matters here.
+    (d / "big.md").write_text("# Alpha\n" + "alpha " * 100)
+    (d / "small.md").write_text("# Alpha two\nalpha beta\n")
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d), verbose=False)
+
+    ctx = retrieve_context(s, "alpha", k=2, max_chars=120)
+    assert "small.md" in ctx        # the big one is skipped, not the rest
+
+
+# ---- the index on disk ---------------------------------------------------
 
 def test_save_and_load_round_trip(store):
     store.save()
@@ -168,5 +309,228 @@ def test_save_and_load_round_trip(store):
     assert np.allclose(reloaded.vectors, store.vectors)
 
 
+def test_load_refuses_an_index_whose_counts_disagree(store):
+    """The one failure retrieval must never have: silent, and wrong.
+
+    `search` looks a chunk up by its vector's row index. Drop a chunk from the
+    metadata and nothing raises -- it pairs each chunk with the next one's
+    source and score, and injects documentation under a filename it never came
+    from.
+    """
+    store.save()
+    meta_path = store.path + ".json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta["chunks"] = meta["chunks"][:-1]
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    with pytest.raises(StoreError, match="inconsistent"):
+        DocStore(FakeEmbedder(), path=store.path).load()
+
+
+def test_load_refuses_an_index_built_by_another_model(store):
+    """Vectors from two models are not comparable, and at equal dimensions the
+    mismatch is invisible at query time -- the scores are simply noise."""
+    store.save()
+    meta_path = store.path + ".json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta["embedder"] = "BAAI/bge-large-en-v1.5"
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    named = FakeEmbedder()
+    named.model_name = "BAAI/bge-small-en-v1.5"
+    with pytest.raises(StoreError, match="built with"):
+        DocStore(named, path=store.path).load()
+
+
+def test_an_unnamed_embedder_can_still_read_the_index(store):
+    """The identity check compares only when both sides name themselves, so an
+    injectable fake -- the reason this whole file runs without a GPU -- stays
+    usable."""
+    store.save()
+    assert DocStore(FakeEmbedder(), path=store.path).load().chunks
+
+
+def test_an_index_predating_model_tracking_loads_with_a_note(store, capsys):
+    """Real indexes exist on disk from before the field. Unverifiable is not
+    the same as corrupt: say so once rather than bricking them."""
+    store.save()
+    meta_path = store.path + ".json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    del meta["embedder"]
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    assert DocStore(FakeEmbedder(), path=store.path).load().chunks
+    assert "predates model tracking" in capsys.readouterr().out
+
+
+def test_load_names_a_missing_index_instead_of_raising_oserror(tmp_path):
+    with pytest.raises(StoreError, match="no index at"):
+        DocStore(FakeEmbedder(), path=str(tmp_path / "absent")).load()
+
+
+def test_load_names_a_corrupt_index(store):
+    store.save()
+    with open(store.path + ".json", "w") as f:
+        f.write("{not json")
+    with pytest.raises(StoreError, match="not a readable index"):
+        DocStore(FakeEmbedder(), path=store.path).load()
+
+
+def test_saving_before_ingesting_is_refused(tmp_path):
+    """np.save writes None as a pickled object and np.load then refuses it with
+    a message about pickles that names nothing the user did."""
+    with pytest.raises(StoreError, match="ingest before saving"):
+        DocStore(FakeEmbedder(), path=str(tmp_path / "x")).save()
+
+
+def test_save_leaves_no_partial_files_behind(store, tmp_path):
+    store.save()
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_search_refuses_a_query_of_the_wrong_dimension(store):
+    class WiderEmbedder(FakeEmbedder):
+        def embed_query(self, text):
+            return np.zeros(768)
+
+    store.embedder = WiderEmbedder()
+    with pytest.raises(StoreError, match="different model"):
+        store.search("alpha")
+
+
 def test_search_on_empty_store_returns_nothing(tmp_path):
     assert DocStore(FakeEmbedder(), path=str(tmp_path / "x")).search("alpha") == []
+
+
+# ---- what ingest walks ---------------------------------------------------
+
+def test_ingest_prunes_caches_and_vendored_dependencies(tmp_path, capsys):
+    """Pointing this at a project root is the documented use. `.venv` alone can
+    outnumber the real docs a thousand to one, and the index still looks fine
+    -- every answer just comes from site-packages."""
+    d = tmp_path / "project"
+    (d / ".venv" / "lib").mkdir(parents=True)
+    (d / "__pycache__").mkdir()
+    (d / "docs").mkdir()
+    (d / ".venv" / "lib" / "vendored.py").write_text("def alpha(): pass\n")
+    (d / "__pycache__" / "stale.py").write_text("def beta(): pass\n")
+    (d / "docs" / "real.md").write_text("# Alpha\nalpha\n")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d))
+    assert all("venv" not in src and "pycache" not in src for src in s.sources)
+    assert "[rag] skipped 2 directories" in capsys.readouterr().out
+
+
+def test_ingest_skips_a_binary_file_wearing_a_text_extension(tmp_path, capsys):
+    """The reader passes errors="ignore", so a blob does not fail -- it becomes
+    mojibake, gets embedded, and sits in the index at whatever score it
+    happens to earn."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "real.md").write_text("# Alpha\nalpha\n")
+    (d / "blob.txt").write_bytes(b"PK\x03\x04\x00\x00garbage\x00\xff\xfe")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d))
+    assert s.sources == ["real.md"]
+    assert "1 binary files" in capsys.readouterr().out
+
+
+def test_ingest_indexes_identical_text_once(tmp_path, capsys):
+    """Duplicates compete with themselves for the k slots the gate has to
+    spend: one passage vendored twice can fill every slot and crowd out the
+    rest of the answer."""
+    d = tmp_path / "docs"
+    (d / "vendor").mkdir(parents=True)
+    (d / "a.md").write_text("# Alpha\nalpha alpha\n")
+    (d / "vendor" / "a-copy.md").write_text("# Alpha\nalpha alpha\n")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d))
+    assert len(s.chunks) == 1
+    assert "dropped 1 duplicate chunks" in capsys.readouterr().out
+
+    # Dedupe shortens the list before it is embedded, so chunks and vectors
+    # must still agree. This is exactly the drift `load` refuses, checked on
+    # the one path that now shortens anything.
+    s.save()
+    assert DocStore(FakeEmbedder(), path=s.path).load().chunks == s.chunks
+
+
+def test_an_empty_query_matches_nothing(store):
+    assert store.search("   ") == []
+    assert retrieve_context(store, "") == ""
+
+
+# ---- planning, before anything is embedded -------------------------------
+
+@pytest.fixture
+def project(tmp_path):
+    d = tmp_path / "project"
+    (d / "docs").mkdir(parents=True)
+    (d / "internal").mkdir()
+    (d / ".venv").mkdir()
+    (d / "docs" / "guide.md").write_text("# Alpha\nalpha\n")
+    (d / "docs" / "api.md").write_text("# Beta\nbeta\n")
+    (d / "internal" / "notes.md").write_text("# Gamma\ngamma\n")
+    (d / ".venv" / "vendored.md").write_text("# Delta\ndelta\n")
+    return d
+
+
+def test_a_plan_reports_what_it_would_index_without_embedding_it(project):
+    """The Embedder is what costs; chunking is free. Planning has to be
+    separable from embedding or the review can only happen after the bill."""
+    plan = plan_ingest(str(project))
+    assert dict(plan.per_file) == {"docs/guide.md": 1, "docs/api.md": 1,
+                                   "internal/notes.md": 1}
+    assert plan.skipped_dirs == (".venv",)
+
+
+def test_a_plan_can_leave_a_path_out(project):
+    plan = plan_ingest(str(project), exclude=("internal",))
+    assert "internal/notes.md" not in dict(plan.per_file)
+    assert plan.excluded == ("internal/notes.md",)
+
+
+def test_exclusion_takes_a_glob(project):
+    plan = plan_ingest(str(project), exclude=("docs/*.md",))
+    assert list(dict(plan.per_file)) == ["internal/notes.md"]
+
+
+def test_excluding_everything_is_an_error_not_an_empty_index(project):
+    with pytest.raises(ValueError, match="no files matched"):
+        plan_ingest(str(project), exclude=("*",))
+
+
+def test_the_review_names_every_file_and_what_was_left_out(project):
+    text = render_plan(plan_ingest(str(project), exclude=("internal",)))
+    assert "docs/guide.md" in text
+    assert "skipped 1 directories" in text
+    assert "excluded 1 files" in text
+
+
+def test_an_accepted_plan_is_what_gets_embedded(project):
+    plan = plan_ingest(str(project), exclude=("internal",))
+    s = DocStore(FakeEmbedder(), path=str(project / "idx"))
+    s.ingest_plan(plan, verbose=False)
+    assert s.sources == list(plan.sources)
+    assert s.vectors.shape[0] == len(plan.chunks)
+
+
+def test_a_pruned_directory_can_be_asked_for_explicitly(tmp_path):
+    """The skip list is a default, not a rule: whoever keeps docs in an
+    unusual directory needs a way to say so."""
+    d = tmp_path / "project"
+    (d / "venv").mkdir(parents=True)
+    (d / "venv" / "notes.md").write_text("# Alpha\nalpha\n")
+
+    s = DocStore(FakeEmbedder(), path=str(tmp_path / "idx"))
+    s.ingest_dir(str(d), verbose=False, skip_dirs=frozenset())
+    assert s.chunks

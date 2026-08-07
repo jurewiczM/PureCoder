@@ -46,7 +46,10 @@ def test_names_lists_every_entry_available_or_not():
 
 # ---- every entry is coherent ---------------------------------------------
 
-@pytest.mark.parametrize("name", L.names())
+# Iterates the built-ins, not L.names(): once a learned entry can take a
+# placeholder's name, names() depends on what happens to be in the developer's
+# store, and the suite would collect a different set on every machine.
+@pytest.mark.parametrize("name", sorted(L.BUILTIN_NAMES))
 def test_every_spec_is_internally_consistent(name):
     spec = L.get(name)
     assert spec.name == name
@@ -98,6 +101,15 @@ def test_a_permanently_unvalidatable_language_refuses_with_a_reason():
     ok, why = L.get("powerquery").available()
     assert not ok
     assert "Excel" in why or "Power BI" in why
+
+
+def test_only_wired_and_refused_names_are_reserved():
+    """`learn` may not replace a wired entry or a standing refusal. It MAY take
+    a placeholder's name -- reserving those meant the feature refused the exact
+    four languages it exists to enable."""
+    assert {"python", "c++", "javascript", "rust", "c#"} <= L.RESERVED_NAMES
+    assert "powerquery" in L.RESERVED_NAMES, "a standing refusal must stay one"
+    assert not ({"go", "java", "swift", "ocaml"} & L.RESERVED_NAMES)
 
 
 def test_a_declared_but_unimplemented_language_refuses():

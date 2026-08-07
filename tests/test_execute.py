@@ -4,12 +4,14 @@ import time
 
 from purecoder.execute import (
     _trim,
+    harness_collision,
     lint_implementation,
     lint_tests,
     missing_dependency,
     public_names,
     run_python,
 )
+from purecoder.languages import get
 
 CODE = "def add(a, b):\n    return a + b\n"
 
@@ -295,6 +297,61 @@ def test_the_timeout_message_names_the_server_case():
     assert not ok
     assert "timed out" in err
     assert "never returns" in err
+
+
+# ---- what the harness already provides -----------------------------------
+
+def test_an_implementation_that_writes_its_own_entry_point_is_named():
+    """The failure the writer demand exists to prevent, seen from the other
+    side: the harness's tail defines main(), the writer defines one too, and
+    the toolchain reports a duplicate symbol that names neither cause."""
+    spec = get("c++")
+    hint = harness_collision(spec, "int add(int a,int b){return a+b;}\n"
+                                   "int main() { return 0; }\n")
+    assert "main" in hint
+    assert "already" in hint
+
+
+def test_an_implementation_that_defines_the_test_function_is_named():
+    """The likelier collision in a C++-shaped harness: the tail advertises
+    `pc_tests()`, so the writer helpfully defines one -- and it is the TESTS
+    that already do, not the preamble or the tail."""
+    tests = "int add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); }"
+    hint = harness_collision(get("c++"), "int add(int a,int b){return a+b;}\n"
+                                         "void pc_tests(){ }\n", tests)
+    assert "pc_tests" in hint
+
+
+def test_a_forward_declaration_is_not_a_definition():
+    """The C++ tests open with `int add(int,int);` -- no brace, no collision.
+    Comparing against the tests must not make every implementation collide with
+    its own declaration."""
+    tests = "int add(int,int);\nvoid pc_tests(){ PC_CHECK(add(1,2)==3); }"
+    assert harness_collision(get("c++"), "int add(int a,int b){return a+b;}\n",
+                             tests) == ""
+
+
+def test_an_implementation_that_touches_the_check_helper_is_named():
+    """PC_CHECK belongs to the harness and to the tests. An implementation
+    using it is either asserting or redefining, and both break the file."""
+    hint = harness_collision(get("c++"), "int add(int a,int b){ PC_CHECK(a>0); "
+                                         "return a+b; }\n")
+    assert "PC_CHECK" in hint
+
+
+def test_an_implementation_that_collides_with_nothing_gets_no_hint():
+    """It is appended to a retry prompt, so a false positive costs context and
+    points the model at code that is fine."""
+    assert harness_collision(get("c++"),
+                             "int add(int a,int b){ if (a>0) { return a+b; } "
+                             "return b; }\n") == ""
+
+
+def test_a_language_with_no_harness_never_collides():
+    """Python has no preamble and no tail -- there is nothing to collide with,
+    and its own duplicate definitions are legal."""
+    assert harness_collision(get("python"),
+                             "def main():\n    return 1\n") == ""
 
 
 # ---- feedback quality ----------------------------------------------------
