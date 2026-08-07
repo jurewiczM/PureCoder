@@ -4,6 +4,7 @@ import time
 
 from purecoder.execute import (
     _trim,
+    available_packages,
     harness_collision,
     lint_implementation,
     lint_tests,
@@ -380,3 +381,23 @@ def test_trim_keeps_the_last_lines_of_a_python_traceback():
 
 def test_trim_leaves_short_errors_alone():
     assert _trim("one\ntwo") == "one\ntwo"
+
+
+# ---- declared packages ---------------------------------------------------
+
+def test_a_package_the_sandbox_has_is_reported_present():
+    """The sandbox runs `sys.executable`, so it inherits this environment --
+    numpy is importable here and therefore validatable, which the old boundary
+    text denied."""
+    ok, missing = available_packages(("numpy",))
+    assert ok and missing == []
+
+
+def test_a_package_the_sandbox_lacks_is_named():
+    ok, missing = available_packages(("numpy", "definitely_not_a_real_pkg"))
+    assert not ok
+    assert missing == ["definitely_not_a_real_pkg"]
+
+
+def test_nothing_declared_needs_no_subprocess():
+    assert available_packages(()) == (True, [])

@@ -215,6 +215,13 @@ rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
 | `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
 | `measure`          | run the contract measurement: five ambiguous specs, both arms |
+
+`code --with numpy` declares a third-party package the generated code may use.
+It is probed in the sandbox interpreter *before* anything is generated, so a
+package that is not installed is refused with the `pip install` line rather than
+discovered three attempts later; the permission reaches the test designer too,
+and the stdlib-only retry no longer withdraws it. Python only — every other
+language refuses the flag instead of ignoring it.
 | `status`           | live system status |
 
 Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
@@ -249,7 +256,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           433 tests (no GPU, no server; toolchain ones self-skip)
+tests/           441 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

@@ -142,6 +142,18 @@ to **prove** a check executed instead of inferring it from exit code 0. That
 last guarantee took the Python path a session of false greens to earn; the
 newer languages have it from the first commit.
 
+**Declared packages** (`--with numpy`). The sandbox runs `sys.executable`, so
+it inherits whatever environment PureCoder runs in — which for a long time this
+project's own docs denied, claiming a stdlib-only sandbox. The fix is not a
+package manager but a declaration: the caller names what the code may import,
+the import is probed in the interpreter the executor will actually use before a
+single model call, and a missing one is refused with the `pip install` command
+rather than after three attempts of correct code. The permission lives in the
+shared task text so the test designer reads it too. A per-run venv that installs
+on demand is deliberately absent: it needs the network inside a run, CI cannot
+exercise it, and a half-installed environment is the "generated but unchecked"
+tier under another name.
+
 **Design line:** if it cannot be executed, it is not emitted. A missing
 toolchain is refused with the binary named; Power Query M is refused
 permanently, because it runs only inside Excel and Power BI. There is no

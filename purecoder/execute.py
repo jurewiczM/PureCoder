@@ -251,6 +251,33 @@ def missing_dependency(error: str):
     return m.group(1) if m else None
 
 
+def available_packages(names, python: str = sys.executable):
+    """Which declared packages the sandbox can actually import. -> (ok, missing).
+
+    Probed in the interpreter the executor will really use, because that is the
+    only thing that decides whether generated code is validatable. Asking the
+    *current* process would be a different question whenever a caller points the
+    executor elsewhere.
+
+    Checked before any model call. Producing three attempts' worth of correct
+    code against a package the sandbox does not have is the most expensive way
+    to arrive at "cannot validate".
+    """
+    names = tuple(names or ())
+    if not names:
+        return True, []
+    missing = []
+    for name in names:
+        try:
+            rc = subprocess.run([python, "-c", f"import {name}"],
+                                capture_output=True, timeout=30).returncode
+        except (subprocess.SubprocessError, OSError):
+            rc = 1
+        if rc != 0:
+            missing.append(name)
+    return not missing, missing
+
+
 def lint_implementation(code: str):
     """Reject an implementation that has smuggled its tests inside itself.
 
@@ -503,7 +530,7 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
-                              error_hint=None, **kw):
+                              error_hint=None, packages=(), **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -527,6 +554,25 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         return {"ok": False, "text": "", "tests": "", "contract": None,
                 "attempts": 0, "error": f"cannot generate {spec.name}: {why}"}
 
+    # Declared packages, checked before a single model call. Two refusals, both
+    # cheap: a language with no import story cannot honour the request at all,
+    # and a package the sandbox cannot import makes every later verdict
+    # unreachable however good the code is.
+    packages = tuple(packages or ())
+    if packages and spec.name != "python":
+        return {"ok": False, "text": "", "tests": "", "contract": None,
+                "attempts": 0,
+                "error": f"cannot declare packages for {spec.name}: only the "
+                         f"python path installs and imports them. Drop the "
+                         f"declaration, or generate python."}
+    have, missing = available_packages(packages)
+    if not have:
+        return {"ok": False, "text": "", "tests": "", "contract": None,
+                "attempts": 0,
+                "error": f"the sandbox cannot import {', '.join(missing)}, so "
+                         f"nothing written against it could be validated. "
+                         f"Install it first:\n  pip install {' '.join(missing)}"}
+
     if use_contract and contract is None:
         contract, cerr = derive_contract(pc, description,
                                          max_retries=max_retries,
@@ -549,6 +595,14 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     grounded = description
     if contract is not None:
         grounded = f"{description}\n\n{render_contract(contract)}"
+    # Folded into the shared task text rather than into the writer's system
+    # prompt, because the TESTER needs the same permission: a writer allowed
+    # numpy and a designer that is not produces assertions that cannot run.
+    if packages:
+        allowed = ", ".join(packages)
+        grounded += (f"\n\nYou may use these third-party packages, which are "
+                     f"installed: {allowed}. Nothing else outside the standard "
+                     f"library.")
 
     if tests is None:
         designed, gate_ok, gate_reason = design_tests(
@@ -655,11 +709,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 if verbose:
                     print(f"[attempt {attempt}] missing dependency {dep!r} -- "
                           f"retrying with a standard-library-only constraint")
+                # A declared package survives this. Without the exception a
+                # numpy run that hit a DIFFERENT missing import was told to
+                # drop numpy too -- the loop taking back a permission the
+                # caller had checked and granted.
+                allowed = (f" You may still use {', '.join(packages)}, which "
+                           f"is installed." if packages else "")
                 constraints = (
                     f"\n\nHARD CONSTRAINT: use ONLY the {spec.name} standard "
-                    f"library. {dep!r} is not installed and cannot be validated "
-                    f"here. No third-party imports at all, in any later "
-                    f"attempt.")
+                    f"library.{allowed} {dep!r} is not installed and cannot be "
+                    f"validated here. No other third-party imports at all, in "
+                    f"any later attempt.")
                 task = f"{grounded}{constraints}"
                 continue
             if verbose:
