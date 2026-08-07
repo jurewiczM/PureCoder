@@ -247,7 +247,7 @@ purecoder/
   validate.py    config validators + write→validate→fix loop
   execute.py     code-blind test designer, test-quality gate, execution validation
   scaffold.py    multi-artifact project orchestrator
-  rag.py         code/doc-aware chunking + retrieval
+  rag.py         code/doc-aware chunking (AST + tree-sitter) + retrieval
   symbols.py     the names the docs use, and what they can honestly decide
   status.py      live system probe
   bootstrap.py   draft a language entry from its docs, then probe it
@@ -256,7 +256,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           441 tests (no GPU, no server; toolchain ones self-skip)
+tests/           450 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

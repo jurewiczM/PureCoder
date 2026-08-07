@@ -4,3 +4,8 @@ numpy>=1.24
 
 # retrieval (purecoder ingest / ask) -- pulls in torch, ~2 GB
 sentence-transformers>=2.2
+
+# multi-language chunking (purecoder ingest over code, not only prose).
+# Optional: without it, code files are chunked as prose rather than skipped.
+tree-sitter>=0.21
+tree-sitter-language-pack>=0.9

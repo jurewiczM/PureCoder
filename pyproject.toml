@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rag = ["sentence-transformers>=2.2"]
+chunking = ["tree-sitter>=0.21", "tree-sitter-language-pack>=0.9"]
 dev = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.urls]
