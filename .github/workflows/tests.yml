@@ -1,13 +1,29 @@
 name: tests
 
+# The old trigger was `push: branches: [main]` plus `pull_request`. With the
+# work happening on a feature branch and no PR open, neither fired -- 48
+# commits landed without CI running once. Any branch push now runs it.
+#
+# `push` and `pull_request` both firing means a same-repo PR is built twice.
+# That is accepted rather than overlooked: dropping `pull_request` would leave
+# fork PRs unbuilt, and the branch push is what makes CI useful day to day.
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       # The suite is model-independent by design: validators, the executor,
       # the test gate and the chunkers run without llama-server or a GPU.
@@ -28,5 +46,63 @@ jobs:
       - name: Lint
         run: ruff check purecoder tests examples
 
+      # A skip is not a pass. The runner image ships g++, node and rustc, so
+      # the per-language execution tests MUST run here. If a toolchain quietly
+      # left the image those tests would skip and the suite would still go
+      # green while proving nothing about the thing this project exists to do.
+      - name: Toolchains present
+        run: |
+          set -eu
+          for binary in g++ node rustc; do
+            command -v "$binary" >/dev/null \
+              || { echo "::error::$binary missing -- language tests would skip"; exit 1; }
+            echo "$binary: $("$binary" --version 2>&1 | head -1)"
+          done
+
+      # -rs lists every skip with its reason, so a skip is visible in the log
+      # rather than hidden behind a dot.
       - name: Test
-        run: pytest -q
+        run: pytest -q -rs
+
+  package:
+    # Grammars ship as package data. An editable install resolves them from the
+    # source tree either way, so a broken package-data declaration is invisible
+    # to the test job above and only surfaces for someone who pip-installs it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build a wheel
+        run: |
+          pip install build
+          python -m build --wheel
+
+      - name: Install it where the source tree is not
+        run: |
+          set -eu
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --quiet dist/*.whl
+          # Compared against the source tree, not a hardcoded list: naming the
+          # grammars here would assert a future state, and the check would fail
+          # on any commit predating the newest one.
+          EXPECTED=$(ls purecoder/grammars/*.gbnf | xargs -n1 basename | sort | tr '\n' ' ')
+          cd /tmp
+          EXPECTED="$EXPECTED" /tmp/clean/bin/python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from purecoder.client import GRAMMARS_DIR
+
+          expected = set(os.environ["EXPECTED"].split())
+          shipped = {p.name for p in Path(GRAMMARS_DIR).glob("*.gbnf")}
+          print("in the source tree:", sorted(expected))
+          print("in the wheel      :", sorted(shipped))
+          missing = expected - shipped
+          assert not missing, f"not packaged: {sorted(missing)}"
+          PY
+          /tmp/clean/bin/purecoder --help >/dev/null
+          echo "console script runs"
