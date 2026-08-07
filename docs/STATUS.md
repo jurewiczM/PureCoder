@@ -461,24 +461,29 @@ _Snapshot of what's built, tested, and what's next._
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-5. **Merge the branch stack.** Eight branches, `feat/03-audit-and-deslop`
-   through `feat/10-specialization-plan`, 116 commits, strictly linear -- each
-   one contains the last, verified link by link. Open as PRs #18 and #6-#12,
-   each based on its predecessor so a reviewer sees only that branch's own
-   commits. `main` is at `e81e139` and nothing above it has landed yet.
+5. **Merge the branch stack.** One branch left:
+   `feat/09-tree-sitter-chunking`, 112 commits ahead of `main`, merging
+   cleanly. It holds **every non-merge commit in the repository** -- verified
+   against `main` and all seven other branches with
+   `git log --no-merges <branch> --not origin/feat/09-tree-sitter-chunking`,
+   which returns nothing for every one of them. So one PR lands the lot, and
+   the other branches are subsets rather than remaining work.
 
-   ```
-   main <- #18 feat/03 <- #6 feat/04 <- #7 feat/05 <- #8 feat/06
-        <- #9 feat/07 <- #10 feat/08 <- #11 feat/09 <- #12 feat/10
-   ```
+   That is not how it was meant to go, and the way it failed is the useful
+   part. Every PR in the stack was merged **head into base** -- downward,
+   away from `main` -- so content flowed from `feat/14` back toward
+   `feat/03` instead of forward. Then `feat/03 -> main` (#18) fired at
+   15:08, four minutes *before* the cascade reached `feat/03` at 15:12, so
+   `main` got six commits and the other 11,000 lines stayed on the branches.
+   A stacked chain merged in the wrong direction does not fail loudly; it
+   fails by leaving `main` plausible and short.
 
-   **Merge bottom-up, starting at #18.** `feat/10` alone carries all 116
-   commits and merges to `main` cleanly, at the cost of any reviewability.
-   `feat/11` through `feat/14` no longer appear because they were merged
-   downward into `feat/10` rather than upward into `main` -- their work is
-   in the chain, their branches are not.
+   **Read the direction, not the list.** GitHub's PR list is ordered by
+   number, and clicking down that list merges the stack top-first, which is
+   exactly backwards. The order that works is bottom-up by base: the PR
+   whose base is `main` goes first, and every merge retargets the next one.
 
-   Three things went wrong here and each is worth one line, because the
+   Four things went wrong here and each is worth one line, because the
    commits do not record any of them.
 
    **The stale ref.** This entry used to say "Nothing is on `main`". That was
@@ -509,8 +514,16 @@ _Snapshot of what's built, tested, and what's next._
    and GitHub refuses it over the API -- `Cannot change the base branch
    because the pull request is part of a stack` (422). What worked was
    closing it and opening a replacement against `main`, which is what #18 is;
-   whether the web UI would have allowed the base change was not tested. Worth knowing before building another stack: the
-   shape is cheap to create and expensive to re-point.
+   whether the web UI would have allowed the base change was not tested.
+   Worth knowing before building another stack: the shape is cheap to create
+   and expensive to re-point.
+
+   **The verdict on stacked PRs, having now paid for it.** Fifteen branches
+   bought reviewability that was never used and cost a stale-ref conflict, a
+   rebase of twelve branches, a PR that could not be retargeted, and a merge
+   order that silently dropped 11,000 lines on the floor. The failure modes
+   are all in the *shape*, not in any commit. Next time: fewer, wider
+   branches, each merged to `main` before the next is cut.
 6. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
