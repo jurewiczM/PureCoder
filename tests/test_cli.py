@@ -405,3 +405,27 @@ def test_every_code_producing_command_resolves_the_language():
     for name in ("cmd_code", "cmd_ask", "cmd_project"):
         src = inspect.getsource(getattr(cli, name))
         assert "resolve_language(args)" in src, f"{name} ignores --lang"
+
+
+def test_measure_is_routed_and_reports_without_a_server():
+    """The measurement is a command like any other. With the server down every
+    task lands in "no code" -- which is the honest verdict, not zero
+    divergence."""
+    from purecoder import bench, cli
+
+    class Args:
+        repeats = 1
+        retries = 1
+        timeout = 5
+
+    class Dead:
+        def complete(self, *a, **kw):
+            raise RuntimeError("server down")
+
+        def code(self, *a, **kw):
+            raise RuntimeError("server down")
+
+    rows = bench.measure(Dead(), tasks=bench.TASKS[:1], repeats=1,
+                         max_retries=1, verbose=False)["rows"]
+    assert {r["verdict"] for r in rows} == {"no code"}
+    assert hasattr(cli, "cmd_measure")
