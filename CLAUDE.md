@@ -14,13 +14,17 @@ permanent history.
 Verify before every push:
 
 ```bash
-git log --format="%B%an%ae" main..HEAD | grep -icE "claude|anthropic"   # must be 0
+git log --format="%B" main..HEAD | \
+  grep -icE "co-authored-by|generated with|claude-session"    # must be 0
 ```
+
+Match the *trailers*, not the bare word — this file exists, so any commit that
+merely names it trips a `grep -i claude`.
 
 ## Checks
 
 ```bash
-.venv/bin/python -m pytest tests/ -q      # 558 tests, no GPU, no server needed
+.venv/bin/python -m pytest tests/ -q      # 559 tests, no GPU, no server needed
 .venv/bin/ruff check purecoder tests
 ```
 

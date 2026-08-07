@@ -170,6 +170,29 @@ def learned(store, monkeypatch):
     return spec
 
 
+def test_learning_a_reserved_language_costs_no_ingest(tmp_path, capsys):
+    """`learn ocaml` used to embed the whole docs directory and only then
+    report that the name is reserved. The work was done, an index was written,
+    and the answer was always going to be no. The scaffolder already refuses an
+    unwired language before creating its directory; same rule, same grounds."""
+    from purecoder.cli import cmd_learn
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("some documentation\n")
+
+    class Args:
+        name = "ocaml"
+        docs_dir = str(docs)
+        ext = ".ml"
+        device = "cpu"
+
+    rc = cmd_learn(None, Args())
+    assert rc == 1
+    assert "reserved language" in capsys.readouterr().out
+    assert not list(tmp_path.glob("*.npy")), "an index was built anyway"
+
+
 def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys):
     """The claim the whole feature exists for: `code --lang X` is grounded with
     no second ingest and no --store."""

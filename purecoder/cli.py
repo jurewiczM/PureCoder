@@ -330,9 +330,20 @@ def cmd_ask(pc, args):
 
 
 def cmd_learn(pc, args):
-    from .bootstrap import learn_language
+    from .bootstrap import RESERVED_NAMES, learn_language
     from .langstore import docs_index_path
     from .rag import DocStore, Embedder, MissingRetrieval, retrieve_context
+
+    # Before the ingest, not after it. `learn ocaml` embedded a whole docs
+    # directory and only then reported that the name is reserved -- the work
+    # was done, the index written, and the answer was always going to be no.
+    # The scaffolder already refuses an unwired language before creating its
+    # directory; this is the same rule on the same grounds.
+    if args.name in RESERVED_NAMES:
+        print(f"{args.name!r} is a reserved language -- it is either wired "
+              f"already or refused on purpose, and a drafted spec may not "
+              f"replace either")
+        return 1
 
     # The index is built to draft the harness and then KEPT, so generating in
     # this language later can read the same documentation. It used to be thrown
