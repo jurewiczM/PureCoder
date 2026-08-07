@@ -19,6 +19,7 @@ class FakeModel:
         self.code_outputs = list(code_outputs or [])
         self.completions = list(completions or [])
         self.prompts = []
+        self.code_kwargs = []            # what the loop asked the writer for
 
     def _next(self, queue):
         return queue.pop(0) if len(queue) > 1 else queue[0]
@@ -30,6 +31,7 @@ class FakeModel:
 
     def code(self, description, language="python", **kw):
         self.prompts.append(description)
+        self.code_kwargs.append({"language": language, **kw})
         return {"text": self._next(self.code_outputs), "truncated": False,
                 "tokens": 1, "raw": {}}
 
@@ -82,6 +84,57 @@ def test_execution_loop_passes_with_supplied_tests():
     res = generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
                                     verbose=False)
     assert res["ok"] and res["attempts"] == 1
+
+
+def test_the_loop_hands_the_writer_its_language_and_that_language_demands():
+    """The link that rotted: every spec declared a `writer_system` and nothing
+    read it, so C#'s "no class wrapper, no Main" -- which its harness needs to
+    assemble at all -- never reached a prompt.
+
+    Run on a Python-shaped spec so the assertion is about the wiring and not
+    about having a .NET SDK; that C# is the language actually making the demand
+    is `test_languages.py`'s business.
+    """
+    import dataclasses
+
+    from purecoder.languages import PYTHON
+
+    spec = dataclasses.replace(PYTHON, writer_system="emit no class wrapper")
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    generate_validated_python(pc, "add two numbers", tests=GOOD_TESTS,
+                              verbose=False, spec=spec)
+    assert pc.code_kwargs[0] == {"language": "python",
+                                 "writer_system": "emit no class wrapper"}
+
+
+def test_the_loop_refuses_an_unvalidatable_language_without_raising():
+    """The CLI screens these out, but a library caller can pass one straight in.
+    It must come back as the loop's ordinary failure, not an exception: the
+    scaffolder has already created the output directory by this point, and an
+    exception would leave it half written instead of reporting ok=False."""
+    from purecoder.languages import get
+
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = generate_validated_python(pc, "anything", verbose=False,
+                                    spec=get("powerquery"))
+    assert res["ok"] is False
+    assert "Excel" in res["error"] or "Power BI" in res["error"]
+    assert pc.prompts == [], "an unvalidatable language must cost no model call"
+
+
+def test_the_scaffolder_refuses_an_unwired_language_before_writing_anything(tmp_path):
+    """`go` is declared but has no runner and no ProjectSpec, so the scaffolder
+    cannot even name its entry file. Refuse up front rather than create the
+    directory and fail on the first attribute."""
+    from purecoder.languages import get
+
+    out = tmp_path / "proj"
+    pc = FakeModel(code_outputs=[GOOD_CODE], completions=[GOOD_TESTS])
+    res = scaffold_project(pc, "x", "anything", outdir=str(out),
+                           spec=get("go"), use_contract=False, verbose=False)
+    assert res["ok"] is False
+    assert "not implemented" in res["error"]
+    assert not out.exists(), "a refused scaffold must leave no directory behind"
 
 
 def test_execution_loop_feeds_the_traceback_back_and_converges():

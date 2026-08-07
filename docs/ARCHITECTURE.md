@@ -38,6 +38,11 @@ real error text back on failure.
 lines, `.rm:` malformed targets) because make is lenient. A validator that
 rubber-stamps garbage is worse than no validator — hence the semantic guards.
 
+This layer handles config only. A `compile()`-style syntax check on generated
+code is still available as `validate_python`, but nothing in the pipeline runs
+it: proving a module parses is a far weaker claim than running it, and the
+executor below makes the strong one on every artifact that holds code.
+
 ### 2.5 Spec contracts (`purecoder/contract.py`)
 Prose is ambiguous; a contract is not. Before any code exists, the description
 is turned into a grammar-constrained JSON contract — name, params, returns,

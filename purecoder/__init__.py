@@ -7,7 +7,13 @@ external: a GBNF grammar, a real tool, a test run. See docs/ARCHITECTURE.md.
 
 from .client import PureCoder, strip_fences
 from .contract import derive_contract, render_contract, validate_contract
-from .execute import generate_validated_python, lint_tests, run_python
+from .execute import (
+    generate_validated_python,
+    lint_tests,
+    run_candidate,
+    run_python,
+)
+from .languages import PYTHON, LanguageSpec
 from .scaffold import scaffold_project
 from .status import print_status
 from .validate import generate_validated, validate_env, validate_makefile, validate_python
@@ -25,7 +31,10 @@ __all__ = [
     "validate_makefile",
     "validate_python",
     "generate_validated_python",
+    "run_candidate",
     "run_python",
+    "LanguageSpec",
+    "PYTHON",
     "lint_tests",
     "scaffold_project",
     "print_status",

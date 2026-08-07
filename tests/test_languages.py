@@ -77,6 +77,23 @@ def test_a_wired_language_fails_the_run_when_no_check_executes(name):
 
 # ---- availability --------------------------------------------------------
 
+def test_csharp_demands_the_shape_its_harness_can_assemble():
+    """The C# preamble is a .NET file-based app: top-level statements and local
+    functions. A class wrapper or a Main method makes the assembled file fail
+    to build, so the demand has to be on the spec AND reach the writer."""
+    spec = L.get("c#")
+    assert "no class wrapper" in spec.writer_system
+    assert "no Main method" in spec.writer_system
+
+
+def test_a_language_needing_nothing_extra_says_nothing_extra():
+    """`writer_system` is for demands the writer prompt does not already make.
+    Repeating "output only python code" there is noise the model pays for."""
+    for name in ("python", "c++", "javascript", "rust"):
+        assert L.get(name).writer_system == "", \
+            f"{name} restates what the writer prompt already says"
+
+
 def test_a_permanently_unvalidatable_language_refuses_with_a_reason():
     ok, why = L.get("powerquery").available()
     assert not ok

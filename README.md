@@ -49,7 +49,7 @@ layer assumes the model can be wrong and catches it:
 
 - **Grammars** (llama.cpp GBNF) make invalid `.env` / Makefile output
   structurally impossible — not discouraged, impossible.
-- **Real-tool validators** run `make -n`, `compile()`, and semantic guards;
+- **Real-tool validators** run `make -n` and semantic guards on config;
   a validator that rubber-stamps garbage is worse than none.
 - **Execution validation** runs the code against **code-blind** tests
   (the tester never sees the implementation, so it can't rubber-stamp bugs).
@@ -72,7 +72,7 @@ flowchart TB
     subgraph sense["sense — made checkable"]
         direction LR
         V1[semantic guards<br/><i>degeneration, prose, spirals</i>]
-        V2[make -n / compile]
+        V2[make -n<br/><i>real parse check</i>]
     end
     subgraph truth["truth — made provable"]
         direction LR
@@ -141,7 +141,7 @@ ingest once, reuse across runs.
 
 | command | what it does |
 |---|---|
-| `code "<spec>"`    | execution-validated Python function |
+| `code "<spec>"`    | execution-validated function (`--lang` picks the language) |
 | `env "<spec>"`     | grammar-valid `.env` |
 | `make "<spec>"`    | validated Makefile |
 | `project <name> "<spec>" [dir]` | scaffold a whole project (code + Makefile + .env + README) |
@@ -168,7 +168,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           214 tests (no GPU, no server; toolchain ones self-skip)
+tests/           225 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

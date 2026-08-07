@@ -33,6 +33,16 @@ def _write(outdir: str, filename: str, content: str) -> str:
 def scaffold_project(pc, name, description, outdir="build",
                      entry=None, max_retries=5, verbose=True,
                      use_contract=True, spec=PYTHON):
+    # Refuse before creating anything. A declared-but-unwired language has no
+    # ProjectSpec, so it cannot even name its entry file -- and a directory
+    # created then abandoned is worse than a refusal that explains itself.
+    available, why = spec.available()
+    if not available:
+        if verbose:
+            print(f"cannot scaffold a {spec.name} project: {why}")
+        return {"outdir": outdir, "report": {}, "ok": False,
+                "error": f"cannot scaffold {spec.name}: {why}"}
+
     os.makedirs(outdir, exist_ok=True)
     entry = entry or spec.project.entry
     report = {}
@@ -53,7 +63,7 @@ def scaffold_project(pc, name, description, outdir="build",
     # A compiled language needs an entry point to link. The sandbox supplies
     # one; the file on disk does not have it, so without this a validated C++
     # project fails `make test` with "undefined reference to `main`".
-    on_disk = code + (spec.project.entry_stub if spec.project else "")
+    on_disk = code + spec.project.entry_stub
     _write(outdir, entry, on_disk)
     report[entry] = code_res["ok"]
 
@@ -107,4 +117,4 @@ def scaffold_project(pc, name, description, outdir="build",
         print(f"\n=== scaffold {'OK' if ok else 'INCOMPLETE'}: {outdir}/ ===")
         for fn, passed in report.items():
             print(f"  {'ok  ' if passed else 'FAIL'} {fn}")
-    return {"outdir": outdir, "report": report, "ok": ok}
+    return {"outdir": outdir, "report": report, "ok": ok, "error": ""}

@@ -132,10 +132,13 @@ def validate_makefile(text: str):
     return True, ""
 
 
+# Config artifacts only. Code has its own loop, because `compile()` proving a
+# module parses is a far weaker claim than running it -- see execute.py.
+# `validate_python` stays available as that weaker check for callers who want
+# a syntax verdict without a subprocess.
 VALIDATORS = {
     "env": validate_env,
     "makefile": validate_makefile,
-    "python": validate_python,
 }
 
 
@@ -143,13 +146,7 @@ VALIDATORS = {
 
 def _generate(pc, kind, description, **kw):
     """Route to the right client helper for this artifact kind."""
-    if kind == "env":
-        return pc.env_file(description, **kw)
-    if kind == "makefile":
-        return pc.makefile(description, **kw)
-    if kind == "python":
-        return pc.code(description, language="python", **kw)
-    raise ValueError(f"unknown kind: {kind}")
+    return {"env": pc.env_file, "makefile": pc.makefile}[kind](description, **kw)
 
 
 def generate_validated(pc, kind, description, max_retries=3, verbose=True, **kw):

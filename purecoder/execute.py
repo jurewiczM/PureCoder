@@ -312,7 +312,7 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     lines = [ln.strip() for ln in tests.splitlines()
              if spec.check_call in ln]
     if lines:
-        top, repeats = Counter(lines).most_common(1)[0]
+        repeats = Counter(lines).most_common(1)[0][1]
         if repeats > MAX_REPEATED_ASSERT:
             return False, (f"degenerate tests: identical check repeated "
                            f"{repeats} times -- likely a generation spiral")
@@ -357,7 +357,7 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
     lines = [ln.strip() for ln in tests.splitlines()
              if ln.strip().startswith("assert")]
     if lines:
-        top, count = Counter(lines).most_common(1)[0]
+        count = Counter(lines).most_common(1)[0][1]
         if count > MAX_REPEATED_ASSERT:
             return False, (f"degenerate tests: identical assertion repeated "
                            f"{count} times -- likely a generation spiral")
@@ -396,26 +396,19 @@ TEST_RULES = (
 )
 
 
-TEST_SYSTEM = (
-    "You write Python assert-based tests for a described function or class. "
-    "Output ONLY test code: assert statements and setup. No prose, no fences. "
-    "Assume the thing under test is already defined in the same file; call it "
-    "directly. STRICT RULES: Only test behavior the description explicitly "
-    "states. Do not invent requirements. Do not test unspecified inputs. Never "
-    "assert on exact exception messages -- only assert that the correct "
-    "exception TYPE is raised, using try/except/else: call it inside 'try', "
-    "'except ThatError: pass', and 'else: assert False'. Never put "
-    "'assert False' inside the try -- it would be caught by your own except. "
-    "Respect every word of the spec "
-    "(if it says 'sorted', expected output must be sorted)."
-)
-
 def generate_tests(pc, description: str, n_predict: int = 512,
                    spec=PYTHON) -> str:
     """The tester prompt is the language's own idiom plus the rules that apply
-    everywhere -- the spec supplies the former, TEST_RULES the latter."""
-    system = f"{spec.test_system} {TEST_RULES}" if spec.test_system else TEST_SYSTEM
-    res = pc.complete(system=system, user=description,
+    everywhere -- the spec supplies the former, TEST_RULES the latter.
+
+    A spec with no test idiom cannot say how to assert, so there is nothing
+    sensible to prompt with. `available()` refuses such a language before the
+    CLI ever reaches here; this makes the same thing true for library callers.
+    """
+    if not spec.test_system:
+        raise ValueError(f"{spec.name} declares no test idiom -- "
+                         f"it cannot be validated, so tests are not generated")
+    res = pc.complete(system=f"{spec.test_system} {TEST_RULES}", user=description,
                       grammar=None, n_predict=n_predict)
     return strip_fences(res["text"])
 
@@ -458,6 +451,16 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     writer and the test designer read. Returns {ok, text, tests, contract,
     attempts, error}.
     """
+    # A language with no test idiom cannot be validated, so generating for it
+    # would emit unverified code. The CLI refuses such a spec before reaching
+    # here; a library caller (or scaffold_project, which has already made the
+    # output directory) gets the loop's ordinary failure dict rather than an
+    # exception out of the middle of a half-written project.
+    ok, why = spec.available()
+    if not ok:
+        return {"ok": False, "text": "", "tests": "", "contract": None,
+                "attempts": 0, "error": f"cannot generate {spec.name}: {why}"}
+
     if use_contract and contract is None:
         contract, cerr = derive_contract(pc, description,
                                          max_retries=max_retries,
@@ -483,8 +486,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
     if tests is None:
         designed, gate_ok, gate_reason = design_tests(
-            pc, grounded, max_retries=max_retries, verbose=verbose,
-            min_assertions=MIN_ASSERTIONS, spec=spec)
+            pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
@@ -508,7 +510,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     constraints = ""
 
     for attempt in range(1, max_retries + 1):
-        res = pc.code(task, language=spec.name, **kw)
+        res = pc.code(task, language=spec.name,
+                      writer_system=spec.writer_system, **kw)
         code = res["text"]
 
         if res["truncated"]:
@@ -526,15 +529,13 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             targets = public_names(code)
             if targets:
                 gate_ok, gate_reason = lint_tests(designed, targets=targets,
-                                                  min_assertions=MIN_ASSERTIONS,
                                                   spec=spec)
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
                     designed, redo_ok, redo_reason = design_tests(
                         pc, grounded, targets=targets, max_retries=max_retries,
-                        verbose=verbose, min_assertions=MIN_ASSERTIONS,
-                        spec=spec)
+                        verbose=verbose, spec=spec)
                     if not redo_ok:
                         if verbose:
                             print(f"[tests] gate never satisfied: {redo_reason} "
