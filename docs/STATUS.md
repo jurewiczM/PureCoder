@@ -445,6 +445,13 @@ _Snapshot of what's built, tested, and what's next._
    This is where the next real gain is, and it is not a model problem: a
    `--tdd` suite is confirmed by a human precisely because nothing mechanical
    can check an expectation.
+
+   Six of the nine defects found on 2026-08-07 were in this same component,
+   and the largest was that the test designer had been handed the retrieved
+   documentation along with the request -- so it wrote tests about the docs.
+   The remaining known gap is narrower than it was: the gate can now tell that
+   a suite is aimed at the target, in any language, but still not that its
+   expectations are right.
 3. **HTML in `ingest`.** It matches prose and source extensions, and the web's
    documentation is HTML -- skipped whole rather than stripped and indexed. The
    ocaml.org tutorials only worked because they are markdown in their source
@@ -454,8 +461,13 @@ _Snapshot of what's built, tested, and what's next._
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-5. **Merge the branch stack.** `feat/05` through `feat/13` are stacked and
-   pushed; nothing is on `main`. Order matters and `feat/13` contains the rest.
+5. **Merge the branch stack.** Fourteen branches, `chore/harden-ci` through
+   `feat/13-tdd`, 136 commits, strictly linear -- each one contains the last,
+   verified link by link. Nothing is on `main`. They are open as a stacked
+   chain of PRs, each based on its predecessor so a reviewer sees only that
+   branch's own commits; they must merge bottom-up, and each merge retargets
+   the next onto `main` automatically. `feat/13` alone would carry the lot in
+   one merge, at the cost of any reviewability.
 6. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
@@ -465,6 +477,11 @@ _Snapshot of what's built, tested, and what's next._
    more capability than its speed bought back, which is the same trade pruning
    proposes at a larger scale, and the plan's go/no-go bars exist for exactly
    that reason.
+
+   The 30B result changes the case for it. The context room this track exists
+   to reclaim was reclaimed for free by a mixture-of-experts model -- 1.9 GB of
+   VRAM against the 7B's 4.7 -- so the scarcity that motivated pruning is no
+   longer the binding one. Worth revisiting before any GPU hours are spent.
 
 Done since the last snapshot: the reachability false green (runtime check
 instrumentation), the `.env` guard (grammar bound plus a looser validator),
