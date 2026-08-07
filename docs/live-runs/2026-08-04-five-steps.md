@@ -348,6 +348,70 @@ an HTML docs directory is skipped entirely rather than stripped and indexed.
 The tutorials used here happen to be markdown in their source repository, which
 is why this run was possible at all.
 
+## Making OCaml actually work (2026-08-05)
+
+Wiring the entry made `code --lang ocaml "a function add a b"` pass on the
+first attempt. Anything harder failed, and chasing that produced three fixes to
+the fix loop itself — none of them OCaml-specific in cause.
+
+**The fix loop could not see what it was fixing.** A compiler saying `line 16,
+characters 59-62` was talking about a file the writer had never been shown: its
+own previous output is not in the retry prompt, and the harness wrapped around
+it never was. `quoted_source` now quotes those lines out of the *assembled*
+file with the offending one marked, and the previous implementation itself goes
+into the retry prompt, bounded at 2000 characters because finding 4 says
+feeding full code forward triggers degeneration. Measured on the bubble sort
+that prompted it: failures moved from "the harness will not compile" to a
+genuine algorithmic bug — the loop working on the right problem, even where the
+model could not finish.
+
+**Retrieval was making generation worse, and that is the broken gate's bill.**
+`sum_list` — `List.fold_left (+) 0`, about as easy as OCaml gets — passed on
+the first attempt ungrounded and failed four attempts *with* the docs index
+attached. The retrieved tutorial text diluted the prompt enough that the tester
+reverted to `pc_check ((expr) "label")`, a malformation the prompt's own
+counter-example had been suppressing, and the writer seeded a fold with
+`min_int`. This is the cost of the gate that never refuses, measured: an
+ungated retrieval injects documentation for a query that needed none, and the
+context it spends is not free.
+
+**So the constraint moved to the layer that can hold it — twice.** First a gate
+rule (`test_lint`, declared per language because C++ writes
+`PC_CHECK((a + b) == c, "x")` legitimately). That fixed the grounded `sum_list`
+run and broke two others in a new way: the designer reproduced the malformation
+on every attempt and the run ended at **attempts=0**, gate never satisfied,
+writer never reached.
+
+Then a repair (`test_fix`). It is worth being plain that this is the first
+place the project edits code a model wrote. The justification is narrow and
+mechanical: `pc_check ((expr) "label")` applies a string to a boolean and
+cannot compile under any reading, so it has exactly one possible intent, and
+the rewrite is meaning-preserving by construction rather than by judgement. It
+is declared per language, tested from both sides, and the lint rule stays
+behind it for shapes the repair does not match. The same argument the bootstrap
+layer already uses for `./{bin}` and `{src}.ml`: refusing was tried first and
+did not converge.
+
+**Measured, five doc-grounded OCaml tasks, four retries each:**
+
+| task | before | after |
+|---|---|---|
+| `sum_list` | ✗ (4 attempts) | ✓ (2) |
+| `max_of_list` | ✗ (4) | ✓ (2) |
+| `rev_string` | ✗ (**0** — gate never satisfied) | ✓ (1) |
+| `is_palindrome` | ✗ (4) | ✗ (4) |
+| `insertion_sort` | ✗ (**0**) | ✓ (1) |
+
+**0 of 5 to 4 of 5**, including a real sorting algorithm on the first attempt.
+The two `attempts=0` rows are the ones worth noticing: those runs never reached
+the writer at all, and both now pass.
+
+`is_palindrome` still fails, as does the bubble sort that started this. Both
+are the writer's own OCaml, and that is the boundary this project has always
+had -- with one difference worth recording: the failures are now algorithmic
+rather than syntactic. The loop is arguing with the model about the answer
+instead of about the language.
+
 ## Standing caveats on all of the above
 
 - One pass, five tasks, two arms, a sampled model: directional, not

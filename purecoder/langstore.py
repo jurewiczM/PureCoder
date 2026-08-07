@@ -19,6 +19,10 @@ from .languages import RESERVED_NAMES, LanguageSpec, ProjectSpec, register
 # JSON has no tuple, and a LanguageSpec is frozen and compared by value -- a
 # list where a tuple belongs makes every equality check quietly false.
 _TUPLE_FIELDS = ("probe", "build", "run", "aliases")
+# Nested: (pattern, reason) pairs. JSON flattens both levels to lists, and a
+# spec compared by value is then quietly unequal to the one that was saved --
+# which is how a round-trip test caught this the moment `test_lint` existed.
+_TUPLE_PAIR_FIELDS = ("test_lint", "test_fix")
 _FIELDS = tuple(f.name for f in dataclasses.fields(LanguageSpec))
 
 
@@ -52,6 +56,8 @@ def to_json(spec: LanguageSpec, **provenance) -> dict:
     data = {f: getattr(spec, f) for f in _FIELDS}
     for f in _TUPLE_FIELDS:
         data[f] = list(data[f])
+    for f in _TUPLE_PAIR_FIELDS:
+        data[f] = [list(pair) for pair in data[f]]
     data["project"] = dataclasses.asdict(spec.project) if spec.project else None
     data["bootstrapped"] = True
     data.update(provenance)
@@ -64,6 +70,9 @@ def from_json(data: dict) -> LanguageSpec:
     for f in _TUPLE_FIELDS:
         if f in fields:
             fields[f] = tuple(fields[f])
+    for f in _TUPLE_PAIR_FIELDS:
+        if f in fields:
+            fields[f] = tuple(tuple(pair) for pair in fields[f])
     if fields.get("project"):
         fields["project"] = ProjectSpec(**fields["project"])
     return LanguageSpec(**fields)

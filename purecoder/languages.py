@@ -67,6 +67,22 @@ class LanguageSpec:
     project: ProjectSpec | None = None
     unvalidatable: str = ""              # non-empty: refuse permanently, w/ reason
     check_call: str = ""                 # textual marker the gate counts
+    # A regex whose first group is the name of a top-level definition. Python
+    # needs none -- it is parsed -- but every other language had no way at all
+    # to say what its own code defines, so the gate's "these tests never touch
+    # the thing under test" rule was unreachable outside Python and outside a
+    # contract. Empty leaves a language exactly as it was.
+    definition: str = ""
+    # (regex, reason) pairs the test gate rejects on, for a malformation this
+    # language's compiler would catch anyway but late and expensively. Only
+    # OCaml needs one: its application syntax makes `pc_check ((expr) "label")`
+    # parse as applying the label to a boolean, and the tester writes that
+    # whenever the prompt's counter-example is diluted by other context.
+    test_lint: tuple = ()
+    # (regex, replacement) pairs applied to a designed suite before it is
+    # gated. Only for malformations with exactly ONE possible intent, where
+    # refusing has been tried and does not converge -- see OCaml below.
+    test_fix: tuple = ()
     aliases: tuple = ()
     # The docs this language was learned from, kept as an index. A STEM, not a
     # path: the store's location follows PURECODER_HOME, so an absolute path
@@ -458,6 +474,106 @@ register(LanguageSpec(
 ))
 
 
+# ---- OCaml: written by hand, after `learn` could not draft it -------------
+#
+# This is the language the bootstrap layer was built for, and six live runs
+# never registered it: the drafting model wrote `let PC_CHECK cond =` (OCaml
+# reserves capitals for constructors), explained its code in English inside the
+# source, echoed the prompt back, and finally produced `end else`. Each of those
+# is fixed where it belongs, and the entry is still written by a person --
+# because the probes do not care who wrote it, and a language nobody can
+# generate for is worth less than an hour of typing.
+#
+# The shape is JavaScript's rather than C++'s: OCaml runs top-level statements
+# in order, so the tail needs no entry point and the tests need no wrapper.
+
+register(LanguageSpec(
+    name="ocaml",
+    extension=".ml",
+    probe=("ocamlc", "-version"),
+    # -w -a silences warnings, as -w does for g++ and -A warnings for rustc: an
+    # unused binding in generated code is not a reason to fail a run.
+    build=("ocamlc", "-w", "-a", "-o", "{bin}", "{src}"),
+    run=("{bin}",),
+    preamble=(
+        "let pc_checks = ref 0\n"
+        "let pc_check cond label =\n"
+        "  if not cond then begin\n"
+        "    prerr_endline (\"CHECK FAILED: \" ^ label);\n"
+        "    exit 1\n"
+        "  end;\n"
+        "  incr pc_checks\n"
+    ),
+    epilogue=(
+        "let () =\n"
+        "  if !pc_checks < 1 then begin\n"
+        "    prerr_endline \"no checks ran\";\n"
+        "    exit 2\n"
+        "  end\n"
+    ),
+    test_system=(
+        "You write OCaml tests for a described function. Output ONLY top-level "
+        "statements of the form `let () = pc_check (expr) \"label\"`, one per "
+        "check. No test function, no module, no `let () = main`, no opens, no "
+        "prose, no fences. pc_check is already defined and takes a boolean and "
+        "a label: e.g. let () = pc_check (add 1 2 = 3) \"add\". The label goes "
+        "OUTSIDE the parentheses -- `pc_check ((add 1 2 = 3) \"add\")` applies "
+        "the label to a boolean and does not compile. For a call that should "
+        "RAISE, catch it: let () = pc_check (try ignore (f []); false with "
+        "Failure _ -> true) \"raises on empty\" -- never compare a value "
+        "against a raise. Assume the thing under test is already defined above "
+        "your statements."
+    ),
+    project=ProjectSpec(
+        entry="main.ml",
+        install="@echo nothing to install",
+        run="ocamlc -w -a -o main main.ml && ./main",
+        test="ocamlc -w -a -o main main.ml && ./main",
+        clean="rm -f main *.cmi *.cmo",
+    ),
+    check_call="pc_check",
+    # Anchored hard at column zero: `let rec aux` nested inside a function is
+    # an implementation detail, not the thing under test, and `let () =` is a
+    # statement rather than a definition -- neither can match.
+    definition=r"(?m)^let\s+(?:rec\s+)?([a-z_][A-Za-z0-9_']*)",
+    # Repaired first, then gated. The gate alone was tried live and the
+    # designer reproduced the same malformation on every attempt, ending the
+    # run at attempts=0 without ever reaching the writer.
+    # What distinguishes the malformation is not `pc_check ((` -- that opening
+    # is ordinary -- but WHERE the label sits. Malformed, the label is followed
+    # by the closing paren and the statement ends: `... "label")`. Correct, the
+    # label ends the statement: `... ) "label"`. Anchoring on the tail tells the
+    # two apart; anchoring on the head cannot, and rejected valid tests.
+    # Group 1 must close its own parenthesis. Without that requirement a check
+    # written with no label at all -- `pc_check (rev_string "ab" = "ba")` --
+    # matched, the greedy group took `rev_string "ab" =`, the final string was
+    # read as the label, and the repair emitted `pc_check rev_string "ab" =
+    # "ba"`: parentheses gone, meaning changed. The malformation's group 1 is
+    # `(expr)` and ends in `)`; the label-less case's does not, which is
+    # exactly what tells them apart.
+    test_fix=((r"(?m)pc_check\s*\((.*\))\s+(\"[^\"]*\")[ \t]*\)[ \t]*$",
+               r"pc_check \1 \2"),
+              # `Let () = ...` -- a capitalised keyword at the start of a
+              # statement. OCaml reads `Let` as a constructor and reports
+              # "Unbound constructor Let"; a model that begins a line the way
+              # it begins a sentence fails every task in a batch this way. The
+              # anchor is deliberately narrow: only the exact `Let ()` opening
+              # this harness's statements use, so a genuine constructor named
+              # `Let` in some other position is untouched.
+              (r"(?m)^(\s*)Let(\s+\(\)\s*=)", r"\1let\2"),),
+    test_lint=((r"=\s*raise\b",
+                "a check compares a value against `raise`, which is not valid "
+                "OCaml -- test an expected exception by catching it: "
+                "pc_check (try ignore (f []); false with Failure _ -> true) "
+                "\"raises\""),
+               (r"(?m)pc_check\s*\(.*\"[ \t]*\)[ \t]*$",
+                "a check reads `pc_check ((expr) \"label\")`, which applies "
+                "the label to a boolean and does not compile -- the label goes "
+                "OUTSIDE the parentheses: pc_check (expr) \"label\""),),
+    aliases=("ml",),
+))
+
+
 # ---- declared, not yet runnable -----------------------------------------
 #
 # These resolve so the refusal can explain itself, and start working the moment
@@ -467,7 +583,6 @@ for _name, _ext, _bin, _alias in (
     ("go", ".go", "go", ("golang",)),
     ("java", ".java", "javac", ()),
     ("swift", ".swift", "swiftc", ()),
-    ("ocaml", ".ml", "ocaml", ("ml",)),
 ):
     register(LanguageSpec(
         name=_name, extension=_ext, probe=(_bin, "version" if _name == "go"

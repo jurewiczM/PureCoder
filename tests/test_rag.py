@@ -6,6 +6,8 @@ download -- a deterministic fake stands in for sentence-transformers.
 
 import json
 import os
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -734,3 +736,113 @@ def test_a_single_line_longer_than_the_window_is_still_emitted():
     chunks = rag.chunk_markdown(long_line, "doc.md", max_chars=300, overlap=50)
     assert chunks
     assert sum(len(t) for t, _ in chunks) >= 900
+
+
+def test_an_overlap_at_or_above_the_window_does_not_explode():
+    """The old character-sliced chunker guarded this with `stride = max(1,
+    max_chars - overlap)`, which stopped it hanging. The line-based one
+    terminates without that guard but degenerates instead: it carries the whole
+    previous window forward, advances one line at a time, and emits a
+    near-duplicate chunk per line -- 500 lines became 476 chunks of 25 lines
+    each, a 25x blow-up in an index nobody would notice was wrong."""
+    text = "x\n" * 500
+    chunks = rag.chunk_markdown(text, "d.md", max_chars=50, overlap=99)
+    assert len(chunks) < 60, len(chunks)
+
+
+def test_the_overlap_still_overlaps_at_sane_settings():
+    lines = [f"line {i} of the section" for i in range(40)]
+    chunks = rag.chunk_markdown("\n".join(lines), "d.md", max_chars=200,
+                                overlap=60)
+    texts = [c for c, _ in chunks]
+    assert len(texts) > 2
+    shared = [t for t in texts[1:]
+              if any(ln in texts[texts.index(t) - 1] for ln in t.splitlines())]
+    assert shared, "consecutive chunks share no line at all"
+
+
+def test_one_incidental_token_does_not_make_a_perfect_lexical_match(api_store):
+    """The bug behind "the gate never refuses". The score was the share of the
+    query's KNOWN tokens a chunk holds, so tokens the corpus has never seen
+    were dropped from the denominator rather than counted against the match.
+    Measured on 3044 chunks of OCaml documentation: `cheapest flights to Lisbon
+    in March` scored a perfect 1.000 lexical -- one incidental token existed,
+    and being unable to explain the other five cost nothing."""
+    full = api_store._lexical("Printf.eprintf").max()
+    incidental = api_store._lexical(
+        "Printf.eprintf lisbon flights cheapest march rattling").max()
+    assert full == 1.0
+    assert incidental < 0.5, incidental
+
+
+def test_a_query_of_entirely_unknown_tokens_still_scores_zero(api_store):
+    assert not api_store._lexical("lisbon flights cheapest").any()
+
+
+def test_the_gate_now_refuses_a_query_the_corpus_cannot_answer(api_store):
+    """The gate exists to refuse, and until the lexical fix it could not: every
+    query scored above the threshold. With unknown tokens counted against the
+    match, a question the corpus has nothing to say about falls below it."""
+    assert api_store.search("Printf.eprintf")
+    assert api_store.search("lisbon flights cheapest march") == []
+
+
+def test_the_default_threshold_is_the_calibrated_one():
+    """0.3 was inherited from when the score was cosine alone. The hybrid runs
+    past 1.0, so the old default could not refuse anything."""
+    import inspect
+
+    default = inspect.signature(rag.DocStore.search).parameters["min_score"].default
+    assert default >= 0.8
+
+
+def _stub_sentence_transformers(monkeypatch, cls):
+    """Stand a fake `sentence_transformers` in sys.modules. -> nothing.
+
+    `Embedder.__init__` imports the package lazily, inside the constructor, so
+    a stub in `sys.modules` is the same patch point the real module would be --
+    and what these two tests exercise is PureCoder's fallback branch, not the
+    library's. Importing the real package to patch an attribute on it made them
+    the only two tests in the suite that needed the `rag` extra, which pulls in
+    torch and which CI deliberately does not install: they passed on a machine
+    that had run an ingest and failed on every runner. `importorskip` would
+    have gone green by testing nothing, and the branch under test exists
+    because the card really did run out of room mid-ingest.
+    """
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = cls
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+
+def test_an_embedder_that_cannot_fit_on_the_gpu_falls_back_to_cpu(monkeypatch,
+                                                                  capsys):
+    """Found by giving the LLM more context. At 16k tokens and full offload the
+    server takes 5.5 GB of a 6 GB card, and the embedder -- which needs about
+    275 MB, mostly torch's CUDA context -- dies with a raw
+    `torch.OutOfMemoryError` traceback in the middle of an ingest. The card is
+    shared; the small model is the one that should yield."""
+    calls = []
+
+    class FakeST:
+        def __init__(self, name, device="cuda"):
+            calls.append(device)
+            if device == "cuda":
+                raise RuntimeError("CUDA out of memory. Tried to allocate 20 MiB")
+
+    _stub_sentence_transformers(monkeypatch, FakeST)
+    embedder = rag.Embedder(device="cuda")
+    assert calls == ["cuda", "cpu"]
+    assert embedder.device == "cpu"
+    assert "cpu" in capsys.readouterr().out.lower()
+
+
+def test_a_failure_that_is_not_about_memory_still_raises(monkeypatch):
+    """Falling back on every error would hide a wrong model name behind a
+    silent, very slow CPU run."""
+    class FakeST:
+        def __init__(self, name, device="cuda"):
+            raise RuntimeError("model not found on the hub")
+
+    _stub_sentence_transformers(monkeypatch, FakeST)
+    with pytest.raises(RuntimeError, match="not found"):
+        rag.Embedder(device="cuda")

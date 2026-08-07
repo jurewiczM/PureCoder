@@ -13,6 +13,17 @@ def test_a_spec_survives_a_round_trip_unchanged():
     assert langstore.from_json(langstore.to_json(PYTHON)) == PYTHON
 
 
+def test_a_nested_tuple_field_comes_back_nested():
+    """`test_lint` is (pattern, reason) pairs. JSON flattens both levels, and a
+    spec compared by value is then quietly unequal to the one saved -- the
+    round-trip test caught it the moment the field existed."""
+    from purecoder.languages import get
+
+    ocaml = get("ocaml")
+    assert ocaml.test_lint, "the fixture needs a spec that has one"
+    assert langstore.from_json(langstore.to_json(ocaml)) == ocaml
+
+
 def test_tuple_fields_come_back_as_tuples_not_lists():
     """JSON has no tuple. A LanguageSpec is frozen and compared by value, so a
     list where a tuple belongs makes every equality check quietly false."""
@@ -110,15 +121,15 @@ def test_saving_a_reserved_name_is_refused(store):
 
 
 def test_a_placeholder_name_can_be_learned(store):
-    """`go`, `java`, `swift` and `ocaml` are declared so a refusal can name
-    them, and wired to nothing. A learned entry is exactly what they are
-    waiting for."""
+    """`go`, `java` and `swift` are declared so a refusal can name them, and
+    wired to nothing. A learned entry is exactly what they are waiting for.
+    (OCaml was the fourth until it was wired by hand.)"""
     from purecoder.languages import REGISTRY
 
-    langstore.save(dataclasses.replace(CANDIDATE, name="ocaml"))
-    REGISTRY.pop("ocaml", None)
-    assert [s.name for s in langstore.load_all()] == ["ocaml"]
-    assert REGISTRY["ocaml"].run == CANDIDATE.run
+    langstore.save(dataclasses.replace(CANDIDATE, name="go"))
+    REGISTRY.pop("go", None)
+    assert [s.name for s in langstore.load_all()] == ["go"]
+    assert REGISTRY["go"].run == CANDIDATE.run
 
 
 def test_a_file_claiming_a_built_in_name_is_ignored(store):
