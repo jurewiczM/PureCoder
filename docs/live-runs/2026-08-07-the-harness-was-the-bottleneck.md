@@ -3,7 +3,7 @@
 _2026-08-07_
 
 A 30B model was downloaded to test whether more capability would fix the tasks
-this pipeline kept failing. It did not need to. Eight defects in the harness
+this pipeline kept failing. It did not need to. Nine defects in the harness
 were failing correct code, and once they were fixed two different models passed
 everything.
 
@@ -23,7 +23,7 @@ Without the per-task transcripts this would have entered the record as *the 30B
 scores 0/5* and retired a working model. The batch script had been throwing the
 transcript away; keeping it was the change that made the rest of this possible.
 
-## The seven that followed
+## The eight that followed
 
 Each was found the same way — by reading what a failing run actually said.
 
@@ -34,9 +34,10 @@ Each was found the same way — by reading what a failing run actually said.
    which is ordinary — `pc_check ((rev_string "abc") = "cba") "reverses"`
    compiles. What marks the malformation is where the *label* sits: before the
    closing paren, or after it. Anchored on the tail, the two are told apart.
-   **This is why `rev_string` was the unstable task in every arm ever measured**
-   — a string-returning function invites exactly the shape the gate refused, so
-   the designer kept regenerating a suite that had been right the first time.
+   This is half of why `rev_string` was the unstable task in every arm ever
+   measured — a string-returning function invites exactly the shape the gate
+   refused, so the designer kept regenerating a suite that had been right the
+   first time. Defect 7 is the other half.
 3. **The repair fixing (2) mangled a check with no label**, turning
    `pc_check (rev_string "ab" = "ba")` into `pc_check rev_string "ab" = "ba"`.
    Meaning-changing, in a function whose whole licence is that it is not.
@@ -60,13 +61,23 @@ Each was found the same way — by reading what a failing run actually said.
    `defines_target` refuses an implementation that never names what was asked
    for, and asks it only where the tests ask it, so SQL — which has no
    functions — is not held to a rule it cannot meet.
-7. **And so did the tester, which was the root cause.** Retrieved docs and the
-   request were one string, docs first. Asked for `rev_string` with 1160
+
+7. **And so did the tester — the other half of `rev_string`.** Where defect 2
+   broke suites that were already right, this one stopped them being written at
+   all. Retrieved docs and the request were one string, docs first. Asked for `rev_string` with 1160
    characters of OCaml documentation in front, four consecutive designs never
    mentioned `rev_string` at all. `execute.py`'s first line is that tests come
    from the SPEC; that was true of the code the designer never sees and false
    of the documentation it was handed. The writer keeps the docs; the designer
    gets the request.
+
+8. **The minority rule of (5) had to learn where its target came from.** A
+   name read out of the code is a strong claim; one derived from a contract is
+   not. On the scaffold path — where `project` derives a contract by default —
+   a C# suite builds `new Counter()` in a setup line and then checks
+   `c.Add(1)`, so no check names the class and every one of them is testing
+   it. Refusing that would regenerate the suite until the gate gave up:
+   `attempts=0`, the exact failure this class of rule exists to prevent.
 
 Plus the diagnostic that reported nothing: the `[docs]` hint printed only its
 header — the line announcing that names follow — and never the names. Fixed,

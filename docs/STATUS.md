@@ -188,10 +188,13 @@ _Snapshot of what's built, tested, and what's next._
   outside Python, so a suite testing `List.sort` instead of `insertion_sort`
   was accepted; one target mention enough to pass that check; the writer
   answering retrieved documentation instead of using it; the test designer
-  doing the same, which was the root cause; and a `[docs]` hint that printed
-  its header and withheld the names. All eight were invisible to 536 passing
-  tests, and every one was found by reading a failing run's transcript rather
-  than its verdict.
+  doing the same, which was the other half of it; and a `[docs]` hint that
+  printed its header and withheld the names. All nine were invisible to 536
+  passing tests, and every one was found by reading a failing run's transcript
+  rather than its verdict. The benchmark that found them is versioned now, at
+  [scripts/bench/](../scripts/bench/), transcripts and all -- an earlier
+  version discarded them and a batch of correct implementations was nearly
+  recorded as a capability result.
 - **The bootstrap's own prompts were three of its four failure modes.** Six
   `learn ocaml` runs against real stdlib `.mli` files produced: a model
   explanation compiled as source (`unfence` strips fences, not prose); a
@@ -495,7 +498,7 @@ the fix loop taught to show the writer its own previous output and the source a
 diagnostic points at; test-first mode; and the context window measured up from
 4k to 16k, with Q4_K_M weights tried and rejected on capability.
 
-Done in the session after that: eight harness defects that were failing correct
+Done in the session after that: nine harness defects that were failing correct
 code, and the model question settled. Qwen3-Coder-30B-A3B at Q3_K_M runs on
 this 6 GB card with `-ngl 99 --cpu-moe` -- experts in system RAM, ~3B activated
 per token -- in **1864 MiB at 33.3 tok/s**, which is less VRAM and more speed

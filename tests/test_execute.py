@@ -589,7 +589,8 @@ def test_a_suite_that_mostly_tests_something_else_is_rejected():
              'let () = pc_check (StringSet.empty = StringSet.empty) "empty"\n'
              'let () = pc_check (StringSet.cardinal StringSet.empty = 0) "size"\n'
              'let () = pc_check (StringSet.mem "a" StringSet.empty = false) "mem"\n')
-    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"))
+    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"),
+                            strict_targets=True)
     assert not ok
     assert "1 of 4" in reason
 
@@ -600,7 +601,23 @@ def test_one_incidental_check_does_not_condemn_a_suite():
     tests = ('let () = pc_check (rev_string "ab" = "ba") "reverses"\n'
              'let () = pc_check (rev_string "" = "") "empty"\n'
              'let () = pc_check (String.length "abc" = 3) "sanity"\n')
-    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"))
+    ok, reason = lint_tests(tests, targets=["rev_string"], spec=get("ocaml"),
+                            strict_targets=True)
+    assert ok, reason
+
+
+def test_a_contract_name_alone_does_not_trigger_the_minority_rule():
+    """A name from a contract is a weaker claim than a name read out of the
+    code. On the scaffold path -- where `project` derives a contract by
+    default -- a C# suite builds `new Counter()` in a setup line and then
+    checks `c.Add(1)`, so no check names the class and every one of them is
+    testing it. Refusing that regenerates the suite until the gate gives up:
+    attempts=0, the failure this kind of rule exists to prevent."""
+    tests = ("var c = new Counter();\n"
+             "PC_CHECK(c.Add(1) == 1);\n"
+             "PC_CHECK(c.Add(2) == 3);\n"
+             "PC_CHECK(c.Total() == 3);\n")
+    ok, reason = lint_tests(tests, targets=["Counter"], spec=get("c#"))
     assert ok, reason
 
 

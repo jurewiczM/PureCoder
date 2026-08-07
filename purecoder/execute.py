@@ -531,7 +531,8 @@ def public_names(code: str):
             and not n.name.startswith("_")]
 
 
-def _lint_tests_textual(tests, targets, min_assertions, spec):
+def _lint_tests_textual(tests, targets, min_assertions, spec,
+                        strict_targets=False):
     """The gate for languages we do not parse.
 
     Every non-Python harness injects its own check helper and the tester prompt
@@ -575,7 +576,14 @@ def _lint_tests_textual(tests, targets, min_assertions, spec):
     # Counted per check rather than per line, so setup lines are not held
     # against a suite, and only a MINORITY is refused: a sanity check that
     # touches nothing under test is ordinary, a suite of them is not.
-    if targets and lines and len(lines) >= min_assertions:
+    #
+    # Only when the targets came from the CODE. A contract-derived name is a
+    # weaker claim: on the scaffold path a C# suite builds `new Counter()` in
+    # a setup line and then checks `c.Add(1)`, so no check names the class at
+    # all and every one of them is testing it. Refusing that would regenerate
+    # the suite until the gate gave up -- attempts=0, the failure this kind of
+    # rule exists to prevent.
+    if strict_targets and targets and lines and len(lines) >= min_assertions:
         aimed = [ln for ln in lines if any(t in ln for t in targets)]
         if len(aimed) * 2 < len(lines):
             return False, (f"only {len(aimed)} of {len(lines)} checks "
@@ -659,7 +667,7 @@ def repair_tests(spec, tests: str) -> str:
 
 
 def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
-               spec=PYTHON):
+               spec=PYTHON, strict_targets=False):
     """Reject structurally bad tests BEFORE they get to judge code.
 
     Returns (ok, reason). Catches the five failure modes seen in development:
@@ -674,7 +682,8 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
         return False, "empty test output"
 
     if spec.name != "python":
-        return _lint_tests_textual(tests, targets, min_assertions, spec)
+        return _lint_tests_textual(tests, targets, min_assertions, spec,
+                                   strict_targets)
 
     # mode 1: doesn't parse -- a test file that can't run proves nothing.
     try:
@@ -749,6 +758,7 @@ def generate_tests(pc, description: str, n_predict: int = 512,
 
 
 def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
+                 strict_targets=False,
                  n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON,
                  red_target="", timeout=10):
     """Generate tests and put them through the quality gate, regenerating with
@@ -767,6 +777,7 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
         tests = repair_tests(spec, generate_tests(pc, task, n_predict=n_predict,
                                                   spec=spec))
         ok, reason = lint_tests(tests, targets=targets,
+                                strict_targets=strict_targets,
                                 min_assertions=min_assertions, spec=spec)
         if ok and red_target:
             ok, detail = red_check(spec, tests, red_target, timeout=timeout)
@@ -978,11 +989,12 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             regated = True
             # public_names parses Python; for any other language it is [],
             # so fall back to the name the contract already gave us.
-            targets = defined_names(spec, code) or (
-                [target_name] if target_name else [])
+            from_code = defined_names(spec, code)
+            targets = from_code or ([target_name] if target_name else [])
             if targets:
-                gate_ok, gate_reason = lint_tests(designed, targets=targets,
-                                                  spec=spec)
+                gate_ok, gate_reason = lint_tests(
+                    designed, targets=targets, spec=spec,
+                    strict_targets=bool(from_code))
                 # Tests the caller supplied are theirs. Redesigning them here
                 # discarded the one thing they asked the code to be checked
                 # against, and then reported success against tests they never
@@ -999,7 +1011,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
                     designed, redo_ok, redo_reason = design_tests(
                         pc, grounded, targets=targets, max_retries=max_retries,
-                        verbose=verbose, spec=spec)
+                        verbose=verbose, spec=spec,
+                        strict_targets=bool(from_code))
                     if not redo_ok:
                         if verbose:
                             print(f"[tests] gate never satisfied: {redo_reason} "
@@ -1099,9 +1112,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 if verbose:
                     print(f"[attempt {attempt}] the same failure on different "
                           f"code -- suspecting the tests, redesigning them")
+                from_code = defined_names(spec, code)
                 designed, redo_ok, redo_reason = design_tests(
-                    pc, grounded, targets=defined_names(spec, code),
-                    max_retries=max_retries, verbose=verbose, spec=spec)
+                    pc, grounded, targets=from_code,
+                    max_retries=max_retries, verbose=verbose, spec=spec,
+                    strict_targets=bool(from_code))
                 if not redo_ok:
                     return {"ok": False, "text": code, "tests": designed,
                             "contract": contract, "attempts": attempt,

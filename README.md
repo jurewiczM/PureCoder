@@ -111,25 +111,43 @@ git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j
 
 ./build/bin/llama-server \
+  -hf unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q3_K_M \
+  -ngl 99 --cpu-moe -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080
+```
+
+A 30B on a 6 GB card is not a typo. It is a mixture of experts: `--cpu-moe`
+keeps the expert tensors in system RAM and only ~3B parameters activate per
+token, so the card holds attention and the KV cache alone.
+
+Measured on that card, same five OCaml tasks, same index:
+
+| weights | offload | VRAM | speed | tasks passed | attempts |
+|---|---|---|---|---|---|
+| **30B-A3B Q3_K_M** | **`--cpu-moe`** | **1.9 GB** | **33 tok/s** | **5 / 5** | **5** |
+| 30B-A3B Q3_K_M | `-ncmoe 36` | 5.1 GB | 41 tok/s | — | — |
+| 7B Q5_K_M | 24/29 | 4.7 GB | 23 tok/s | 5 / 5 | 10 |
+| 7B Q4_K_M | 29/29 | 4.9 GB | 40 tok/s | 3 / 5 | — |
+
+Three results decided these flags. **The 7B at Q5 also passes everything** —
+the model was never this pipeline's bottleneck, and eight harness defects were
+([2026-08-07](docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md)).
+The 30B earns the default on half the attempts, 40% of the VRAM and 1.4× the
+speed, not on the score. **Full offload is the fastest and the wrong choice**
+in either architecture: the embedder needs ~275 MB on the same card, so a
+configuration that leaves it nothing kills every doc-grounded run. And **the
+smaller quantisation is still worse**: Q4_K_M passes three of five where the
+other two pass all of them — it was two of five before the harness was fixed,
+with a retry budget raised from four to seven recovering none of them.
+Throughput does not buy capability back.
+
+To run the 7B instead — 5 GB of weights rather than 15, and no MoE support
+needed in your llama.cpp build:
+
+```bash
+./build/bin/llama-server \
   -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q5_K_M \
   -ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080
 ```
-
-Those flags are measured, not guessed, on a 6 GB card:
-
-| weights | offload | context | VRAM | speed | live tasks passed |
-|---|---|---|---|---|---|
-| Q5_K_M | 20/29 | 4k | 3.8 GB | 19 tok/s | — |
-| **Q5_K_M** | **24/29** | **16k** | **4.7 GB** | **23 tok/s** | **4 / 5** |
-| Q5_K_M | 29/29 | 16k | 5.5 GB | 35 tok/s | embedder OOMs |
-| Q4_K_M | 29/29 | 16k | 4.9 GB | 40 tok/s | 2 / 5 |
-
-Two results decided these flags. **Full offload is the fastest and the wrong
-choice** — the embedder needs ~275 MB on the same card, so every doc-grounded
-run dies. And **the smaller quantisation is faster and worse**: Q4_K_M passed
-two of the same five tasks against Q5's four, and raising its retry budget from
-four to seven recovered *none* of them — two failures that Q5 cleared on the
-first attempt survived seven. Throughput does not buy capability back.
 
 Four times the context costs about 500 MB, which is the trade this pipeline
 wants: the pressure is on the prompt (retrieved docs, the contract, the previous
@@ -410,8 +428,9 @@ verdict.
 ## Requirements
 
 - A GPU with ~6 GB VRAM (built and tested on an RTX 4050 Laptop)
-- llama.cpp built with CUDA, serving Qwen2.5-Coder-7B at Q5_K_M
-  (Q4_K_M is smaller and faster and measurably worse — see the table above)
+- llama.cpp built with CUDA, serving Qwen3-Coder-30B-A3B at Q3_K_M with
+  `--cpu-moe`, or Qwen2.5-Coder-7B at Q5_K_M (Q4_K_M is smaller and faster and
+  measurably worse — see the table above)
 - Python 3.10+, `requests`, `numpy`; `sentence-transformers` for RAG
 
 ## Status

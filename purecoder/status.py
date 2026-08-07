@@ -86,14 +86,15 @@ def print_status(pc):
     print("=" * 56)
     if not up:
         print(" ! server down — start it with:")
-        # Q5_K_M, not Q4_K_M, and that is a measured choice rather than a
-        # preference: Q4 is faster (40 tok/s fully offloaded against 23 here)
-        # and passed 2 of 5 live tasks where Q5 passed 4, with two of the
-        # failures surviving seven attempts each that Q5 cleared on the first.
-        # 24 of 29 layers with a q8_0 KV cache holds 16k of context in 4.7 GB
-        # and leaves room for the embedder (~275 MB) a grounded run needs on
-        # the same card. See docs/STATUS.md.
-        print("   llama-server -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
-              ":Q5_K_M -ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 "
+        # A 30B on a 6 GB card, and not a typo: --cpu-moe keeps the expert
+        # tensors in system RAM, so only ~3B parameters activate per token and
+        # the card holds attention and the KV cache alone -- 1.9 GB at 33
+        # tok/s, against the 7B Q5's 4.7 GB at 23. Both pass all five live
+        # OCaml tasks; the 30B needs half the attempts. Q4_K_M is faster and
+        # measurably worse (3 of 5). See docs/STATUS.md.
+        print("   llama-server -hf unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+              ":Q3_K_M -ngl 99 --cpu-moe -c 16384 -fa on -ctk q8_0 -ctv q8_0 "
               "--port 8080")
+        print("   (or the 7B: -hf Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q5_K_M "
+              "-ngl 24 -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080)")
     print()
