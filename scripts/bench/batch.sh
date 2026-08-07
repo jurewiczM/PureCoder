@@ -30,6 +30,14 @@ CORPUS=scripts/bench/tasks.tsv
 # the retrieved tutorial text diluting the prompt. Set STORE to opt in.
 if [ -n "${STORE:-}" ]; then
   ground=(--store "$STORE")
+elif [ "$TARGET" = ocaml ]; then
+  # The one language where that default is the wrong one, refused rather than
+  # documented. OCaml is exactly the ignorant case retrieval exists for -- it
+  # is the premise of ocaml-batch.sh -- so an ungrounded OCaml column would be
+  # low for a reason no reader could distinguish from a regression.
+  echo "batch.sh: ocaml ungrounded measures nothing comparable." >&2
+  echo "  STORE=\$BENCH/ocaml-idx2 $0 ocaml $TAG   (or use ocaml-batch.sh)" >&2
+  exit 2
 else
   ground=(--no-docs)
 fi
@@ -79,7 +87,11 @@ while IFS=$'\t' read -r name spec <&3; do
   { echo "# lang=$TARGET task=$name"; echo "# spec: $prompt"; echo;
     printf '%s\n' "$out"; } > "$log"
 
-  verdict=$(printf '%s' "$out" | grep -oE "ok=(True|False)  attempts=[0-9]+" | tail -1)
+  # Loose on spacing and on `attempts=None`. The verdict line is cli.py's
+  # `ok={ok}  attempts={...}` -- a pattern tight enough to miss it would
+  # report 0/10 against ten correct implementations, which is the failure
+  # this whole directory exists to avoid.
+  verdict=$(printf '%s' "$out" | grep -oE "ok=(True|False) +attempts=[A-Za-z0-9]+" | tail -1)
   case "$verdict" in ok=True*) passed=$((passed + 1)) ;; esac
   total=$((total + 1))
   echo "[${verdict:-no verdict}] $slug/$name -> $log"

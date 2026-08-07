@@ -28,7 +28,8 @@ TASKS="sum_list roman" scripts/bench/batch.sh c# smoke
 ```
 
 Ten pure functions in `tasks.tsv`, run through one language per invocation:
-`python`, `c++`, `javascript`, `rust`, `c#`, `ocaml`. Language is an argument
+`python`, `c++`, `javascript`, `rust`, `c#`, and `ocaml` only with a `STORE`
+(the script refuses it otherwise — see below). Language is an argument
 rather than a loop because ten tasks across six languages is a multi-hour run,
 and scope should be a choice made per invocation.
 
@@ -66,6 +67,11 @@ four attempts with the OCaml docs index attached, the retrieved tutorial text
 diluting the prompt until the tester reverted to a malformation the prompt had
 been suppressing. Retrieval helps where the model is ignorant; Python and C++
 are not that case. `STORE` opts in.
+
+OCaml *is* that case, which makes it the one language where the default is the
+wrong one — so `batch.sh ocaml` refuses without a `STORE` rather than
+documenting the trap. An ungrounded OCaml column would be low for a reason no
+later reader could tell apart from a regression.
 
 ### Not covered
 
