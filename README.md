@@ -147,6 +147,7 @@ ingest once, reuse across runs.
 | `project <name> "<spec>" [dir]` | scaffold a whole project (code + Makefile + .env + README) |
 | `ingest <dir>`     | build a RAG index over docs/code |
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
+| `learn <name> <docs>` | draft a language entry from its docs, and probe it |
 | `status`           | live system status |
 
 `project` derives a spec contract by default; `code` does not. Add
@@ -165,10 +166,12 @@ purecoder/
   scaffold.py    multi-artifact project orchestrator
   rag.py         code/doc-aware chunking + retrieval
   status.py      live system probe
+  bootstrap.py   draft a language entry from its docs, then probe it
+  langstore.py   where a learned language lives between runs
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           225 tests (no GPU, no server; toolchain ones self-skip)
+tests/           290 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -220,6 +223,38 @@ flowchart LR
 purecoder --lang c++ code "a function add(int, int) returning their sum"
 purecoder --lang c++ project calc "a small calculator library" ./calc
 ```
+
+### Teaching it a language
+
+```bash
+purecoder learn zig ./zig-docs --ext .zig
+```
+
+Points the pipeline at a language's documentation and has it draft its own
+registry entry: the check helper, the harness tail, the tester prompt, and the
+build/run commands. The drafting prompts carry the C++, JavaScript and Rust
+entries as *worked examples*, because
+[measured results](https://huggingface.co/papers/2501.19085) show translation
+examples help at every model size while prose translation rules score *below*
+baseline on a third of runs. For the same reason the tester prompt is templated
+rather than drafted — a model writing its own instructions is the technique
+that measured worst.
+
+Nothing is registered until it proves itself. Five probes run against a trivial
+`add(a, b)` on the real toolchain — a correct implementation passes, a wrong
+one fails, an empty suite fails, a broken one produces a diagnostic, a failing
+check fails the run — and then one live round on a bubble sort. A harness that
+merely compiles is not a harness that can fail wrong code, and only the second
+kind is worth having.
+
+The drafted build/run commands are shown and need explicit confirmation before
+they first execute: every other entry's commands were written by hand, and
+these are the one place a local model's output becomes a process. They are argv,
+never a shell string, and shell syntax is refused outright.
+
+A learned language is stored as JSON under `$PURECODER_HOME` (or XDG), marked
+with where it came from, and can never shadow a built-in entry. Delete it with
+`rm`.
 
 The governing rule: **if it cannot be executed, it is not emitted.** A missing
 toolchain is refused with the binary named. Power Query M runs only inside

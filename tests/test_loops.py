@@ -7,40 +7,11 @@ needing llama-server running.
 
 import json
 
+from conftest import FakeModel
+
 from purecoder.execute import generate_validated_python
 from purecoder.scaffold import scaffold_project
 from purecoder.validate import generate_validated
-
-
-class FakeModel:
-    """Returns queued responses in order; records the prompts it was given."""
-
-    def __init__(self, code_outputs=None, completions=None):
-        self.code_outputs = list(code_outputs or [])
-        self.completions = list(completions or [])
-        self.prompts = []
-        self.code_kwargs = []            # what the loop asked the writer for
-
-    def _next(self, queue):
-        return queue.pop(0) if len(queue) > 1 else queue[0]
-
-    def complete(self, system, user, grammar=None, **kw):
-        self.prompts.append(user)
-        return {"text": self._next(self.completions), "truncated": False,
-                "tokens": 1, "raw": {}}
-
-    def code(self, description, language="python", **kw):
-        self.prompts.append(description)
-        self.code_kwargs.append({"language": language, **kw})
-        return {"text": self._next(self.code_outputs), "truncated": False,
-                "tokens": 1, "raw": {}}
-
-    def env_file(self, description, **kw):
-        return self.complete("", description)
-
-    def makefile(self, description, **kw):
-        return self.complete("", description)
-
 
 GOOD_TESTS = ("assert add(1, 2) == 3\n"
               "assert add(0, 0) == 0\n"

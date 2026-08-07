@@ -43,6 +43,18 @@ def scaffold_project(pc, name, description, outdir="build",
         return {"outdir": outdir, "report": {}, "ok": False,
                 "error": f"cannot scaffold {spec.name}: {why}"}
 
+    # Running a language and laying out a project of it are separate claims. A
+    # learned language proves the first through its probes and says nothing
+    # about the second, so it arrives with no ProjectSpec -- and without this
+    # the next line reads `.entry` off None.
+    if spec.project is None:
+        if verbose:
+            print(f"cannot scaffold a {spec.name} project: no project layout")
+        return {"outdir": outdir, "report": {}, "ok": False,
+                "error": f"cannot scaffold {spec.name}: it can be generated and "
+                         f"validated, but declares no project layout -- no entry "
+                         f"filename, no make targets. Use `code` instead."}
+
     os.makedirs(outdir, exist_ok=True)
     entry = entry or spec.project.entry
     report = {}
