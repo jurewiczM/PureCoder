@@ -22,6 +22,7 @@ exists not to make.
 
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 
 
@@ -383,6 +384,71 @@ register(LanguageSpec(
 ))
 
 
+# ---- SQL: the language with no assertion ---------------------------------
+#
+# Every other entry gets its check idiom from the language: an `if` and an
+# `exit`, wrapped in a helper. SQL has neither. SQLite's `RAISE` exists only
+# inside a trigger and takes a LITERAL message, so a failing check cannot name
+# itself from inside SQL, and `SELECT 1/0` -- the trick this was left undone
+# rather than built on -- returns NULL rather than failing.
+#
+# So the check is a ROW. The harness creates a table, a check is an INSERT of a
+# boolean and a label, and the verdict is read back afterwards: no rows is "no
+# checks ran", any row with ok <> 1 is a failure that can name itself. That
+# makes the runner part of the harness rather than a neutral interpreter --
+# which is honest, because unlike g++ or node, this driver is ours. The
+# invariant the registry actually needs is that the SPEC proves a check ran,
+# and a test now says so in those terms.
+#
+# `sqlite3` ships with Python, so the runner costs nothing to install -- but it
+# is a compile-time option, so availability is probed by importing it rather
+# than assumed.
+
+_SQL_RUNNER = (
+    "import sqlite3,sys\n"
+    "db = sqlite3.connect(':memory:')\n"
+    "db.executescript(open(sys.argv[1]).read())\n"
+    "rows = db.execute('SELECT ok, label FROM pc_checks').fetchall()\n"
+    "bad = [r for r in rows if r[0] != 1]\n"
+    "if not rows:\n"
+    "    sys.stderr.write('no checks ran\\n')\n"
+    "    sys.exit(2)\n"
+    "for r in bad:\n"
+    "    sys.stderr.write('CHECK FAILED: ' + str(r[1]) + '\\n')\n"
+    "sys.exit(1 if bad else 0)\n"
+)
+# The executor formats every argv element, so `{` and `}` in the runner would
+# be read as placeholders. There are none, and this says why.
+assert "{" not in _SQL_RUNNER and "}" not in _SQL_RUNNER
+
+register(LanguageSpec(
+    name="sql",
+    extension=".sql",
+    probe=(sys.executable, "-c", "import sqlite3"),
+    run=("{python}", "-c", _SQL_RUNNER, "{src}"),
+    preamble="CREATE TABLE pc_checks (ok INTEGER, label TEXT);\n",
+    # Deliberately empty: see above -- the verdict is in the runner, because
+    # SQL cannot express it.
+    epilogue="",
+    test_system=(
+        "You write SQLite tests for a described view or table. Output ONLY "
+        "INSERT statements, no prose, no fences, no CREATE. Each check is one "
+        "row: INSERT INTO pc_checks VALUES (<boolean expression>, '<label>'); "
+        "e.g. INSERT INTO pc_checks VALUES ((SELECT total FROM added) = 3, "
+        "'add'). The label is what a failure will print, so make it name what "
+        "was checked. Assume the thing under test already exists in the same "
+        "database."
+    ),
+    writer_system=(
+        "You output only SQLite DDL and DML -- CREATE TABLE, CREATE VIEW, "
+        "INSERT of your own seed data. The file already creates the pc_checks "
+        "table the tests use, so never create, drop or read it"
+    ),
+    check_call="INSERT INTO pc_checks",
+    aliases=("sqlite", "sqlite3"),
+))
+
+
 # ---- declared, not yet runnable -----------------------------------------
 #
 # These resolve so the refusal can explain itself, and start working the moment
@@ -413,12 +479,6 @@ register(LanguageSpec(
     ),
     aliases=("m", "power-query"),
 ))
-
-# SQL is deliberately absent for now. Python's stdlib sqlite3 could run it, but
-# SQL has no assertion form, so the check idiom every other language gets for
-# free needs real design here rather than a `1/0` trick. Left undeclared rather
-# than declared-and-broken.
-
 
 # Snapshot taken before any bootstrapped entry can be loaded. Kept as specs
 # rather than names because `register` replaces entries in place: once a learned

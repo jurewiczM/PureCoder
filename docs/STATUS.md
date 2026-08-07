@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-410 tests, all green, none of them needing a GPU or a running server
+417 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -21,6 +21,7 @@ _Snapshot of what's built, tested, and what's next._
 | 5 | `derive_contract` + fallback | ✅ tested | retries, feeds errors back, degrades on a dead server |
 | 6 | `languages.py` registry | ✅ tested | every entry coherent; availability probed, not assumed |
 | 6 | C++ / JavaScript / Rust / C# execution | ✅ tested | correct passes, wrong fails, no-checks fails -- in each language |
+| 9 | SQL (SQLite) execution | ✅ tested | same three probes; a check is a row, a failing one names itself |
 | 6 | `--lang` + per-language scaffolding | ✅ tested | refusals explain themselves; a C++ project builds standalone |
 | 7 | `langstore.py` persistence | ✅ tested | round trip, shadow guard, corrupt files skipped |
 | 7 | `bootstrap.py` probe gate | ✅ tested | two deliberately broken harnesses built and rejected |
@@ -91,11 +92,24 @@ _Snapshot of what's built, tested, and what's next._
   code. The first live contract run produced `parse_ports('80,443') ->
   [443, 80]` for a spec that said "sorted", and the anchor faithfully failed a
   correct implementation. Noisy-wrong beats silent-wrong, but it is not free.
-- **Execution validation reaches five languages, still only run-to-completion
-  code.** Python, C++, JavaScript, Rust and C# all compile (where needed), run
-  real assertions, and prove a check executed. Go, Java, Swift and OCaml are
+- **Execution validation reaches six languages, still only run-to-completion
+  code.** Python, C++, JavaScript, Rust, C# and SQL all compile (where needed),
+  run real assertions, and prove a check executed. Go, Java, Swift and OCaml are
   declared and refuse until both a toolchain and a test idiom exist. Power
   Query is refused permanently -- it runs only inside Excel and Power BI.
+- **SQL is validated, but its harness lives in two places.** SQL has no
+  assertion and no reliable way to end a script non-zero: SQLite's `RAISE`
+  works only inside a trigger and takes a *literal*, so a failing check cannot
+  name itself from inside SQL, and `SELECT 1/0` returns NULL rather than
+  failing. So a check is a ROW -- a boolean and a label inserted into a table
+  the preamble creates -- and the verdict is read back by the driver, which is
+  a stdlib `sqlite3` one-liner rather than a neutral interpreter. That is a real
+  asymmetry with the other five, where the tail carries the proof, and it is
+  defensible only because this driver is ours: the invariant a test now enforces
+  is that the *spec* proves a check ran, in the tail or in the runner. What SQL
+  gets in exchange is that every failing check is reported, not just the first.
+  There is no project layout -- a Makefile recipe would have to reproduce the
+  driver -- so `project --lang sql` refuses and `code` is unaffected.
 - **Standard-library-only, whatever the language.**
   Three hard limits, each confirmed repeatedly against a live server on a
   "small web app that graphs random numbers" spec: the sandbox has no

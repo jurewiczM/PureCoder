@@ -157,8 +157,8 @@ real API instead of leaving the fix loop guessing.
 
 ## Teaching it a language it has never run
 
-Five languages exist because someone wrote five registry entries. `learn` points
-the pipeline at a language's own documentation and has it draft the sixth:
+Six languages exist because someone wrote six registry entries. `learn` points
+the pipeline at a language's own documentation and has it draft the seventh:
 
 ```bash
 purecoder learn zig ./zig-docs --ext .zig
@@ -247,7 +247,7 @@ purecoder/
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           410 tests (no GPU, no server; toolchain ones self-skip)
+tests/           417 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -278,6 +278,7 @@ flowchart LR
     REG --> JS["<b>javascript</b><br/>node file.js"]
     REG --> RS["<b>rust</b><br/>rustc → ./bin"]
     REG --> CS["<b>c#</b><br/>dotnet run"]
+    REG --> SQL["<b>sql</b><br/>sqlite3 driver"]
     REG --> GO["<b>go, java, swift</b><br/><i>awaiting toolchain</i>"]
     REG --> PQ["<b>power query</b><br/><i>no local runner</i>"]
 
@@ -286,6 +287,7 @@ flowchart LR
     JS --> RUN
     RS --> RUN
     CS --> RUN
+    SQL --> RUN
     GO --> NO[refuse<br/><i>naming what to install</i>]
     PQ --> NO
 
@@ -295,9 +297,18 @@ flowchart LR
     style NO fill:#fce8e6,stroke:#ea4335,color:#111
 ```
 
+SQL is the odd one, and worth a sentence. It has no assertion and no way to end
+a script non-zero — SQLite's `RAISE` takes a literal, so a failing check cannot
+name itself, and `SELECT 1/0` returns NULL. So a check is a **row**: the harness
+creates `pc_checks(ok, label)`, the tests insert booleans into it, and the
+stdlib `sqlite3` driver reads the verdict back — no rows means "no checks ran",
+and every failing row prints its own label. It has no project layout, so
+`project --lang sql` refuses and `code` is unaffected.
+
 ```bash
 purecoder --lang c++ code "a function add(int, int) returning their sum"
 purecoder --lang c++ project calc "a small calculator library" ./calc
+purecoder --lang sql code "a view over orders showing revenue per customer"
 ```
 
 ### Teaching it a language
