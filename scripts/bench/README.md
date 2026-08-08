@@ -42,6 +42,39 @@ or detect a regression.
 Environment: `BENCH`, `TASKS` (a subset), `STORE` (a RAG index), `RETRIES`
 (default 4), `TASK_TIMEOUT` (default 1800).
 
+### It says who refused, not just that someone did
+
+```
+[ok       attempts=1   ] python/gcd
+[writer   attempts=4   ] cpp/roman         error: expected `;`
+[gate     attempts=0   ] csharp/is_palindrome   tests never mention any of ['IsPalindrome']
+[unknown  attempts=0   ] rust/unique       <the error, verbatim>
+
+python: 8/10  -- writer 2 gate 0 contract 0 stuck 0 refused 0 server 0 timeout 0 unknown 0
+```
+
+`ok=False attempts=4` reads identically whether the model wrote bad code or a
+gate refused good code, and those are opposite bugs. `purecoder/benchlog.py`
+reads the markers `execute.py` already emits and says which: **`writer`** is
+the only bucket that claims anything about the model; `gate`, `contract`,
+`stuck` and `refused` are the harness stopping it; `server` and `timeout` are
+infrastructure.
+
+**`unknown` is the load-bearing bucket.** Those markers were read out of
+`execute.py`, not out of a live run — the set has never been run against a
+server. A failure the classifier cannot place stays visibly `unknown` rather
+than falling into `writer`, because a classifier that guessed would
+manufacture exactly the false capability result this directory exists to
+prevent. `unknown` is printed in the summary even at zero. If a real run
+produces any, the classifier is wrong and the transcript says how.
+
+One TSV row per task lands in `$BENCH/<tag>-results.tsv`
+(`lang task verdict attempts reason`), so a `python` run and a `c++` run made
+hours apart can be compared without re-parsing logs. The classifier is a
+convenience over the transcript and never a gate on it: if it cannot be
+imported, the runner falls back to the raw verdict line and the run still
+finishes.
+
 ### Three decisions worth not re-deriving
 
 **Every spec states its own edge cases** — empty input, ties, a single element.

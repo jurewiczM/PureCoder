@@ -71,6 +71,7 @@ slug=$(printf '%s' "$TARGET" | tr 'A-Z' 'a-z' \
 mkdir -p "$BENCH"
 
 passed=0 total=0
+declare -A counts=()
 while IFS=$'\t' read -r name spec <&3; do
   [ -z "$name" ] && continue
   case "$name" in \#*) continue ;; esac
@@ -87,14 +88,38 @@ while IFS=$'\t' read -r name spec <&3; do
   { echo "# lang=$TARGET task=$name"; echo "# spec: $prompt"; echo;
     printf '%s\n' "$out"; } > "$log"
 
-  # Loose on spacing and on `attempts=None`. The verdict line is cli.py's
-  # `ok={ok}  attempts={...}` -- a pattern tight enough to miss it would
-  # report 0/10 against ten correct implementations, which is the failure
-  # this whole directory exists to avoid.
-  verdict=$(printf '%s' "$out" | grep -oE "ok=(True|False) +attempts=[A-Za-z0-9]+" | tail -1)
-  case "$verdict" in ok=True*) passed=$((passed + 1)) ;; esac
+  # Who said no, not just that someone did. `ok=False attempts=4` reads the
+  # same whether the model wrote bad code or a gate refused good code, and a
+  # table of forty runs needs to point at the rows worth opening.
+  #
+  # A classifier is a convenience over the transcript, never a gate on it: if
+  # it cannot run, fall back to the raw verdict line rather than lose the run.
+  read -r v attempts reason < <(
+    .venv/bin/python -c '
+import sys
+from purecoder.benchlog import classify
+v = classify(sys.stdin.read())
+print(v.verdict, "None" if v.attempts is None else v.attempts, v.reason)
+' <<< "$out" 2>/dev/null) || {
+    v=$(printf '%s' "$out" | grep -oE "ok=(True|False) +attempts=[A-Za-z0-9]+" | tail -1)
+    v=${v:-no-verdict}; attempts=?; reason=""
+  }
+
+  case "$v" in ok) passed=$((passed + 1)) ;; esac
   total=$((total + 1))
-  echo "[${verdict:-no verdict}] $slug/$name -> $log"
+  counts[$v]=$(( ${counts[$v]:-0} + 1 ))
+  printf '[%-8s attempts=%-4s] %s/%s%s\n' "$v" "$attempts" "$slug" "$name" \
+         "${reason:+   $reason}"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$name" "$v" "$attempts" "$reason" \
+         >> "$BENCH/$TAG-results.tsv"
 done 3< "$CORPUS"
 
-echo "$slug: $passed/$total"
+# The summary a cross-language set exists for. `unknown` is listed even at
+# zero: a marker this classifier does not recognise must be visible, not
+# quietly folded into the model's score.
+summary=""
+for k in writer gate contract stuck refused server timeout unknown; do
+  summary+=$(printf ' %s %s' "$k" "${counts[$k]:-0}")
+done
+echo "$slug: $passed/$total  --$summary"
+echo "rows appended to $BENCH/$TAG-results.tsv"
