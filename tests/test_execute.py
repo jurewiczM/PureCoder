@@ -4,6 +4,8 @@ import re
 import time
 
 from purecoder.execute import (
+    _DIAGNOSTIC,
+    _failure,
     _trim,
     available_packages,
     defined_names,
@@ -778,3 +780,72 @@ def test_the_expected_exception_idiom_still_counts_as_red():
              "    pass\nassert parse('1') == [1]\nassert parse('1,2') == [1, 2]\n")
     red, reason = red_check(get("python"), tests, "parse")
     assert red, reason
+
+
+# ---- the diagnostics the fix loop is actually shown ---------------------------
+#
+# Measured 2026-08-09. `dotnet run` writes `bad.cs(1,1): error CS0106: ...` to
+# STDOUT and a content-free "compilation failed" to STDERR. run_candidate
+# returned `stderr or stdout`, so the writer was asked to fix an error it was
+# never shown, and one live task burned four attempts doing exactly that.
+
+def test_a_diagnostic_on_stdout_is_not_discarded_by_a_summary_on_stderr():
+    """The C# case, and the reason this changed at all."""
+    out = _failure(1, stdout="bad.cs(1,1): error CS0106: modifier is invalid",
+                   stderr="Compilation failed. Fix the build errors.")
+    assert "CS0106" in out
+    assert "Compilation failed" in out
+
+
+def test_a_python_traceback_still_leads():
+    """stderr first, so the traceback keeps the position it had. Appending
+    stdout must not bury it."""
+    out = _failure(1, stdout="some printed output",
+                   stderr="Traceback (most recent call last):\nAssertionError")
+    assert out.index("Traceback") < out.index("some printed output")
+
+
+def test_stdout_alone_is_still_used():
+    out = _failure(1, stdout="only here", stderr="")
+    assert out == "only here"
+
+
+def test_nothing_on_either_stream_names_the_exit_code():
+    assert _failure(3, stdout="", stderr="") == "exited 3"
+
+
+def test_each_stream_is_trimmed_separately_so_neither_evicts_the_other():
+    """Merging first and trimming after would let a chatty stdout push a
+    traceback out of the window entirely."""
+    out = _failure(1, stdout="\n".join(f"line {i}" for i in range(40)),
+                   stderr="Traceback (most recent call last):\nValueError: x")
+    assert "ValueError" in out
+    assert len(out.splitlines()) <= 26
+
+
+def test_the_msbuild_diagnostic_format_is_recognised():
+    """`path(line,col): error CSxxxx:` -- parentheses, not colons, so the
+    pattern written for gcc did not match it and _trim fell back to tailing,
+    which is the wrong end of a compiler's output."""
+    assert _DIAGNOSTIC.search("bad.cs(1,1): error CS0106: modifier is invalid")
+
+
+def test_the_ocaml_location_line_is_recognised():
+    """OCaml puts the location on one line and `Error:` on the next. Only the
+    second matched, so a trimmed OCaml failure could name the error without
+    saying where it was."""
+    assert _DIAGNOSTIC.search('File "candidate.ml", line 14, characters 6-12:')
+
+
+def test_a_plain_line_is_not_mistaken_for_a_diagnostic():
+    for line in ("just some output", "the value was 3", "warnings are off"):
+        assert not _DIAGNOSTIC.search(line)
+
+
+def test_a_python_traceback_frame_is_not_an_ocaml_location():
+    """Both spell it `File "x", line N`. OCaml's carries `characters N-M` and
+    Python's carries `, in <name>` -- and matching Python's turns a traceback
+    into thirty diagnostics, so `_trim` keeps the first frames and drops the
+    exception. Caught by the existing trim test, which is why it is here."""
+    assert not _DIAGNOSTIC.search('File "x.py", line 3, in f')
+    assert _DIAGNOSTIC.search('File "candidate.ml", line 14, characters 6-12:')
