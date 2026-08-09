@@ -778,3 +778,82 @@ def test_the_expected_exception_idiom_still_counts_as_red():
              "    pass\nassert parse('1') == [1]\nassert parse('1,2') == [1, 2]\n")
     red, reason = red_check(get("python"), tests, "parse")
     assert red, reason
+
+
+# ---- container comparison in JavaScript and C# -------------------------------
+#
+# Measured on 2026-08-09, not imagined. The ten-task benchmark scored
+# javascript 9/10 and c# 8/10, and every one of those three failures was a
+# CORRECT implementation judged by a suite that could not pass: `unique([]) ===
+# []` is false in JavaScript for any input, and `Unique(x) == new List<int>()`
+# is reference equality in C#. The loop noticed ("suspecting the tests,
+# redesigning them") and the redesign made the same mistake.
+
+
+def test_javascript_comparing_a_result_to_an_array_literal_is_repaired():
+    """`a === [1, 2]` compares references and is false for every possible
+    implementation, so the check can only have meant value equality."""
+    bad = "PC_CHECK(unique([1, 1, 2]) === [1, 2], 'duplicates');\n"
+    assert repair_tests(get("javascript"), bad) == (
+        "PC_CHECK(JSON.stringify(unique([1, 1, 2])) === "
+        "JSON.stringify([1, 2]), 'duplicates');\n")
+
+
+def test_javascript_repairs_the_empty_array_case_that_failed_live():
+    bad = "PC_CHECK(unique([]) === [], 'empty list');\n"
+    assert repair_tests(get("javascript"), bad) == (
+        "PC_CHECK(JSON.stringify(unique([])) === JSON.stringify([]), "
+        "'empty list');\n")
+
+
+def test_javascript_leaves_a_scalar_comparison_alone():
+    """`=== 3` is exactly right and must not be wrapped. The repair is allowed
+    only where the comparison cannot have meant what it says."""
+    ok = "PC_CHECK(sumList([1, 2]) === 3, 'sums');\n"
+    assert repair_tests(get("javascript"), ok) == ok
+
+
+def test_javascript_leaves_a_typeof_guard_alone():
+    """A string literal on the right is not an array literal, and `typeof x
+    === 'string'` is the idiom working as intended."""
+    ok = "PC_CHECK(typeof revString('ab') === 'string', 'returns a string');\n"
+    assert repair_tests(get("javascript"), ok) == ok
+
+
+def test_javascript_does_not_touch_a_suite_already_written_correctly():
+    """The prompt already asks for this form. A suite that obeyed must survive
+    the repair untouched, or the repair is not idempotent."""
+    ok = ("PC_CHECK(JSON.stringify(unique([1, 1])) === JSON.stringify([1]), "
+          "'dupes');\n")
+    assert repair_tests(get("javascript"), ok) == ok
+
+
+def test_csharp_comparing_a_result_to_a_new_list_is_repaired():
+    """`==` on List<int> is reference equality, and the right-hand side is a
+    freshly constructed list, so it can never be the same reference."""
+    bad = 'PC_CHECK(Unique(x) == new List<int> { 1, 2 }, "dupes");\n'
+    assert repair_tests(get("c#"), bad) == (
+        'PC_CHECK(System.Linq.Enumerable.SequenceEqual(Unique(x), '
+        'new List<int> { 1, 2 }), "dupes");\n')
+
+
+def test_csharp_repairs_the_empty_list_case_that_failed_live():
+    bad = 'PC_CHECK(Unique(new List<int>()) == new List<int>(), "empty list");\n'
+    assert repair_tests(get("c#"), bad) == (
+        'PC_CHECK(System.Linq.Enumerable.SequenceEqual(Unique(new List<int>()), '
+        'new List<int>()), "empty list");\n')
+
+
+def test_csharp_uses_a_qualified_call_because_using_directives_are_forbidden():
+    """`SequenceEqual` as an extension method needs `using System.Linq`, and
+    this harness's writer_system forbids using directives -- the preamble
+    writes `System.Console` for the same reason."""
+    bad = 'PC_CHECK(Sort(x) == new List<int> { 1 }, "one");\n'
+    out = repair_tests(get("c#"), bad)
+    assert "System.Linq.Enumerable.SequenceEqual" in out
+    assert "using" not in out
+
+
+def test_csharp_leaves_a_scalar_comparison_alone():
+    ok = 'PC_CHECK(Add(1, 2) == 3, "add");\n'
+    assert repair_tests(get("c#"), ok) == ok
