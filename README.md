@@ -256,6 +256,8 @@ rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
 | `ask "<spec>"`     | doc-grounded, execution-validated code |
 | `learn <name> <docs>` | draft a language entry from its docs, probe it, keep its docs |
 | `measure`          | run the contract measurement: five ambiguous specs, both arms |
+| `status`           | live system status |
+| `serve [--port N]` | the same pipeline over local HTTP |
 
 ```bash
 purecoder code --tdd "a function parse_ports that ..."   # test-first
@@ -276,7 +278,6 @@ package that is not installed is refused with the `pip install` line rather than
 discovered three attempts later; the permission reaches the test designer too,
 and the stdlib-only retry no longer withdraws it. Python only — every other
 language refuses the flag instead of ignoring it.
-| `status`           | live system status |
 
 Flags worth knowing: `--lang` picks the language; `--store` names a RAG index
 (otherwise a learned language uses its own); `--no-docs` ignores it; `-y` skips
@@ -291,6 +292,41 @@ without it on purpose.
 `--contract` to opt in, `--no-contract` to opt out, or set
 `PURECODER_CONTRACT=1` to change the default for both.
 
+## Calling it from something that isn't a terminal
+
+```bash
+purecoder serve                 # 127.0.0.1:8100
+```
+
+```bash
+curl -s -X POST localhost:8100/code -H 'Content-Type: application/json' \
+  -d '{"spec": "a function gcd(a, b) ...", "lang": "python"}'
+```
+```json
+{"ok": true, "code": "def gcd(a, b): ...", "tests": "assert gcd(0, 0) == 0\n...",
+ "contract": null, "attempts": 2, "error": ""}
+```
+
+`POST /code`, `POST /ask`, `GET /status`. Nothing is relaxed by the change of
+surface: the same gates run, the same refusals come back, and there is still no
+tier in which code is emitted unvalidated.
+
+**The status code tells you whose problem it is.** A refusal is `200` with
+`ok: false` and the reason — the pipeline declining is the pipeline working, and
+a 500 would say PureCoder broke. `400` means the request was malformed and
+nothing was ever generated. `503` means llama-server is down, which is neither
+of those. Every answer carries the same six keys whatever happened, so a client
+never has to branch on which fields exist.
+
+**It binds loopback, and that is not a preference.** `/code` runs
+model-authored code in a subprocess on this machine, so `--host` exists for a
+container's own interface rather than as a suggestion. There is no auth because
+there is no remote.
+
+`/code` blocks for the length of a generation, which is minutes. A job queue
+would add state, polling and a way to lose a result; if an editor needs it
+non-blocking, that is a wrapper around this rather than a rewrite of it.
+
 ## Layout
 
 ```
@@ -304,13 +340,14 @@ purecoder/
   rag.py         code/doc-aware chunking (AST + tree-sitter) + retrieval
   symbols.py     the names the docs use, and what they can honestly decide
   status.py      live system probe
+  server.py      the pipeline over local HTTP, for callers that are not a terminal
   bootstrap.py   draft a language entry from its docs, then probe it
   langstore.py   where a learned language and its docs live between runs
   bench.py       ambiguous specs + hidden oracles: does grounding help?
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           559 tests (no GPU, no server; toolchain ones self-skip)
+tests/           580 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 

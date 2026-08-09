@@ -28,6 +28,20 @@ select the right grammar automatically.
 grammar is huge and pointless — the model already emits valid Python. Grammars
 guarantee `.env` and Makefile structure; code correctness is the validator's job.
 
+One `requests.Session` per client, so a run reuses a single TCP connection
+rather than opening one per call, and `status.py` probes `/health` and `/props`
+through the same one. A transport failure — `ConnectionError`, `Timeout` — is
+retried twice with a short backoff, which survives llama-server being restarted
+mid-batch; an HTTP status error is not retried at all, because a 500 is
+llama-server answering and repeating the request would hide a real server-side
+problem behind three identical failures. The bound is deliberately small: a
+dead server must fail in about two seconds, since the contract layer degrades
+on that failure and the benchmark classifies it.
+
+The failure is raised as `RuntimeError("llama-server request failed: ...")` from
+one place, and that wording is load-bearing — `benchlog.classify` reads it to
+bucket a run as infrastructure rather than as a model failure.
+
 ### 2. Config validation (`purecoder/validate.py`)
 `.env` → structural (KEY=VALUE, no dupes). Makefile → three guards: a
 degeneration check (a command repeated >15× is a spiral, not a target), a
@@ -377,6 +391,36 @@ triggered degeneration on the tight card. Fix: give each artifact only the slice
 it needs (the Makefile needs the filename, not the whole module). *Low context
 per task*, not just low tokens.
 
+### 4.5 The pipeline over HTTP (`purecoder/server.py`)
+`purecoder serve` puts `code`, `ask` and `status` behind a stdlib
+`ThreadingHTTPServer`, so an editor, a script or another agent can call the
+validated pipeline without shelling out. It generates through the same client,
+so connection handling is not duplicated.
+
+Nothing is relaxed by the change of surface. The same gates run and the same
+refusals come back — an unrunnable language, a `--lang` the spec contradicts, an
+`ask` with no index — because the resolver and the retrieval rules are *shared*
+rather than reimplemented: `language_for` is the decision `resolve_language`
+prints, and `collect` is the data `print_status` formats. Two copies of a
+refusal rule would drift, and the copy that drifts is the one that stops
+refusing.
+
+**Status codes carry the attribution.** A refusal is `200` with `ok: false`:
+the pipeline declining is the pipeline working, and `500` would report that
+PureCoder broke. `400` is a malformed request, where nothing was generated at
+all. `503` is llama-server being down, which is neither the caller's fault nor a
+refusal. Every answer carries the same six keys whatever happened — an earlier
+version returned two on the `503` path, and a client forced to branch on which
+fields exist gets it wrong exactly when the server dies mid-run.
+
+**Loopback by default, asserted by a test.** `/code` runs model-authored code in
+a subprocess on this machine; binding anything else would put that on the
+network. There is no auth because there is no remote.
+
+`/code` blocks for the length of a generation. A job queue would add state,
+polling, and a way for a caller to lose a result — a wrapper can make it
+asynchronous without this layer growing one.
+
 ### 5. Retrieval (`purecoder/rag.py`)
 Code-aware chunking (AST: functions/classes/methods as units) for `.py`,
 markdown chunking for docs, tree-sitter for every other language a grammar
@@ -465,6 +509,15 @@ validators against real degenerate output, the test gate against every failure
 mode seen, the chunkers on real Python ASTs, and the retrieval gate through an
 injected fake embedder. The suite needs neither a GPU nor a running server,
 which is why CI can run it.
+
+That claim was not quite true and nothing could see it. Two truncation tests
+patched `requests.post` at module level; when the client moved onto a session
+the patch stopped intercepting, and they did **not** all fail — they reached the
+llama-server that happened to be listening on 8080, and one of them passed on
+its answer. The file ran in 8.5 s and now runs in 0.07 s. A patch on a global
+fails open: it stops applying and the test keeps passing. Injecting the
+collaborator — the session, the embedder — is the seam that cannot silently stop
+working, because there is no global left to miss.
 
 Two seams stay unproven by that suite and are honest about it: the live
 `/completion` call to llama-server, and the live embedding call (standard
