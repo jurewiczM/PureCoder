@@ -23,6 +23,30 @@ BENCH=${BENCH:-$HOME/models/bench}
 cd "$(dirname "$0")/../.."
 CORPUS=scripts/bench/tasks.tsv
 
+# Refuse a language this machine cannot run, before spending ten tasks
+# discovering it. Every task would land in `refused` with the same reason, and
+# a column of ten identical refusals is a worse way to say "no toolchain" than
+# saying it once. The registry already knows -- `available()` returns the
+# reason -- so this asks rather than maintaining a second list that can drift.
+if ! reason=$(.venv/bin/python -c '
+import sys
+from purecoder import languages
+try:
+    spec = languages.get(sys.argv[1])
+except Exception as e:
+    print(e); sys.exit(1)
+ok, why = spec.available()
+if not ok:
+    print(why); sys.exit(1)
+' "$TARGET" 2>&1); then
+  echo "batch.sh: cannot benchmark $TARGET -- $reason" >&2
+  .venv/bin/python -c '
+from purecoder import languages
+runnable = [n for n in languages.names() if languages.get(n).available()[0]]
+print("  runnable here:", ", ".join(runnable), file=__import__("sys").stderr)' 2>&1 >&2
+  exit 2
+fi
+
 # Ungrounded by default, and deliberately so. ocaml-batch.sh attaches an index
 # because the model has little OCaml in its weights; for a language it already
 # knows, retrieval is measured to HURT -- `sum_list` passed on the first
