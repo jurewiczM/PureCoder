@@ -14,15 +14,16 @@ from .client import GRAMMARS_DIR
 
 
 def _check_server(pc):
-    import requests
+    # Through the client's session, not a bare requests.get: same connection,
+    # same configuration, one place to change either.
     try:
-        r = requests.get(f"{pc.base_url}/health", timeout=3)
+        r = pc.session.get(f"{pc.base_url}/health", timeout=3)
         up = r.status_code == 200
     except Exception:
         return False, None
     model = None
     try:
-        props = requests.get(f"{pc.base_url}/props", timeout=3).json()
+        props = pc.session.get(f"{pc.base_url}/props", timeout=3).json()
         model = os.path.basename(props.get("default_generation_settings", {})
                                  .get("model", "") or props.get("model_path", ""))
     except Exception:

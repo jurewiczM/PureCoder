@@ -10,6 +10,7 @@ endpoint accepts a raw `grammar` field. We apply Qwen's ChatML template
 to the prompt ourselves.
 """
 
+import time
 from pathlib import Path
 
 import requests
@@ -31,11 +32,61 @@ def strip_fences(text: str) -> str:
 GRAMMARS_DIR = Path(__file__).parent / "grammars"
 
 
+# A blip is not the server being down. Retrying a transport error costs a
+# second and saves a batch when llama-server is restarted mid-run; retrying a
+# refused connection three times only delays an honest failure, which is why
+# the bound is small and the backoff short.
+RETRIES = 2
+BACKOFF = (0.5, 1.5)
+
+
 class PureCoder:
-    def __init__(self, base_url="http://localhost:8080", grammars_dir=None):
+    def __init__(self, base_url="http://localhost:8080", grammars_dir=None,
+                 retries=RETRIES):
         self.base_url = base_url.rstrip("/")
         self.grammars_dir = Path(grammars_dir) if grammars_dir else GRAMMARS_DIR
         self._grammar_cache = {}                # avoid re-reading files each call
+        self.retries = retries
+        # One connection for the whole run instead of a fresh handshake per
+        # call. `status.py` posts through this too -- it used bare requests.get
+        # and so shared none of the configuration here, which is the drift a
+        # single session exists to remove.
+        self.session = requests.Session()
+
+    def _post(self, path: str, payload: dict, timeout: int):
+        """POST with a bounded retry on transport failures. -> response.
+
+        Only ConnectionError and Timeout are retried. An HTTP status error is
+        llama-server answering, and repeating the request hides a real
+        server-side problem behind three identical failures.
+        """
+        last = None
+        for attempt in range(self.retries + 1):
+            try:
+                r = self.session.post(f"{self.base_url}{path}", json=payload,
+                                      timeout=timeout)
+                r.raise_for_status()
+                return r
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last = e
+                if attempt < self.retries:
+                    time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+                    continue
+                raise self._failed(e) from e
+            except requests.RequestException as e:
+                raise self._failed(e) from e
+        raise self._failed(last)             # unreachable; keeps the type honest
+
+    @staticmethod
+    def _failed(e) -> RuntimeError:
+        """The one wording other code matches on.
+
+        `benchlog.classify` reads "llama-server request failed" to bucket a run
+        as infrastructure rather than as a model failure, and a fake in
+        test_contract.py raises it verbatim. Rewording it breaks failure
+        attribution silently, so it is built in one place and tested.
+        """
+        return RuntimeError(f"llama-server request failed: {e}")
 
     def _load_grammar(self, name: str) -> str:
         if name not in self._grammar_cache:
@@ -70,14 +121,7 @@ class PureCoder:
         if stop:
             payload["stop"] = stop
 
-        try:
-            r = requests.post(f"{self.base_url}/completion", json=payload,
-                              timeout=timeout)
-            r.raise_for_status()
-        except requests.RequestException as e:
-            raise RuntimeError(f"llama-server request failed: {e}") from e
-
-        data = r.json()
+        data = self._post("/completion", payload, timeout).json()
         return {
             "text": data.get("content", ""),
             # Hit n_predict: the output is cut off mid-generation, and with a
