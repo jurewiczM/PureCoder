@@ -46,26 +46,16 @@ jobs:
       - name: Lint
         run: ruff check purecoder tests examples
 
-      # OCaml is wired but is NOT on the runner image, unlike the other three.
-      # Without this its execution tests skip, and the check below would pass
-      # while proving nothing about the newest language in the registry --
-      # exactly the hole that check exists to close.
-      - name: Install OCaml
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ocaml-nox
-
-      # A skip is not a pass. The runner image ships g++, node and rustc, so
-      # the per-language execution tests MUST run here. If a toolchain quietly
-      # left the image those tests would skip and the suite would still go
-      # green while proving nothing about the thing this project exists to do.
-      - name: Toolchains present
-        run: |
-          set -eu
-          for binary in g++ node rustc ocamlc; do
-            command -v "$binary" >/dev/null \
-              || { echo "::error::$binary missing -- language tests would skip"; exit 1; }
-            echo "$binary: $("$binary" --version 2>&1 | head -1)"
-          done
-
+      # This job answers "does the package work on this Python", and it is
+      # allowed to skip a language whose toolchain the runner lacks -- the
+      # `toolchains` job below is what proves the languages themselves.
+      #
+      # The ad-hoc "toolchains present" gate that used to live here is gone. It
+      # listed g++, node, rustc and ocamlc and NOT dotnet, so C# was the one
+      # language it could not have caught leaving -- exactly the hole it was
+      # written to close. `account()` derives the binary from each language's
+      # own argv instead, so the list cannot go stale.
+      #
       # -rs lists every skip with its reason, so a skip is visible in the log
       # rather than hidden behind a dot.
       - name: Test
@@ -113,3 +103,55 @@ jobs:
           PY
           /tmp/clean/bin/purecoder --help >/dev/null
           echo "console script runs"
+
+  toolchains:
+    # The suite where nothing is allowed to skip.
+    #
+    # A green run on a machine missing `ocamlc` proves less than it looks, and
+    # for weeks that caveat was written down and enforced by nothing. Here the
+    # image supplies every toolchain the registry can run, and
+    # PURECODER_REQUIRE_ALL_LANGUAGES=1 turns the skip report into an
+    # assertion: if a language this image promises is missing, the build
+    # published something broken and this is where it surfaces.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built here rather than pulled: no registry, no credentials, and the
+      # Dockerfile in this commit is what gets tested. The layer cache makes a
+      # repeat run cheap; the first one pays for dotnet and the apt set.
+      - name: Build the toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: purecoder-toolchains:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # `chunking` as well as `dev`: without tree-sitter those tests skip, and
+      # this is the job that is not allowed to skip. `rag` is deliberately left
+      # out -- it pulls ~2 GB of torch for tests that already degrade honestly.
+      # Piped in with `git archive` rather than bind-mounted. Three reasons,
+      # and the last one is the one that bit: only TRACKED files go in, so the
+      # image tests the commit rather than the working tree; no mount means no
+      # uid mismatch between the checkout and the image's non-root user; and a
+      # bind mount plus `cp -r` fails outright on any file the container user
+      # cannot read. Locally that was a 0700 scratch directory, and the job
+      # would have passed in CI purely because that file is not checked in --
+      # an environment assumption, in the change that exists to remove them.
+      - name: The whole suite, with nothing allowed to skip
+        run: |
+          git archive HEAD --prefix=repo/ | docker run --rm -i \
+            -e PURECODER_REQUIRE_ALL_LANGUAGES=1 \
+            purecoder-toolchains:ci sh -c '
+              set -eu
+              cd /tmp && tar x && cd repo
+              python3 -m venv /tmp/v
+              /tmp/v/bin/pip install -q -e ".[dev,chunking]"
+              /tmp/v/bin/pytest -q -rs
+            '
