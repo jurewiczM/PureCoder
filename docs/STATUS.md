@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-559 tests, all green, none of them needing a GPU or a running server
+580 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -39,6 +39,7 @@ _Snapshot of what's built, tested, and what's next._
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
+| — | `purecoder serve` local HTTP API | ✅ tested | 14 cases over a real socket; same gates and refusals as the CLI; loopback-only asserted; a live generation driven through it |
 
 ## Key findings from the build
 

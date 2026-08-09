@@ -15,6 +15,7 @@ Usage:
     purecoder ask    "<spec>" [--store S]     # code, doc-grounded via RAG
     purecoder learn  <name> <docs_dir>        # draft a language, prove it, keep its docs
     purecoder status                          # print system status
+    purecoder serve [--port 8100]             # the pipeline over local HTTP
 
 A language learned by `learn` keeps the index of its own documentation, so
 `code --lang <name>` is doc-grounded with no second ingest and no --store.
@@ -36,8 +37,8 @@ from .validate import generate_validated
 DEFAULT_STORE = "docstore"
 
 
-def resolve_language(args):
-    """The LanguageSpec for this run, or None if we must not proceed.
+def language_for(lang: str, spec_text: str = ""):
+    """(LanguageSpec, reason). The decision, with nothing printed.
 
     Two refusals, both deliberate. A language we cannot execute is refused
     outright -- there is no "generated but unchecked" tier, because emitting
@@ -45,27 +46,37 @@ def resolve_language(args):
     spec that asks for one language while --lang says another is refused
     rather than silently resolved: that mismatch is how `--lang python` plus
     "a C++ Dijkstra" used to yield `import heapq`.
+
+    Split from the printing so the HTTP surface can return the same refusals
+    as text instead of reimplementing them -- two copies of this would drift,
+    and the copy that drifts is the one that stops refusing.
     """
     try:
-        spec = languages.get(getattr(args, "lang", "python"))
+        spec = languages.get(lang)
     except KeyError as e:
         # KeyError's str() is the repr of its argument, quotes and all.
-        print(e.args[0])
-        return None
+        return None, e.args[0]
 
     ok, why = spec.available()
     if not ok:
-        print(f"Cannot generate {spec.name}: {why}.")
         runnable = [n for n in languages.names() if languages.get(n).available()[0]]
-        print(f"Available right now: {', '.join(runnable)}.")
-        return None
+        return None, (f"Cannot generate {spec.name}: {why}.\n"
+                      f"Available right now: {', '.join(runnable)}.")
 
     # The spec's own words override the flag only to catch a contradiction.
-    asked = unsupported_language(getattr(args, "spec", "") or "")
+    asked = unsupported_language(spec_text or "")
     if asked and asked not in (spec.name, *spec.aliases):
-        print(f"--lang is {spec.name}, but the spec asks for {asked}. "
-              f"Rerun with --lang {asked} if that is what you meant.")
-        return None
+        return None, (f"--lang is {spec.name}, but the spec asks for {asked}. "
+                      f"Rerun with --lang {asked} if that is what you meant.")
+    return spec, ""
+
+
+def resolve_language(args):
+    """The LanguageSpec for this run, or None if we must not proceed."""
+    spec, why = language_for(getattr(args, "lang", "python"),
+                             getattr(args, "spec", "") or "")
+    if spec is None:
+        print(why)
     return spec
 
 
@@ -424,6 +435,19 @@ def cmd_status(pc, args):
     print_status(pc)
 
 
+def cmd_serve(pc, args):
+    """The pipeline over HTTP, for callers that are not a terminal.
+
+    Loopback by default and deliberately: `/code` runs model-authored code in a
+    subprocess on this machine, so binding elsewhere would put that on the
+    network. `--host` exists for a container's own interface, not as a
+    suggestion.
+    """
+    from .server import serve
+    serve(pc, host=args.host, port=args.port)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(prog="purecoder", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -492,6 +516,12 @@ def main():
     sm.add_argument("--timeout", type=int, default=10, metavar="SECONDS",
                     help="per-run execution timeout (default: 10)")
     sub.add_parser("status")
+    ss = sub.add_parser("serve")
+    ss.add_argument("--port", type=int, default=8100,
+                    help="port to listen on (default: 8100)")
+    ss.add_argument("--host", default="127.0.0.1",
+                    help="interface to bind (default: 127.0.0.1 -- generated "
+                         "code runs here, so do not expose it)")
 
     args = p.parse_args()
     pc = PureCoder(base_url=args.url)
@@ -500,6 +530,7 @@ def main():
         "code": cmd_code, "env": cmd_env, "make": cmd_make,
         "project": cmd_project, "ingest": cmd_ingest, "ask": cmd_ask,
         "learn": cmd_learn, "status": cmd_status, "measure": cmd_measure,
+        "serve": cmd_serve,
     }[args.cmd](pc, args)
 
 

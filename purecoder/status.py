@@ -63,20 +63,38 @@ def _check_grammars():
     return sorted(f.name for f in d.iterdir() if f.suffix == ".gbnf")
 
 
+def collect(pc) -> dict:
+    """Everything the status probes know, as data. -> dict.
+
+    Split from the printing so `GET /status` answers with the same facts the
+    CLI shows rather than a second set gathered its own way.
+    """
+    up, model = _check_server(pc)
+    return {
+        "server": {"up": up, "url": pc.base_url, "model": model},
+        "gpu": _check_gpu(),
+        "grammars": _check_grammars(),
+        "modules": {m: (True if v is True else str(v))
+                    for m, v in _check_modules().items()},
+    }
+
+
 def print_status(pc):
     print("=" * 56)
     print(" PureCoder — system status")
     print("=" * 56)
 
-    up, model = _check_server(pc)
+    info = collect(pc)
+    up = info["server"]["up"]
+    model = info["server"]["model"]
     print(f" server    : {'UP' if up else 'DOWN'}  ({pc.base_url})")
     if model:
         print(f" model     : {model}")
 
-    gpu = _check_gpu()
+    gpu = info["gpu"]
     print(f" gpu       : {gpu or 'no nvidia-smi found'}")
 
-    grams = _check_grammars()
+    grams = info["grammars"]
     print(f" grammars  : {', '.join(grams) if grams else 'none found in grammars/'}")
 
     print(" modules   :")
