@@ -215,19 +215,25 @@ def account():
     rows = []
     for name in names():
         spec = get(name)
-        if spec.unvalidatable:
+        # `available()` is the authority on runnable-or-not, not a second copy
+        # of its conditions. It also RUNS the probe where this only looked for
+        # the file, so re-deriving the verdict here meant a binary that exists
+        # and does not work read as runnable to the one caller CI trusts.
+        ok, why = spec.available()
+        if ok:
+            rows.append((name, "runnable", ""))
+        elif spec.unvalidatable:
             rows.append((name, "unvalidatable", spec.unvalidatable))
-            continue
-        if not spec.run or not spec.test_system:
-            rows.append((name, "unimplemented",
-                         "no runner or test idiom is defined for it"))
-            continue
-        missing = [b for b in binaries(spec) if shutil.which(b) is None]
-        if missing:
+        elif not spec.run or not spec.test_system:
+            rows.append((name, "unimplemented", why))
+        else:
+            # Which binary, from the language's own argv. `available()` names
+            # only the probe; a language whose build or run command needs
+            # something else would be reported without it.
+            missing = [b for b in binaries(spec) if shutil.which(b) is None]
             rows.append((name, "missing-toolchain",
-                         f"{', '.join(repr(b) for b in missing)} not installed"))
-            continue
-        rows.append((name, "runnable", ""))
+                         f"{', '.join(repr(b) for b in missing)} not installed"
+                         if missing else why))
     return rows
 
 
