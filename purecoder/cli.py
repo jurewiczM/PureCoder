@@ -80,6 +80,13 @@ def resolve_language(args):
     return spec
 
 
+def _docs_opts(args) -> dict:
+    """The three retrieval settings a command carries, read off its namespace."""
+    return {"store": getattr(args, "store", None),
+            "device": getattr(args, "device", "cuda"),
+            "no_docs": bool(getattr(args, "no_docs", False))}
+
+
 def resolve_contract(args, default):
     """Most specific wins: explicit flag, then PURECODER_CONTRACT, then the
     per-command default."""
@@ -136,7 +143,8 @@ def open_docs(path, device, required=False):
         return None
 
 
-def ground_in_docs(args, spec, query, required=False):
+def ground_in_docs(spec, query, store=None, device="cuda",
+                   no_docs=False, required=False):
     """(context, error_hint) for this run: the retrieved block, not a task.
 
     One resolver for every command that generates code, so they cannot drift
@@ -158,10 +166,10 @@ def ground_in_docs(args, spec, query, required=False):
     from .rag import retrieve_context
     from .symbols import did_you_mean
 
-    if getattr(args, "no_docs", False):
+    if no_docs:
         return (None, None) if required else ("", None)
 
-    path = getattr(args, "store", None)
+    path = store
     if path is None and spec is not None and spec.docs_store:
         path = str(docs_index_path(spec.docs_store))
         print(f"[rag] using the {spec.name} docs from `learn`")
@@ -170,14 +178,14 @@ def ground_in_docs(args, spec, query, required=False):
             return "", None
         path = DEFAULT_STORE
 
-    store = open_docs(path, args.device, required=required)
-    if store is None:
+    opened = open_docs(path, device, required=required)
+    if opened is None:
         return (None, None) if required else ("", None)
 
-    ctx = retrieve_context(store, query)
+    ctx = retrieve_context(opened, query)
     print(f"[rag] {len(ctx)} chars of documentation" if ctx else
           "[rag] nothing above the threshold -- generating without context")
-    return ctx, lambda err: did_you_mean(err, store.symbols)
+    return ctx, lambda err: did_you_mean(err, opened.symbols)
 
 
 def confirm_tests(tests, evidence, ask=input):
@@ -205,7 +213,7 @@ def cmd_code(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
-    context, hint = ground_in_docs(args, spec, args.spec)
+    context, hint = ground_in_docs(spec, args.spec, **_docs_opts(args))
     tdd = bool(getattr(args, "tdd", False))
     # Test-first cannot stub without a name, and the name comes from the
     # contract -- so the flag implies it rather than failing later on a
@@ -243,7 +251,7 @@ def cmd_project(pc, args):
     from .scaffold import scaffold_project
     # Grounds the code artifact only -- see scaffold_project for why the
     # Makefile, .env and README are deliberately left out of it.
-    context, hint = ground_in_docs(args, spec, args.spec)
+    context, hint = ground_in_docs(spec, args.spec, **_docs_opts(args))
     r = scaffold_project(pc, args.name, args.spec,
                          outdir=args.outdir or args.name,
                          max_retries=args.retries, spec=spec,
@@ -330,7 +338,8 @@ def cmd_ask(pc, args):
     # Everything else -- which index, the did-you-mean hint, degrading on a
     # store that cannot be read -- is the same resolver `code` and `project`
     # use, so the three cannot drift apart again.
-    context, hint = ground_in_docs(args, spec, args.spec, required=True)
+    context, hint = ground_in_docs(spec, args.spec, required=True,
+                                   **_docs_opts(args))
     if context is None:
         return 1
     _print_result(generate_validated_python(

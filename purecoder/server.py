@@ -27,21 +27,13 @@ Built on `http.server` because the project's only runtime dependencies are
 """
 
 import json
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import languages
 from .cli import ground_in_docs, language_for
 from .execute import generate_validated_python
 from .status import collect
-
-
-# argparse namespaces are what `ground_in_docs` reads. Building one is less
-# honest-looking than a keyword call and much safer than a second copy of the
-# resolver: the retrieval rules (which index, the did-you-mean hint, degrading
-# on a store that cannot be read) live in one place and the API inherits them.
-class _Args:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
 
 
 def _answer(ok=False, error="", code="", tests="", contract=None, attempts=0):
@@ -55,17 +47,6 @@ def _answer(ok=False, error="", code="", tests="", contract=None, attempts=0):
             "contract": contract, "attempts": attempts}
 
 
-def _grounding(body, spec, required=False):
-    """(context, hint, error). Retrieval for this request, or why not."""
-    args = _Args(store=body.get("store"), device=body.get("device", "cuda"),
-                 no_docs=bool(body.get("no_docs", False)))
-    context, hint = ground_in_docs(args, spec, body.get("spec", ""),
-                                   required=required)
-    if context is None:
-        return None, None, "no documentation index could be read"
-    return context, hint, ""
-
-
 def _code(pc, body, required_docs=False):
     """POST /code and /ask share everything but whether docs are mandatory."""
     if not str(body.get("spec", "")).strip():
@@ -75,9 +56,15 @@ def _code(pc, body, required_docs=False):
     if spec is None:
         return 200, _answer(error=why)
 
-    context, hint, err = _grounding(body, spec, required=required_docs)
-    if err:
-        return 200, _answer(error=err)
+    # Straight to the shared resolver: which index, the did-you-mean hint and
+    # degrading on a store that cannot be read are decided in one place, and
+    # the API inherits all of it rather than keeping a second copy.
+    context, hint = ground_in_docs(
+        spec, body["spec"], store=body.get("store"),
+        device=body.get("device", "cuda"),
+        no_docs=bool(body.get("no_docs", False)), required=required_docs)
+    if context is None:
+        return 200, _answer(error="no documentation index could be read")
 
     res = generate_validated_python(
         pc, body["spec"], context=context, spec=spec,
@@ -101,8 +88,8 @@ def _status(pc, _body=None):
 
 
 POST_ROUTES = {
-    "/code": lambda pc, body: _code(pc, body),
-    "/ask": lambda pc, body: _code(pc, body, required_docs=True),
+    "/code": _code,
+    "/ask": partial(_code, required_docs=True),
 }
 GET_ROUTES = {"/status": _status}
 

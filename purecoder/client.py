@@ -60,7 +60,6 @@ class PureCoder:
         llama-server answering, and repeating the request hides a real
         server-side problem behind three identical failures.
         """
-        last = None
         for attempt in range(self.retries + 1):
             try:
                 r = self.session.post(f"{self.base_url}{path}", json=payload,
@@ -68,14 +67,12 @@ class PureCoder:
                 r.raise_for_status()
                 return r
             except (requests.ConnectionError, requests.Timeout) as e:
-                last = e
                 if attempt < self.retries:
                     time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
                     continue
                 raise self._failed(e) from e
             except requests.RequestException as e:
                 raise self._failed(e) from e
-        raise self._failed(last)             # unreachable; keeps the type honest
 
     @staticmethod
     def _failed(e) -> RuntimeError:
