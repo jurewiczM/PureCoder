@@ -169,7 +169,7 @@ def run_candidate(spec, code: str, tests: str, timeout: int = 10,
                 # abort: it is exactly the feedback the writer needs. Both
                 # streams, because which one a toolchain uses is its own
                 # business -- this path discarded stdout outright.
-                return False, _failure(rc, bout, berr, verb="compiler")
+                return False, _failure(rc, bout, berr, verb="compiler exited")
 
         rc, stdout, stderr = _spawn(fill(spec.run), d, timeout)
 
