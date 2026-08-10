@@ -118,16 +118,20 @@ while IFS=$'\t' read -r name spec <&3; do
   #
   # A classifier is a convenience over the transcript, never a gate on it: if
   # it cannot run, fall back to the raw verdict line rather than lose the run.
-  read -r v attempts reason < <(
-    .venv/bin/python -c '
+  if line=$(printf '%s' "$out" | .venv/bin/python -c '
 import sys
 from purecoder.benchlog import classify
 v = classify(sys.stdin.read())
 print(v.verdict, "None" if v.attempts is None else v.attempts, v.reason)
-' <<< "$out" 2>/dev/null) || {
+' 2>/dev/null); then
+    read -r v attempts reason <<< "$line"
+  else
+    # Branching on the classifier's exit status, not on `read` hitting EOF --
+    # the fallback used to fire as a side effect of empty input, which is the
+    # right behaviour arrived at by accident.
     v=$(printf '%s' "$out" | grep -oE "ok=(True|False) +attempts=[A-Za-z0-9]+" | tail -1)
     v=${v:-no-verdict}; attempts=?; reason=""
-  }
+  fi
 
   case "$v" in ok) passed=$((passed + 1)) ;; esac
   total=$((total + 1))

@@ -135,9 +135,7 @@ def _error_after(transcript: str, offset: int) -> str:
     and a compiler diagnostic inside that code would otherwise be read as the
     run's own error.
     """
-    tail = transcript[offset:]
     marker = "\nerror: "
+    tail = transcript[offset:]
     at = tail.find(marker)
-    if at == -1:
-        return tail.lstrip().removeprefix("error: ") if tail.strip() else ""
-    return tail[at + len(marker):]
+    return tail[at + len(marker):] if at != -1 else ""
