@@ -31,6 +31,21 @@ _VERDICT = re.compile(r"^ok=(True|False)\s+attempts=(\d+|None)\s*$", re.M)
 # so the traceback is the whole transcript.
 _SERVER = "RuntimeError: llama-server request failed"
 
+# The loop's no-progress rule fires when the SAME failure appears on DIFFERENT
+# code, and printing this is the loop suspecting the suite.
+_SUSPECTED_TESTS = "suspecting the tests, redesigning them"
+
+# Evidence that the tests actually EXECUTED and disagreed, rather than the code
+# never building. This is what the marker above cannot tell on its own: the
+# no-progress rule also fires when a model repeats one kind of mistake, so
+# "same failure, different code" is not proof the suite is wrong.
+#
+# Measured: blaming the tester on the marker alone moved all seven of the
+# 2026-08-09 failures out of `writer`, including three OCaml runs whose code
+# genuinely did not compile. That is the original bug with the sign flipped.
+_CHECKS_RAN = ("CHECK FAILED", "AssertionError",
+               "Traceback (most recent call last)")
+
 # (bucket, marker) in priority order. Matched as substrings of the error text
 # because the loop interpolates a reason after most of them.
 _BUCKETS = (
@@ -64,9 +79,18 @@ def classify(transcript: str) -> Verdict:
 
     `ok` the run succeeded. `writer` the loop spent its retries and the last
     word was a toolchain diagnostic -- the only bucket that says anything about
-    the model. `gate`, `contract`, `stuck`, `refused` the harness stopped it.
-    `server` and `timeout` are infrastructure. `unknown` is a failure whose
-    marker is not in this file, kept visible on purpose.
+    the model. `suspect-tests` the loop suspected the suite, redesigned it, and
+    still failed a check that RAN: an implementation and an expectation
+    disagreed and this cannot say which is wrong. `gate`, `contract`, `stuck`,
+    `refused` the harness stopped it. `server` and `timeout` are
+    infrastructure. `unknown` is a failure whose marker is not in this file,
+    kept visible on purpose.
+
+    `suspect-tests` is deliberately not an accusation. Whether a failing check
+    means wrong code or a wrong expectation is the boundary the test gate has
+    never been able to cross -- it catches structurally bad suites, not
+    plausible-but-wrong values -- so the useful thing a classifier can say is
+    "open this transcript", not a guess dressed as a verdict.
     """
     matches = list(_VERDICT.finditer(transcript))
     if not matches:
@@ -88,6 +112,14 @@ def classify(transcript: str) -> Verdict:
     for bucket, marker in _BUCKETS:
         if marker in error:
             return Verdict(bucket, attempts, reason)
+
+    # Before blaming the model: the loop suspected the suite AND a check
+    # actually ran. Both halves are needed. The marker alone also fires on a
+    # model repeating one mistake, and a build that never produced a binary is
+    # the writer's however many times the tests were redesigned.
+    if (attempts and _SUSPECTED_TESTS in transcript
+            and any(m in reason or m in transcript for m in _CHECKS_RAN)):
+        return Verdict("suspect-tests", attempts, reason)
 
     # Nothing named it. One attempt means the writer was reached and its output
     # was rejected by a real tool, which is the writer's failure however the

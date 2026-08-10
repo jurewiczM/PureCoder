@@ -138,3 +138,81 @@ def test_a_reason_is_the_first_line_of_a_multi_line_error():
                              error="error: expected `;`\n  --> main.rs:3:1\n"
                                    "   |\n 3 | let x = 1\n"))
     assert v.reason == "error: expected `;`"
+
+
+# ---- the bucket that accused the model of the harness's mistake --------------
+#
+# Measured 2026-08-09. On its first live run this classifier put four of seven
+# failures in `writer` -- its one bucket that claims anything about the model --
+# and the code was correct in all four. Three were suites that could not pass
+# (`unique([]) === []` is false in JavaScript for every input); one asserted a
+# vowel count that counted Y against a spec forbidding it.
+#
+# The evidence was already in the transcripts it reads. The loop's no-progress
+# rule fires only when the SAME failure appears on DIFFERENT code, and it says
+# so on the way past.
+
+REDESIGNED = ("[attempt 3] the same failure on different code -- "
+              "suspecting the tests, redesigning them")
+
+
+def test_a_redesign_plus_a_check_that_ran_is_flagged_not_blamed():
+    """Both halves are needed. The loop suspected the suite AND a check
+    executed and disagreed -- which is the case a person has to read, because
+    a failing check cannot say whether the code or the expectation is wrong."""
+    v = classify(_transcript(
+        f"[attempt 2] tests failed: CHECK FAILED: empty list -> retrying\n"
+        f"{REDESIGNED}\n"
+        f"[attempt 4] tests failed: CHECK FAILED: empty list -> retrying",
+        ok=False, attempts=4, error="CHECK FAILED: empty list"))
+    assert v.verdict == "suspect-tests"
+    assert v.attempts == 4
+
+
+def test_without_that_marker_a_spent_loop_is_still_the_writer():
+    """The writer bucket has to keep meaning something, or the classifier has
+    simply moved its blindness somewhere else."""
+    v = classify(_transcript(
+        "[attempt 4] tests failed: AssertionError -> retrying",
+        ok=False, attempts=4, error="AssertionError: expected 3, got 4"))
+    assert v.verdict == "writer"
+
+
+def test_a_gate_refusal_still_wins_over_the_redesign_marker():
+    """A run that never reached the writer is not a tester failure in this
+    sense -- the gate refused the suite outright, which is its own bucket and
+    its own reason."""
+    v = classify(_transcript(
+        REDESIGNED, ok=False, attempts=0,
+        error="test design failed the quality gate: no assertions"))
+    assert v.verdict == "gate"
+
+
+def test_the_real_transcript_from_the_run_that_exposed_this():
+    """Verbatim shape from full-javascript-unique.log, where the
+    implementation was correct and every assertion in the suite was false."""
+    v = classify(
+        "[tests] accepted on attempt 1 (6 lines)\n"
+        "[attempt 1] tests failed: CHECK FAILED: empty list -> retrying\n"
+        "[attempt 2] tests failed: CHECK FAILED: empty list -> retrying\n"
+        "[attempt 3] the same failure on different code -- suspecting the "
+        "tests, redesigning them\n"
+        "[tests] accepted on attempt 1 (6 lines)\n"
+        "[attempt 4] tests failed: CHECK FAILED: empty list -> retrying\n"
+        "ok=False  attempts=4\n"
+        "error: CHECK FAILED: empty list")
+    assert v.verdict == "suspect-tests"
+
+
+def test_a_build_that_never_ran_a_check_is_the_writers_even_after_a_redesign():
+    """The correction to the correction. Blaming the tester on the redesign
+    marker ALONE moved all seven 2026-08-09 failures out of `writer`, three of
+    which were OCaml code that genuinely did not compile -- the original bug
+    with its sign flipped. A run that never produced a working binary is the
+    writer's however many times the suite was rewritten."""
+    v = classify(_transcript(
+        f"[attempt 2] tests failed: Syntax error -> retrying\n{REDESIGNED}",
+        ok=False, attempts=4,
+        error='File "candidate.ml", line 16, characters 62-63:\n'
+              "Error: Syntax error: ']' expected"))
+    assert v.verdict == "writer"

@@ -142,7 +142,7 @@ done 3< "$CORPUS"
 # zero: a marker this classifier does not recognise must be visible, not
 # quietly folded into the model's score.
 summary=""
-for k in writer gate contract stuck refused server timeout unknown; do
+for k in writer suspect-tests gate contract stuck refused server timeout unknown; do
   summary+=$(printf ' %s %s' "$k" "${counts[$k]:-0}")
 done
 echo "$slug: $passed/$total  --$summary"
