@@ -136,7 +136,7 @@ print(v.verdict, "None" if v.attempts is None else v.attempts, v.reason)
   case "$v" in ok) passed=$((passed + 1)) ;; esac
   total=$((total + 1))
   counts[$v]=$(( ${counts[$v]:-0} + 1 ))
-  printf '[%-8s attempts=%-4s] %s/%s%s\n' "$v" "$attempts" "$slug" "$name" \
+  printf '[%-13s attempts=%-4s] %s/%s%s\n' "$v" "$attempts" "$slug" "$name" \
          "${reason:+   $reason}"
   printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$name" "$v" "$attempts" "$reason" \
          >> "$BENCH/$TAG-results.tsv"
