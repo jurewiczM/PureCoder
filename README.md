@@ -314,6 +314,33 @@ tests/           559 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
+## Running it where nothing is missing
+
+```bash
+docker build -f docker/Dockerfile -t purecoder-toolchains .
+git archive HEAD --prefix=repo/ | docker run --rm -i \
+  -e PURECODER_REQUIRE_ALL_LANGUAGES=1 purecoder-toolchains sh -c '
+    cd /tmp && tar x && cd repo
+    python3 -m venv /tmp/v && /tmp/v/bin/pip install -q -e ".[dev,chunking]"
+    /tmp/v/bin/pytest -q -rs'
+```
+
+One image, every toolchain the registry can run — `g++`, `make`, `node`,
+`ocamlc`, `python3`, `rustc`, `dotnet`. .NET is the base image rather than a
+package because C# here is a file-based app (`dotnet run candidate.cs`, no
+`.csproj`), which needs SDK 10.
+
+The point is that a skip stops being silence. `purecoder`'s registry puts every
+language in exactly one state — runnable, declared-but-unimplemented,
+permanently unvalidatable, or **missing a named binary** — and CI runs the
+suite inside this image with `PURECODER_REQUIRE_ALL_LANGUAGES=1`, where a
+missing toolchain is a failure rather than a quiet skip. Measured: 565 passed
+and 0 skipped in the image, against 549 passed and 10 skipped on a bare runner.
+
+Outside that job a skip is reported and not fatal, so a machine without Docker
+keeps working. The image executes generated code; generation needs the GPU and
+stays on the host.
+
 ## Development
 
 ```bash
