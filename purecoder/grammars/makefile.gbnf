@@ -1,7 +1,18 @@
-root       ::= item*
+# Bounded, like env.gbnf and for the same reason: an unbounded root is a
+# grammar that cannot end, so the sampler never reaches a stop and the model
+# keeps writing. Observed live 2026-08-15 -- three attempts, each a complete
+# and correct Makefile followed by "# Even more concise version:" and another
+# copy, every one dying on n_predict.
+#
+# The bound has to be tight enough that a COMPLETE file fits inside n_predict,
+# not merely finite: at 24 items the same run still rambled to the limit, three
+# `clean:` targets deep. Fourteen items is .PHONY plus six targets and the
+# blank lines between them -- and a file that needs more than that is a
+# scaffolded project, where the targets come from ProjectSpec instead.
+root       ::= item{0,14}
 item       ::= comment | assignment | rule | "\n"
-comment    ::= "#" [^\n]* "\n"
-assignment ::= name " "* ("=" | ":=" | "?=" | "+=") [^\n]* "\n"
-rule    ::= name ":" [^\n]* "\n" recipe{0,20}
-recipe  ::= "\t" [^\n]* "\n"
+comment    ::= "#" [^\n]{0,120} "\n"
+assignment ::= name " "* ("=" | ":=" | "?=" | "+=") [^\n]{0,200} "\n"
+rule       ::= name ":" [^\n]{0,120} "\n" recipe{0,8}
+recipe     ::= "\t" [^\n]{0,200} "\n"
 name       ::= [A-Za-z_.] [A-Za-z0-9_./-]*

@@ -4,10 +4,14 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-
 568 tests, all green, none of them needing a GPU or a running server
-
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
+
+`scripts/smoke.sh` is the live counterpart: six checks — both config
+artifacts, Python and OCaml end to end, the contract seam, and the refusal
+path — in about a minute against a running server. It asserts the printed
+verdict AND the exit code, because those were out of step until 2026-08-15.
+It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
 
 | Phase | Component | Status | How it was verified |
 |---|---|---|---|
@@ -24,7 +28,7 @@ _Snapshot of what's built, tested, and what's next._
 | 6 | `languages.py` registry | ✅ tested | every entry coherent; availability probed, not assumed |
 | 6 | C++ / JavaScript / Rust / C# execution | ✅ tested | correct passes, wrong fails, no-checks fails -- in each language |
 | 9 | SQL (SQLite) execution | ✅ tested | same three probes; a check is a row, a failing one names itself |
-| 9 | `bench.py` contract measurement | ✅ built, ⬜ unrun | instrument calibrated hermetically; no live numbers collected yet |
+| 9 | `bench.py` contract measurement | ✅ built, ✅ run, ⬜ inconclusive | calibrated hermetically; run live twice, zero divergence in both arms because nine of ten arms ended in the loop refusing |
 | 9 | declared packages (`code --with`) | ✅ tested | probed in the sandbox interpreter before any model call; refusals name the install |
 | 9 | tree-sitter chunking | ✅ tested | C++/Rust/OCaml chunked by definition; ingest now sees those files at all |
 | 10 | OCaml execution | ✅ tested | hand-written entry; passes the five bootstrap probes; 4 of 5 live tasks generate and validate |
@@ -456,6 +460,27 @@ _Snapshot of what's built, tested, and what's next._
   every attempt once truncation was detectable again. Bounded to 20 lines. The
   same fix as the rambling comment, for the same reason: the prompt asking for
   brevity was ignored three times in a row.
+
+  **`makefile.gbnf` had the identical defect and kept it for six more days**,
+  found by the first run of `scripts/smoke.sh` on 2026-08-15: `root ::= item*`,
+  so `purecoder make` wrote a correct Makefile, then `# Even more concise
+  version:`, then another, on all three attempts, each dying on `n_predict`.
+  Two things are worth carrying forward. The bound has to be tight enough that
+  a COMPLETE file fits inside `n_predict` rather than merely finite — at 24
+  items the same prompt still rambled to the limit, three `clean:` targets
+  deep, and only 14 stopped it. And a bound alone would not have caught a
+  restart that *fits*, so `validate_makefile` gained the semantic half:
+  a target defined twice is the file starting over, which `make` accepts with a
+  warning and a zero exit. Fixed, the same spec passes on attempt 1.
+- **A refused run exited 0.** `_print_result` printed `ok=False` and returned
+  `None`, and `main()` ends `return ... or 0`, so every failed `code`, `env`,
+  `make`, `ask` and `project` reported success to the shell. Only a refusal
+  *before* the loop (an unwired language, a dead server) exited non-zero, which
+  is why `test_python_m_purecoder_propagates_the_exit_code` passed throughout.
+  Nothing downstream noticed because both bench scripts grep the `ok=True`
+  verdict line out of the transcript instead — they were written around it.
+  `measure` had done the right thing since it was built. Found by writing a
+  smoke test that tried to assert on `$?`.
 - **A skip is now a claim, and CI has a job where none is allowed.** "A green
   run on a machine without `ocamlc` proves less than it looks" was written in
   CLAUDE.md for weeks and enforced by nothing. `account()` puts every

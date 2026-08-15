@@ -548,3 +548,40 @@ def test_anything_but_yes_declines_the_tests(capsys):
     from purecoder import cli
 
     assert cli.confirm_tests("assert x", "boom", ask=lambda _: "n") is False
+
+
+def test_a_refused_run_exits_non_zero():
+    """`ok=False` printed while the process exits 0 is a refusal no caller can
+    see. Found live 2026-08-15 on three failed Makefile attempts; the bench
+    scripts grep the verdict line instead, which is why nothing caught it."""
+    from purecoder import cli
+
+    assert cli._print_result({"ok": True, "text": "x", "attempts": 1}) == 0
+    assert cli._print_result({"ok": False, "text": "x", "attempts": 3,
+                              "error": "output was cut off"}) == 1
+
+
+def test_make_reports_a_failed_run_through_its_exit_code(monkeypatch):
+    from purecoder import cli
+
+    monkeypatch.setattr(cli, "generate_validated",
+                        lambda *a, **kw: {"ok": False, "text": "junk",
+                                          "attempts": 3, "error": "cut off"})
+
+    class Args:
+        spec = "a Makefile for a python project"
+        retries = 3
+
+    assert cli.cmd_make(None, Args()) == 1
+
+
+def test_every_generating_command_returns_its_verdict():
+    """A guard against the next command that prints ok=False and exits 0."""
+    import inspect
+
+    from purecoder import cli
+
+    for name in ("cmd_code", "cmd_env", "cmd_make", "cmd_ask"):
+        src = inspect.getsource(getattr(cli, name))
+        assert "return _print_result(" in src, f"{name} discards the verdict"
+    assert "r[\"ok\"]" in inspect.getsource(cli.cmd_project)

@@ -84,6 +84,28 @@ def test_makefile_allows_real_special_targets():
     assert ok, err
 
 
+def test_makefile_rejects_a_file_written_twice():
+    """The live failure of 2026-08-15: a correct Makefile, then a comment
+    announcing a better one, then the same targets again. `make` accepts it
+    with a warning and exits 0, so only a semantic guard sees it."""
+    ok, err = validate_makefile(
+        GOOD_MAKEFILE + "\n# Even more concise version:\n\n" + GOOD_MAKEFILE)
+    assert not ok
+    assert "'install'" in err and "2 times" in err
+
+
+def test_makefile_allows_a_target_repeated_as_a_double_colon_rule():
+    """`::` rules are written more than once by design -- the one shape the
+    duplicate guard must not read as a restart."""
+    ok, err = validate_makefile("all::\n\techo 1\n\nall::\n\techo 2\n")
+    assert ok, err
+
+
+def test_makefile_reads_a_colon_assignment_as_an_assignment():
+    ok, err = validate_makefile("CC := gcc\nCC := clang\n\nall:\n\techo hi\n")
+    assert ok, err
+
+
 @pytest.mark.skipif(not shutil.which("make"), reason="make not installed")
 def test_makefile_rejects_unparseable():
     ok, err = validate_makefile("target\n\techo orphan recipe\n")
