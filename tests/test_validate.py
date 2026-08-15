@@ -7,6 +7,7 @@ import pytest
 
 from purecoder.validate import (
     MAX_ENV_LINE,
+    _targets,
     validate_env,
     validate_makefile,
     validate_python,
@@ -165,3 +166,33 @@ def test_the_env_grammar_bounds_how_many_lines_it_can_emit():
     root = next(ln for ln in grammar.splitlines() if ln.startswith("root"))
     assert "line*" not in root, "an unbounded root truncates rather than ends"
     assert re.search(r"line\{\d+,\d+\}", root), root
+
+
+def test_makefile_allows_the_make_idioms_the_duplicate_guard_could_misread():
+    """Two heads that are not a restart: a static pattern rule, whose second
+    colon is part of the rule, and a target written with a variable."""
+    ok, err = validate_makefile("BIN = main\n\n$(BIN):\n\techo build\n\n"
+                                "clean:\n\trm -f $(BIN)\n")
+    assert ok, err
+    heads = [t for _, t in _targets(
+        "$(OBJS): %.o: %.c\n\tgcc -c $< -o $@\n".splitlines())]
+    assert heads == ["$(OBJS)"], heads
+
+
+def test_makefile_allows_a_one_line_rule():
+    ok, err = validate_makefile("all: ; echo hi\n")
+    assert ok, err
+
+
+def test_the_makefile_grammar_bounds_how_many_items_it_can_emit():
+    """The same defect as the .env root, found six days later by the first run
+    of scripts/smoke.sh: `root ::= item*` cannot end, so `purecoder make` wrote
+    a correct Makefile, then "# Even more concise version:", then another, and
+    all three attempts died on n_predict. This is the check that would have
+    caught it without a server."""
+    from pathlib import Path
+
+    grammar = Path("purecoder/grammars/makefile.gbnf").read_text()
+    root = next(ln for ln in grammar.splitlines() if ln.startswith("root"))
+    assert "item*" not in root, "an unbounded root truncates rather than ends"
+    assert re.search(r"item\{\d+,\d+\}", root), root

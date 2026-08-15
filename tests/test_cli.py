@@ -585,3 +585,29 @@ def test_every_generating_command_returns_its_verdict():
         src = inspect.getsource(getattr(cli, name))
         assert "return _print_result(" in src, f"{name} discards the verdict"
     assert "r[\"ok\"]" in inspect.getsource(cli.cmd_project)
+
+
+def test_the_smoke_script_calls_a_cli_that_exists():
+    """scripts/smoke.sh only runs against a live server, so CI never executes
+    it and nothing else would notice it drifting from the CLI. Both bench
+    scripts were written around the exit code being broken, which is how that
+    survived unnoticed -- a script is not a check unless something checks it."""
+    import inspect
+    import re
+    import subprocess
+    from pathlib import Path
+
+    from purecoder import cli
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "smoke.sh"
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0, \
+        "smoke.sh does not parse"
+
+    src = script.read_text()
+    cli_src = inspect.getsource(cli)
+    for flag in sorted(set(re.findall(r"(?<![\w-])--[a-z][a-z-]+", src))):
+        assert f'"{flag}"' in cli_src, f"smoke.sh passes {flag}, which the CLI does not define"
+
+    # The subcommands it drives, each of which must still be routed.
+    for name in ("code", "env", "make", "status"):
+        assert f'"{name}": cmd_' in cli_src, f"{name} is no longer routed"
