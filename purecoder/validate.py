@@ -1,13 +1,14 @@
 """
 purecoder/validate.py
 
-Phase 3: real-tool validators + the write -> validate -> fix loop.
+Real-tool validators for the config artifacts, plus the write -> validate ->
+fix loop they share.
 
 Each validator returns (ok: bool, error: str). The loop generates an
 artifact, runs its validator, and on failure feeds the error back into a
 regeneration call, up to max_retries.
 
-Design boundary made concrete: grammars (Phase 2) guarantee SHAPE. `make -n`
+Design boundary made concrete: grammars guarantee SHAPE. `make -n`
 confirms a Makefile PARSES. But `make` is lenient -- it will happily parse
 degenerate junk (50 identical rm lines, malformed dot-targets). So the
 Makefile validator adds semantic sanity guards on top of the parse check.

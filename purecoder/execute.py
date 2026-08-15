@@ -830,6 +830,17 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 # ---- the execution fix loop ---------------------------------------------
 
+def _verdict(ok, *, code="", tests="", contract=None, attempts=0, error=""):
+    """The loop's return shape, in one place.
+
+    Fifteen exits wrote this dict out longhand, keys agreeing by hand across
+    returns whose whole point is that a refusal must look exactly like a
+    failure. `bench.py`, `scaffold.py` and the CLI read these keys.
+    """
+    return {"ok": ok, "text": code, "tests": tests, "contract": contract,
+            "attempts": attempts, "error": error}
+
+
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
@@ -855,8 +866,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # exception out of the middle of a half-written project.
     ok, why = spec.available()
     if not ok:
-        return {"ok": False, "text": "", "tests": "", "contract": None,
-                "attempts": 0, "error": f"cannot generate {spec.name}: {why}"}
+        return _verdict(False, error=f"cannot generate {spec.name}: {why}")
 
     # TDD mode, refused before any model call when it cannot be honoured. It
     # needs two things: a language that can be stubbed, and a contract to take
@@ -865,16 +875,16 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # available outcomes.
     if tdd:
         if not stub_for(spec, "probe"):
-            return {"ok": False, "text": "", "tests": "", "contract": None,
-                    "attempts": 0,
-                    "error": f"cannot run test-first for {spec.name}: it has no "
-                             f"stub form, so the tests cannot be watched "
-                             f"failing before an implementation exists"}
+            return _verdict(
+                False,
+                error=f"cannot run test-first for {spec.name}: it has no stub "
+                      f"form, so the tests cannot be watched failing before an "
+                      f"implementation exists")
         if not use_contract and contract is None:
-            return {"ok": False, "text": "", "tests": "", "contract": None,
-                    "attempts": 0,
-                    "error": "test-first needs a contract: the stub is built "
-                             "from the name it declares. Use --contract."}
+            return _verdict(
+                False,
+                error="test-first needs a contract: the stub is built from the "
+                      "name it declares. Use --contract.")
 
     # Declared packages, checked before a single model call. Two refusals, both
     # cheap: a language with no import story cannot honour the request at all,
@@ -882,18 +892,18 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # unreachable however good the code is.
     packages = tuple(packages or ())
     if packages and spec.name != "python":
-        return {"ok": False, "text": "", "tests": "", "contract": None,
-                "attempts": 0,
-                "error": f"cannot declare packages for {spec.name}: only the "
-                         f"python path installs and imports them. Drop the "
-                         f"declaration, or generate python."}
+        return _verdict(
+            False,
+            error=f"cannot declare packages for {spec.name}: only the python "
+                  f"path installs and imports them. Drop the declaration, or "
+                  f"generate python.")
     have, missing = available_packages(packages)
     if not have:
-        return {"ok": False, "text": "", "tests": "", "contract": None,
-                "attempts": 0,
-                "error": f"the sandbox cannot import {', '.join(missing)}, so "
-                         f"nothing written against it could be validated. "
-                         f"Install it first:\n  pip install {' '.join(missing)}"}
+        return _verdict(
+            False,
+            error=f"the sandbox cannot import {', '.join(missing)}, so nothing "
+                  f"written against it could be validated. Install it first:\n"
+                  f"  pip install {' '.join(missing)}")
 
     if use_contract and contract is None:
         contract, cerr = derive_contract(pc, description,
@@ -948,10 +958,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     red_target = ""
     if tdd:
         if contract is None:
-            return {"ok": False, "text": "", "tests": "", "contract": None,
-                    "attempts": 0,
-                    "error": "test-first needs a contract and none could be "
-                             "derived, so there is no name to stub"}
+            return _verdict(
+                False,
+                error="test-first needs a contract and none could be derived, "
+                      "so there is no name to stub")
         red_target = target_name
 
     if tests is None:
@@ -971,9 +981,9 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             # a zero-assertion suite reaches the executor and reports success.
             if verbose:
                 print(f"[tests] gate never satisfied: {gate_reason} -> giving up")
-            return {"ok": False, "text": "", "tests": designed,
-                    "contract": contract, "attempts": 0,
-                    "error": f"test design failed the quality gate: {gate_reason}"}
+            return _verdict(
+                False, tests=designed, contract=contract,
+                error=f"test design failed the quality gate: {gate_reason}")
     else:
         designed = tests
 
@@ -982,10 +992,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # own output on the success path -- that failure IS the evidence.
     if tdd and confirm_tests is not None:
         if not confirm_tests(designed, gate_reason):
-            return {"ok": False, "text": "", "tests": designed,
-                    "contract": contract, "attempts": 0,
-                    "error": "declined: the tests were not accepted, so no "
-                             "implementation was written"}
+            return _verdict(
+                False, tests=designed, contract=contract,
+                error="declined: the tests were not accepted, so no "
+                      "implementation was written")
 
     task = writing
     code, error = "", ""
@@ -1031,10 +1041,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 if not gate_ok and tests is not None:
                     if verbose:
                         print(f"[tests] supplied tests fail the gate: {gate_reason}")
-                    return {"ok": False, "text": code, "tests": designed,
-                            "contract": contract, "attempts": attempt,
-                            "error": f"the tests you supplied fail the quality "
-                                     f"gate: {gate_reason}"}
+                    return _verdict(
+                        False, code=code, tests=designed, contract=contract,
+                        attempts=attempt,
+                        error=f"the tests you supplied fail the quality gate: "
+                              f"{gate_reason}")
                 if not gate_ok:
                     if verbose:
                         print(f"[tests] post-code gate: {gate_reason} -> redesigning")
@@ -1046,11 +1057,11 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                         if verbose:
                             print(f"[tests] gate never satisfied: {redo_reason} "
                                   f"-> giving up")
-                        return {"ok": False, "text": code,
-                                "tests": designed,
-                                "contract": contract, "attempts": attempt,
-                                "error": f"test design failed the quality gate: "
-                                         f"{redo_reason}"}
+                        return _verdict(
+                            False, code=code, tests=designed, contract=contract,
+                            attempts=attempt,
+                            error=f"test design failed the quality gate: "
+                                  f"{redo_reason}")
 
         # Reject an implementation carrying its own tests before running it --
         # they would execute alongside the real ones and pollute the artifact.
@@ -1073,8 +1084,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     f"Output only the implementation, nothing else.")
             continue
 
-        full = designed
-        ok, error = run_candidate(spec, code, full, timeout=timeout,
+        ok, error = run_candidate(spec, code, designed, timeout=timeout,
                                   require_checks=1)
 
         dep = missing_dependency(error)
@@ -1104,17 +1114,18 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             if verbose:
                 print(f"[attempt {attempt}] still missing {dep!r} -- "
                       f"cannot validate, stopping")
-            return {"ok": False, "text": code, "tests": full,
-                    "contract": contract, "attempts": attempt,
-                    "error": f"cannot validate: the sandbox has no module "
-                             f"{dep!r}, and the stdlib-only retry still imported "
-                             f"it. Install it, or ask for stdlib-only code."}
+            return _verdict(
+                False, code=code, tests=designed, contract=contract,
+                attempts=attempt,
+                error=f"cannot validate: the sandbox has no module {dep!r}, and "
+                      f"the stdlib-only retry still imported it. Install it, or "
+                      f"ask for stdlib-only code.")
 
         if ok:
             if verbose:
                 print(f"[attempt {attempt}] all tests passed")
-            return {"ok": True, "text": code, "tests": full,
-                    "contract": contract, "attempts": attempt, "error": ""}
+            return _verdict(True, code=code, tests=designed, contract=contract,
+                            attempts=attempt)
 
         # An identical failure means the feedback is not moving the model.
         # Observed live: 5x "API endpoint is unreachable", 4x the same
@@ -1147,21 +1158,21 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     max_retries=max_retries, verbose=verbose, spec=spec,
                     strict_targets=bool(from_code))
                 if not redo_ok:
-                    return {"ok": False, "text": code, "tests": designed,
-                            "contract": contract, "attempts": attempt,
-                            "error": f"test design failed the quality gate: "
-                                     f"{redo_reason}"}
+                    return _verdict(
+                        False, code=code, tests=designed, contract=contract,
+                        attempts=attempt,
+                        error=f"test design failed the quality gate: "
+                              f"{redo_reason}")
                 task = f"{writing}{constraints}"
                 continue
 
             if verbose:
                 print(f"[attempt {attempt}] same failure {repeats + 1}x in a "
                       f"row -- the fix loop is not converging, stopping")
-            return {"ok": False, "text": code, "tests": full,
-                    "contract": contract,
-                    "attempts": attempt,
-                    "error": f"stopped after {repeats + 1} identical "
-                             f"failures: {error}"}
+            return _verdict(
+                False, code=code, tests=designed, contract=contract,
+                attempts=attempt,
+                error=f"stopped after {repeats + 1} identical failures: {error}")
 
         if verbose:
             print(f"[attempt {attempt}] tests failed: {first} -> retrying")
@@ -1177,12 +1188,12 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             print("\n".join(f"[docs] {line}" for line in hint.splitlines()))
         # Added to the same slot and for the same reason: a hint offered only
         # after the toolchain has already refused, never a gate of its own.
-        hint += harness_collision(spec, code, full)
+        hint += harness_collision(spec, code, designed)
         hint += missing_relation(spec, error)
         # A compiler that says "line 4" is talking about a file the writer has
         # never seen: its own previous output is not in this prompt, and the
         # harness around it never was.
-        hint += quoted_source(spec, code, full, error)
+        hint += quoted_source(spec, code, designed, error)
         # The tests are shown so the model knows what it must satisfy, but
         # left unqualified it copies them into the module -- caught twice in
         # one live run by lint_implementation. Say plainly that they are run
@@ -1200,11 +1211,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     if len(code) <= 2000 else "")
         task = (f"{writing}{constraints}{previous}\n\n"
                 f"It failed these tests, which are run separately and must NOT "
-                f"appear in your output:\n{full}\n\n"
+                f"appear in your output:\n{designed}\n\n"
                 f"With this error:\n{error}\n"
                 f"{hint}\n\n"
                 f"Output only the corrected implementation, nothing else.")
 
-    return {"ok": False, "text": code, "tests": designed,
-            "contract": contract,
-            "attempts": max_retries, "error": error}
+    return _verdict(False, code=code, tests=designed, contract=contract,
+                    attempts=max_retries, error=error)

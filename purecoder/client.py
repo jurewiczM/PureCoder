@@ -93,7 +93,11 @@ class PureCoder:
 
     @staticmethod
     def _chatml(system: str, user: str) -> str:
-        # Qwen2.5-Coder-Instruct expects this exact special-token layout.
+        # ChatML, applied by hand: /completion is the only endpoint that takes
+        # a raw GBNF grammar, and it does no templating. Both models this runs
+        # on -- Qwen2.5-Coder-7B and Qwen3-Coder-30B-A3B -- expect this exact
+        # special-token layout. GGUF chat-template metadata never reaches the
+        # sampler, so re-downloading weights to fix a template does nothing.
         return (
             f"<|im_start|>system\n{system}<|im_end|>\n"
             f"<|im_start|>user\n{user}<|im_end|>\n"
