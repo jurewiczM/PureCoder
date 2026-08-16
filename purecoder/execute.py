@@ -789,7 +789,7 @@ def generate_tests(pc, description: str, n_predict: int = 512,
 def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
                  strict_targets=False,
                  n_predict=512, min_assertions=MIN_ASSERTIONS, spec=PYTHON,
-                 red_target="", timeout=10):
+                 red_target="", timeout=10, say=None):
     """Generate tests and put them through the quality gate, regenerating with
     the reason fed back on rejection. Returns (tests, ok, reason).
 
@@ -801,6 +801,7 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
     nothing. That is the one check no amount of parsing can make -- `assert
     True` is well-formed, mentions the target and is not degenerate.
     """
+    say = say or reporter(verbose)
     task, tests, reason, evidence = description, "", "", ""
     for attempt in range(1, max_retries + 1):
         tests = repair_tests(spec, generate_tests(pc, task, n_predict=n_predict,
@@ -815,17 +816,43 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
             else:
                 reason = detail
         if ok:
-            if verbose:
-                red = " and failing against a stub" if red_target else ""
-                print(f"[tests] accepted on attempt {attempt} "
-                      f"({len(tests.splitlines())} lines{red})")
+            red = " and failing against a stub" if red_target else ""
+            say("tests", f"[tests] accepted on attempt {attempt} "
+                         f"({len(tests.splitlines())} lines{red})", attempt)
             return tests, True, evidence
-        if verbose:
-            print(f"[tests] attempt {attempt} rejected: {reason} -> regenerating")
+        say("tests", f"[tests] attempt {attempt} rejected: {reason} "
+                     f"-> regenerating", attempt)
         task = (f"{description}\n\n"
                 f"Your previous tests were rejected: {reason}\n"
                 f"Output only corrected test code, nothing else.")
     return tests, False, reason
+
+
+# ---- progress reporting -------------------------------------------------
+
+def reporter(verbose=True, on_event=None):
+    """Where a run's progress goes. -> say(kind, text, attempt=0).
+
+    The loop narrates itself -- which suite was accepted, which attempt failed
+    and why, what the verdict was -- and that narration is the only thing that
+    distinguishes a model that wrote bad code from a harness that refused good
+    code. It used to go to stdout and nowhere else, behind seventeen separate
+    `if verbose:` guards, so a caller that was not a terminal could not read it.
+
+    `on_event` receives the same lines as records. It is additive: `verbose`
+    still decides printing, the text is identical either way, and a caller that
+    passes nothing gets exactly the previous behaviour.
+
+    `kind` is coarse on purpose -- "tests", "attempt", "contract", "docs",
+    "verdict". A consumer that needs more than that should read `text`, which
+    is the thing a person would have read.
+    """
+    def say(kind, text, attempt=0):
+        if verbose:
+            print(text)
+        if on_event is not None:
+            on_event({"kind": kind, "attempt": attempt, "text": text})
+    return say
 
 
 # ---- the execution fix loop ---------------------------------------------
@@ -845,7 +872,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
                               error_hint=None, packages=(), tdd=False,
-                              confirm_tests=None, context="", **kw):
+                              confirm_tests=None, context="", on_event=None,
+                              **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
@@ -864,6 +892,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # here; a library caller (or scaffold_project, which has already made the
     # output directory) gets the loop's ordinary failure dict rather than an
     # exception out of the middle of a half-written project.
+    say = reporter(verbose, on_event)
+
     ok, why = spec.available()
     if not ok:
         return _verdict(False, error=f"cannot generate {spec.name}: {why}")
@@ -908,18 +938,17 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     if use_contract and contract is None:
         contract, cerr = derive_contract(pc, description,
                                          max_retries=max_retries,
-                                         verbose=verbose)
-        if contract is None and verbose:
-            print(f"[contract] {cerr} -> continuing without one")
+                                         verbose=verbose, say=say)
+        if contract is None:
+            say("contract", f"[contract] {cerr} -> continuing without one")
     elif contract is not None:
         # A caller-supplied contract skipped derivation and therefore skipped
         # validation. Degrade the same way a failed derivation does rather
         # than let a malformed dict raise out of render_contract.
         ok, cerr = validate_contract(contract)
         if not ok:
-            if verbose:
-                print(f"[contract] supplied contract rejected: {cerr} "
-                      f"-> continuing without one")
+            say("contract", f"[contract] supplied contract rejected: {cerr} "
+                            f"-> continuing without one")
             contract = None
 
     # Everything downstream reads the contract, never the implementation --
@@ -975,12 +1004,12 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         designed, gate_ok, gate_reason = design_tests(
             pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec,
             targets=[target_name] if target_name else None,
-            red_target=red_target, timeout=timeout)
+            red_target=red_target, timeout=timeout, say=say)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
-            if verbose:
-                print(f"[tests] gate never satisfied: {gate_reason} -> giving up")
+            say("tests", f"[tests] gate never satisfied: {gate_reason} "
+                         f"-> giving up")
             return _verdict(
                 False, tests=designed, contract=contract,
                 error=f"test design failed the quality gate: {gate_reason}")
@@ -1018,8 +1047,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             error = "output was cut off (hit n_predict)"
             task = (f"{writing}{constraints}\n\n"
                     f"Previous output was cut off. Be complete but concise.")
-            if verbose:
-                print(f"[attempt {attempt}] truncated -> retrying")
+            say("attempt", f"[attempt {attempt}] truncated -> retrying", attempt)
             continue
 
         # Now that an implementation exists, the gate can also check the tests
@@ -1039,24 +1067,23 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 # against, and then reported success against tests they never
                 # wrote -- a green result that is not evidence of the request.
                 if not gate_ok and tests is not None:
-                    if verbose:
-                        print(f"[tests] supplied tests fail the gate: {gate_reason}")
+                    say("tests", f"[tests] supplied tests fail the gate: "
+                                 f"{gate_reason}", attempt)
                     return _verdict(
                         False, code=code, tests=designed, contract=contract,
                         attempts=attempt,
                         error=f"the tests you supplied fail the quality gate: "
                               f"{gate_reason}")
                 if not gate_ok:
-                    if verbose:
-                        print(f"[tests] post-code gate: {gate_reason} -> redesigning")
+                    say("tests", f"[tests] post-code gate: {gate_reason} "
+                                 f"-> redesigning", attempt)
                     designed, redo_ok, redo_reason = design_tests(
                         pc, grounded, targets=targets, max_retries=max_retries,
                         verbose=verbose, spec=spec,
-                        strict_targets=bool(from_code))
+                        strict_targets=bool(from_code), say=say)
                     if not redo_ok:
-                        if verbose:
-                            print(f"[tests] gate never satisfied: {redo_reason} "
-                                  f"-> giving up")
+                        say("tests", f"[tests] gate never satisfied: "
+                                     f"{redo_reason} -> giving up", attempt)
                         return _verdict(
                             False, code=code, tests=designed, contract=contract,
                             attempts=attempt,
@@ -1076,8 +1103,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             impl_ok, impl_reason = defines_target(code, target_name,
                                                   designed)
         if not impl_ok:
-            if verbose:
-                print(f"[attempt {attempt}] {impl_reason} -> retrying")
+            say("attempt", f"[attempt {attempt}] {impl_reason} -> retrying",
+                attempt)
             error = impl_reason
             task = (f"{writing}{constraints}\n\n"
                     f"Your previous output was rejected: {impl_reason}\n"
@@ -1095,9 +1122,9 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             # hand-written SVG for matplotlib). Ask once, then stop.
             if not asked_stdlib:
                 asked_stdlib = True
-                if verbose:
-                    print(f"[attempt {attempt}] missing dependency {dep!r} -- "
-                          f"retrying with a standard-library-only constraint")
+                say("attempt", f"[attempt {attempt}] missing dependency {dep!r}"
+                               f" -- retrying with a standard-library-only "
+                               f"constraint", attempt)
                 # A declared package survives this. Without the exception a
                 # numpy run that hit a DIFFERENT missing import was told to
                 # drop numpy too -- the loop taking back a permission the
@@ -1111,9 +1138,8 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     f"any later attempt.")
                 task = f"{writing}{constraints}"
                 continue
-            if verbose:
-                print(f"[attempt {attempt}] still missing {dep!r} -- "
-                      f"cannot validate, stopping")
+            say("attempt", f"[attempt {attempt}] still missing {dep!r} -- "
+                           f"cannot validate, stopping", attempt)
             return _verdict(
                 False, code=code, tests=designed, contract=contract,
                 attempts=attempt,
@@ -1149,14 +1175,14 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             if tests is None and not redesigned:
                 redesigned = True
                 repeats, last_error = 0, None
-                if verbose:
-                    print(f"[attempt {attempt}] the same failure on different "
-                          f"code -- suspecting the tests, redesigning them")
+                say("tests", f"[attempt {attempt}] the same failure on "
+                             f"different code -- suspecting the tests, "
+                             f"redesigning them", attempt)
                 from_code = defined_names(spec, code)
                 designed, redo_ok, redo_reason = design_tests(
                     pc, grounded, targets=from_code,
                     max_retries=max_retries, verbose=verbose, spec=spec,
-                    strict_targets=bool(from_code))
+                    strict_targets=bool(from_code), say=say)
                 if not redo_ok:
                     return _verdict(
                         False, code=code, tests=designed, contract=contract,
@@ -1166,26 +1192,27 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 task = f"{writing}{constraints}"
                 continue
 
-            if verbose:
-                print(f"[attempt {attempt}] same failure {repeats + 1}x in a "
-                      f"row -- the fix loop is not converging, stopping")
+            say("verdict", f"[attempt {attempt}] same failure {repeats + 1}x "
+                           f"in a row -- the fix loop is not converging, "
+                           f"stopping", attempt)
             return _verdict(
                 False, code=code, tests=designed, contract=contract,
                 attempts=attempt,
                 error=f"stopped after {repeats + 1} identical failures: {error}")
 
-        if verbose:
-            print(f"[attempt {attempt}] tests failed: {first} -> retrying")
+        say("attempt", f"[attempt {attempt}] tests failed: {first} "
+                       f"-> retrying", attempt)
         # Appended to the prompt, never to `error`: the no-progress check above
         # reads the toolchain's last line, and enriching it would make an
         # unchanging failure look like a moving one.
         hint = error_hint(error) if error_hint else ""
-        if hint and verbose:
+        if hint:
             # Every line, not just the first. The first line is the header --
             # "The documentation does not contain every name in that error:" --
             # and the names it promises are on the lines beneath it, so
             # printing one line announced a hint and then withheld it.
-            print("\n".join(f"[docs] {line}" for line in hint.splitlines()))
+            say("docs", "\n".join(f"[docs] {line}"
+                                   for line in hint.splitlines()), attempt)
         # Added to the same slot and for the same reason: a hint offered only
         # after the toolchain has already refused, never a gate of its own.
         hint += harness_collision(spec, code, designed)

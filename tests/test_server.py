@@ -172,3 +172,107 @@ def test_a_refusal_carries_the_same_keys_as_a_success(live, monkeypatch):
     _, ok_body = live("/code", {"spec": "x", "no_docs": True})
     _, refused = live("/code", {"spec": "x", "lang": "go"})
     assert set(ok_body) == set(refused)
+
+
+# ---- the streamed run ----------------------------------------------------
+
+def _sse(base_call, path, payload, timeout=10):
+    """Read a server-sent-event stream to the end. -> [record, ...].
+
+    Deliberately not the `live` helper: that one parses a single JSON body,
+    and the whole point here is that the answer arrives in pieces.
+    """
+    import urllib.request
+
+    req = urllib.request.Request(base_call + path,
+                                 data=json.dumps(payload).encode(),
+                                 method="POST",
+                                 headers={"Content-Type": "application/json"})
+    records = []
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        assert r.headers["Content-Type"] == "text/event-stream"
+        for line in r:
+            line = line.decode().strip()
+            if line.startswith("data: "):
+                records.append(json.loads(line[6:]))
+    return records
+
+
+def test_a_streamed_run_narrates_itself_and_ends_with_the_verdict(monkeypatch):
+    """The transcript is the half of a run that `ok=False attempts=4` cannot
+    tell you: the same verdict covers a model that wrote bad code and a harness
+    that refused good code. Streaming exists so a caller can read which."""
+    def fake(pc, description, **kw):
+        say = kw["on_event"]
+        say({"kind": "tests", "attempt": 1, "text": "[tests] accepted on attempt 1"})
+        say({"kind": "attempt", "attempt": 1, "text": "[attempt 1] tests failed"})
+        say({"kind": "verdict", "attempt": 2, "text": "[attempt 2] all tests passed"})
+        return _fake_generate()
+
+    monkeypatch.setattr(S, "generate_validated_python", fake)
+    httpd = S.make_server(PureCoder(), host="127.0.0.1", port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        records = _sse(url, "/code/stream", {"spec": "a function f"})
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    kinds = [r["kind"] for r in records]
+    assert kinds == ["tests", "attempt", "verdict", "result"]
+    assert records[0]["text"].startswith("[tests] accepted")
+    # The last event is exactly what /code would have returned, so a caller
+    # that ignores the narration still gets the blocking behaviour.
+    assert records[-1]["result"]["ok"] is True
+    assert records[-1]["result"]["code"].startswith("def f()")
+
+
+def test_a_streamed_refusal_arrives_as_a_result_not_a_status(monkeypatch):
+    """The response is committed with a 200 before the first line exists, so a
+    language refusal cannot become a 4xx. It has to be an event."""
+    httpd = S.make_server(PureCoder(), host="127.0.0.1", port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        records = _sse(url, "/code/stream", {"spec": "x", "lang": "go"})
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    assert [r["kind"] for r in records] == ["result"]
+    assert records[0]["result"]["ok"] is False
+    assert "go" in records[0]["result"]["error"]
+
+
+def test_a_streamed_run_still_demands_a_spec(live):
+    status, body = live("/code/stream", {"spec": "   "})
+    assert status == 400
+    assert "spec is required" in body["error"]
+
+
+# ---- the other two additions ---------------------------------------------
+
+def test_status_carries_the_reason_a_language_is_unavailable(live):
+    """`false` says a language cannot be used; the reason says what to do about
+    it. The registry has always computed that string and the API dropped it."""
+    _, body = live("/status", method="GET")
+    go = body["languages"]["go"]
+    assert go["available"] is False
+    assert "not implemented" in go["reason"]
+    assert body["languages"]["python"]["available"] is True
+
+
+def test_grammars_reports_each_root_rule(live):
+    """A grammar whose root cannot end always truncates -- shipped twice now.
+    The root is the line worth looking at, so it is lifted out of the text."""
+    status, body = live("/grammars", method="GET")
+    assert status == 200
+    names = {g["name"] for g in body["grammars"]}
+    assert {"env", "makefile", "contract"} <= names
+    env = next(g for g in body["grammars"] if g["name"] == "env")
+    assert env["root"].startswith("root")
+    assert "line" in env["root"]
+    assert env["text"].strip()

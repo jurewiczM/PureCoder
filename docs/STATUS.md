@@ -50,6 +50,9 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
 | 12 | ten-task cross-language benchmark | ✅ built, ✅ run | 60 tasks over 6 languages, 2026-08-09; four of seven failures were the harness, not the model |
 | 12 | `benchlog.py` failure attribution | ✅ tested, ⚠️ wrong | 14 cases; misattributed 4 of 7 real failures to `writer` on its first live run |
 
+| — | `purecoder serve` local HTTP API | ✅ tested | 14 cases over a real socket; same gates and refusals as the CLI; loopback-only asserted; a live generation driven through it |
+| — | `POST /code/stream` (SSE) | ✅ tested | events arrive per attempt, last one is the `/code` envelope; driven live through the browser |
+| — | the UI layer (`UI/app`) | ✅ built, ⬜ untested | three sections, each backed by an endpoint; typechecks and builds; a real run driven end to end in a browser. No component tests -- see UI/README.md |
 
 ## Key findings from the build
 

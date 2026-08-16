@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import languages
 from .cli import ground_in_docs, language_for
+from .client import GRAMMARS_DIR
 from .execute import generate_validated_python
 from .status import collect
 
@@ -82,20 +83,111 @@ def _code(pc, body, required_docs=False):
 
 def _status(pc, _body=None):
     info = collect(pc)
-    info["languages"] = {n: languages.get(n).available()[0]
-                         for n in languages.names()}
+    # The reason, not just the boolean. "false" tells a caller a language is
+    # unavailable; `'sqlite3' is not installed` tells them what to do about it,
+    # and `go is declared but not implemented yet` tells them not to bother.
+    # The registry has been computing that string all along and the API threw
+    # it away.
+    info["languages"] = {}
+    for name in languages.names():
+        available, reason = languages.get(name).available()
+        info["languages"][name] = {"available": available, "reason": reason}
     return 200, info
+
+
+def _grammars(_pc, _body=None):
+    """The GBNF files this build would constrain generation with.
+
+    Small, and worth having: a grammar whose root cannot end is a grammar that
+    always truncates, and that defect has now shipped twice -- once in
+    `env.gbnf` and once in `makefile.gbnf`, six days apart. The root rule is
+    the line to look at, so it is lifted out rather than left for the reader to
+    find in the text.
+    """
+    out = []
+    for path in sorted(GRAMMARS_DIR.glob("*.gbnf")):
+        text = path.read_text()
+        root = next((ln for ln in text.splitlines()
+                     if ln.startswith("root")), "")
+        out.append({"name": path.stem, "root": root.strip(), "text": text})
+    return 200, {"grammars": out}
 
 
 POST_ROUTES = {
     "/code": _code,
     "/ask": partial(_code, required_docs=True),
 }
-GET_ROUTES = {"/status": _status}
+GET_ROUTES = {"/status": _status, "/grammars": _grammars}
+
+# Streamed variants live apart from POST_ROUTES: they own the response rather
+# than returning a payload for the handler to serialise.
+STREAM_ROUTES = {"/code/stream"}
 
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "PureCoder"
+
+    def _stream_code(self, body):
+        """POST /code/stream -- the same run as /code, narrated as it happens.
+
+        A generation is a minute of silence followed by a verdict, and the
+        verdict is the half that cannot be trusted on its own: `ok=False
+        attempts=4` reads identically whether the model wrote bad code or the
+        harness refused good code. The transcript is what separates them, and
+        until now it went to stdout and nowhere a caller could reach.
+
+        Server-sent events, one JSON record per event, in the order the loop
+        produced them. The LAST event is `{"kind": "result", "result": {...}}`
+        carrying exactly the envelope `/code` returns -- so a caller that
+        ignores everything until the stream closes gets the blocking behaviour
+        with no special handling, and one that reads along gets the run.
+
+        Errors are events too, not statuses. The response has already been
+        committed with a 200 by the time the first line is generated, so a dead
+        llama-server three attempts in cannot become a 503 -- it arrives as a
+        result whose `ok` is false and whose `error` says so.
+        """
+        if not str(body.get("spec", "")).strip():
+            self._send(400, {"error": "spec is required"})
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+        def emit(record):
+            self.wfile.write(f"data: {json.dumps(record)}\n\n".encode())
+            self.wfile.flush()
+
+        spec, why = language_for(body.get("lang", "python"),
+                                 body.get("spec", ""))
+        if spec is None:
+            emit({"kind": "result", "result": _answer(error=why)})
+            return
+
+        try:
+            context, hint = ground_in_docs(
+                spec, body["spec"], store=body.get("store"),
+                device=body.get("device", "cuda"),
+                no_docs=bool(body.get("no_docs", False)))
+            res = generate_validated_python(
+                self.server.pc, body["spec"], context=context or "",
+                spec=spec, max_retries=int(body.get("retries", 4)),
+                use_contract=bool(body.get("contract", False)),
+                error_hint=hint, packages=tuple(body.get("with") or ()),
+                verbose=False, on_event=emit)
+            answer = _answer(ok=bool(res["ok"]), code=res["text"],
+                             tests=res.get("tests", ""),
+                             contract=res.get("contract"),
+                             attempts=res.get("attempts"),
+                             error=res.get("error", ""))
+        except RuntimeError as e:
+            answer = _answer(error=str(e))
+        except (BrokenPipeError, ConnectionResetError):
+            # The reader closed the tab mid-run. Nothing left to report to.
+            return
+        emit({"kind": "result", "result": answer})
 
     def _send(self, status, payload):
         blob = json.dumps(payload).encode()
@@ -118,7 +210,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = POST_ROUTES.get(self.path)
-        if route is None:
+        if route is None and self.path not in STREAM_ROUTES:
             self._send(405 if self.path in GET_ROUTES else 404,
                        {"error": f"no POST {self.path}"})
             return
@@ -129,6 +221,9 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("body must be a JSON object")
         except (ValueError, json.JSONDecodeError) as e:
             self._send(400, {"error": f"malformed request: {e}"})
+            return
+        if self.path in STREAM_ROUTES:
+            self._stream_code(body)
             return
         try:
             self._send(*route(self.server.pc, body))
@@ -152,7 +247,8 @@ def serve(pc, host="127.0.0.1", port=8100):
     httpd = make_server(pc, host, port)
     bound = httpd.server_address[1]
     print(f"PureCoder listening on http://{host}:{bound}")
-    print("  POST /code   POST /ask   GET /status")
+    print("  POST /code   POST /code/stream   POST /ask")
+    print("  GET  /status   GET  /grammars")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
