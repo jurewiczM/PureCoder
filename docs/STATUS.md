@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-638 tests, all green, none of them needing a GPU or a running server
+652 tests, all green, none of them needing a GPU or a running server
 623 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
@@ -559,6 +559,31 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   That is the mistake `benchlog.py` makes from the outside, and this is the
   sixth measurement pointing at the tester -- the first that did not need a
   human to read a transcript to find it.
+
+- **The corpus was re-run with attribution, and SQL's 0/10 was the task set.**
+  Sixty runs over six languages on the 30B: 58 passed, 50 of them on the first
+  attempt, median 1 attempt, 16 minutes
+  (`scripts/bench/attribution.py`, 2026-08-16). The pass column is not a
+  capability result -- the set still saturates, five of six at 10/10 -- and the
+  attempts column is the one that moved.
+
+  SQL scored **0/10 on the first pass, all ten "stopped on writer"**, which
+  reads exactly like a model failure and is not one. One transcript settles it:
+  `no such function: sum_list`. Every task in the corpus asks for a function
+  and SQLite has no user-defined functions, so no attempt could have passed.
+  The runner now refuses SQL against this corpus with that reason instead of
+  reporting a score. This is the fourth time a number in this project has
+  turned out to be about the harness or the task set rather than the model, and
+  the first time the ledger made that visible without anyone opening a log.
+
+  The two genuine refusals separate cleanly, and only by role counts. OCaml's
+  `is_palindrome`: writer 4, tester 1, a real type error -- the writer. Python's
+  `count_vowels`: writer 4, **tester 2**, failing
+  `assert count_vowels('bcdfgHIJKL') == 2` against a string containing one
+  vowel -- the expectation was wrong, the no-progress rule suspected the tests
+  and redesigned them, and that redesign is the second tester attempt. Both
+  report `stopped on: writer`. That is the case the ledger exists for and the
+  case `benchlog.py` gets wrong.
 
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to

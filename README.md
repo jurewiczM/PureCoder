@@ -4,17 +4,56 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A constrained, code-only agentic coder that runs on a **6 GB laptop GPU**.
+A constrained, code-only coding agent that runs on a **6 GB laptop GPU**.
 
-PureCoder wraps a small open-weights code model (Qwen2.5-Coder-7B) in a harness
-that makes its output *reliable* rather than merely plausible: grammars force
-valid config files, real tools validate every artifact, generated code is
+PureCoder wraps an open-weights code model (Qwen3-Coder-30B-A3B, or a 7B) in a
+harness that makes its output *reliable* rather than merely plausible: grammars
+force valid config files, real tools validate every artifact, generated code is
 checked by **actually running it** against independently-written tests, and a
 fix loop feeds real errors back until the output works. It scaffolds whole
 small projects and grounds generation in a library's own docs via retrieval.
 
+Three roles do the work — a **contract** deriver, a **code-blind tester**, and
+a **writer** — each with its own prompt, its own attempt budget, and its own
+line in a ledger that records what it spent. The gate that judges them is
+deliberately *not* one of them: it never asks a model anything. Agents propose;
+tools dispose.
+
 The bet: a small model, boxed in from several directions, can produce
 trustworthy code — no frontier API, no cloud, nothing leaving your machine.
+
+## See it work
+
+One command. It starts a model server if one is not already up, generates the
+same task in every language your machine can actually build and run, and prints
+what happened:
+
+```bash
+scripts/demo.sh
+```
+
+```
+LANGUAGE     VERDICT  ATTEMPTS  STOPPED-ON EVIDENCE
+c#           ok       1         -          compiled, ran, checks executed
+c++          ok       1         -          compiled, ran, checks executed
+javascript   ok       1         -          compiled, ran, checks executed
+ocaml        ok       1         -          compiled, ran, checks executed
+python       ok       1         -          compiled, ran, checks executed
+rust         ok       2         -          compiled, ran, checks executed
+sql          refused  4         writer     tester 2/writer 4 — CHECK FAILED
+```
+
+Every `ok` there means the code was compiled where the language needs it, run
+in a sandbox, and proved that a check actually executed. The refusal is the
+pipeline working: there is no tier in which unvalidated code is emitted.
+
+That SQL row is worth a second look, because it is the honest case. The writer
+produced `SELECT COALESCE(SUM(n), 0) AS total FROM totals`, which is correct.
+The tester was what could not be satisfied — the loop suspected as much at
+attempt 4 and redesigned the suite, which is why the ledger reads `tester 2`.
+`stopped on: writer` says where the run ran out, not what was wrong, and the
+table shows both because showing only the first is how you end up fixing
+correct code.
 
 ## How it works
 
@@ -41,6 +80,12 @@ flowchart LR
 The test designer never sees the implementation, so it cannot rubber-stamp a
 bug. The gate judges the tests before they judge the code. The executor is the
 only thing allowed to declare success, and only by running.
+
+Those three boxes are the three roles, and each one's spend is recorded as the
+run happens — so a failed run can say which role it ran out on instead of
+leaving you to infer it from a log. That matters because `ok=False attempts=4`
+reads identically whether the model wrote bad code or the harness refused good
+code, and those are opposite bugs.
 
 ## Why it's interesting
 
@@ -327,10 +372,29 @@ there is no remote.
 would add state, polling and a way to lose a result; if an editor needs it
 non-blocking, that is a wrapper around this rather than a rewrite of it.
 
+## Watching it work
+
+The pipeline over HTTP has a page in front of it. Three sections, each backed
+by an endpoint: **Runs** (a generation's transcript, streamed as it happens,
+with the role that produced each line), **Languages** (the registry as probed
+on this machine, with the reason for every refusal) and **Grammars** (each
+`.gbnf` and its root rule).
+
+```bash
+purecoder serve --port 8100          # one terminal
+cd UI/app && pnpm install && pnpm dev  # another; http://127.0.0.1:5273
+```
+
+The transcript is the page rather than a detail view, and that is the one
+layout decision worth defending: a verdict cannot tell a bad implementation
+from a refused-but-correct one, and the transcript can. See
+[UI/README.md](UI/README.md).
+
 ## Layout
 
 ```
 purecoder/
+  agents.py      the three roles, and the ledger of what each one spent
   client.py      grammar-constrained generation (llama-server /completion)
   contract.py    prose → grammar-constrained spec contract
   languages.py   what we can generate, and what we can prove
@@ -346,8 +410,10 @@ purecoder/
   bench.py       ambiguous specs + hidden oracles: does grounding help?
   cli.py         one entry point over all of it
   grammars/      GBNF: env.gbnf, makefile.gbnf, contract.gbnf
+UI/app/          a local page over the HTTP surface (see UI/README.md)
 examples/        runnable scripts + portcheck/, a real scaffolder output
-tests/           580 tests (no GPU, no server; toolchain ones self-skip)
+scripts/         demo.sh, smoke.sh, and the benchmark corpus
+tests/           651 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -497,9 +563,71 @@ verdict.
   measurably worse — see the table above)
 - Python 3.10+, `requests`, `numpy`; `sentence-transformers` for RAG
 
-## Status
+## Numbers
 
-Core pipeline complete and tested end-to-end. See [docs/STATUS.md](docs/STATUS.md).
+Sixty runs of the ten-task corpus, six languages, Qwen3-Coder-30B-A3B Q3_K_M on
+a 6 GB card, 2026-08-16 (`scripts/bench/attribution.py`):
+
+| language | ran | passed | median attempts | refused | stopped on |
+|---|---|---|---|---|---|
+| c# | 10 | 10 | 1 | 0 | — |
+| c++ | 10 | 10 | 1 | 0 | — |
+| javascript | 10 | 10 | 1 | 0 | — |
+| ocaml | 10 | 9 | 1 | 1 | writer |
+| python | 10 | 9 | 1 | 1 | writer |
+| rust | 10 | 10 | 1 | 0 | — |
+
+**58 of 60 passed, 50 of them on the first attempt, in 16 minutes.**
+
+Now the caveats, which matter more than the table.
+
+**This corpus saturates.** Five of six languages score 10/10, and they did
+before this measurement too. A high pass rate here is evidence that the tasks
+are easy, not that the model is good — the number that still moves is attempts,
+and 50 first-attempt passes is the 30B's actual case over the 7B it replaced.
+
+**SQL is absent, and that is the interesting part.** It scored 0/10 on the
+first run of this, every task "stopped on writer". Reading one transcript
+explains it: `no such function: sum_list`. Every task in the corpus asks for a
+function and SQLite has no user-defined functions, so no attempt could ever
+have passed. That 0/10 is a fact about the task set. The runner now skips SQL
+with that reason rather than reporting a score, because a number nobody reads
+the transcript behind is how this project has misled itself before.
+
+**The two real refusals differ in kind, and the ledger says which.** OCaml's
+`is_palindrome` spent writer 4 / tester 1 on a genuine type error — a writer
+failure. Python's `count_vowels` spent writer 4 / **tester 2**, and the suite
+it failed asserts `count_vowels('bcdfgHIJKL') == 2` against a string with one
+vowel. The expectation was wrong; the loop suspected the tests and redesigned
+them, which is what the second tester attempt is. Both runs report `stopped on:
+writer`. Only the role counts separate them, which is the whole argument for
+recording them.
+
+## What is proven, and what is not
+
+Worth being plain about, because the distinction is the point of the project.
+
+**Proven.** Seven languages compile, run and prove a check executed. 651 tests
+pass without a GPU or a server, and a CI job runs them in a container carrying
+every toolchain with nothing allowed to skip. A refusal is returned as a
+refusal, all the way out to the shell's exit code.
+
+**Measured, and weaker than hoped.** The contract layer's instrument was built
+and run twice and could not see what it exists to see — nine of ten arms ended
+in the loop refusing, and spec-divergence only exists downstream of a passing
+run. Retrieval helps only where the model is ignorant and can actively hurt: a
+doc-grounded `sum_list` once failed four attempts where the ungrounded one
+passed first try.
+
+**Not proven.** That the retrieved documentation on a retry is *useful* — the
+mechanism works, the value is unmeasured. That a learned language is
+idiomatic; the probes check that it runs, not that a practitioner would
+recognise it. And the benchmark corpus saturates, so its pass rate is a fact
+about the tasks rather than the model.
+
+Every live session so far has found defects a fully green suite could not:
+eight, then six, then nine, then six. The full ledger is in
+[docs/STATUS.md](docs/STATUS.md), including the ones still open.
 
 ## License
 
