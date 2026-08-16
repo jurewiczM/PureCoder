@@ -1,0 +1,145 @@
+@import 'tailwindcss';
+
+/* Phosphor.
+ *
+ * Two rules hold this palette together, and both are reactions to what the
+ * mock did.
+ *
+ * Colour is reserved for verdicts. The chrome greens are desaturated far
+ * enough to read as slate with a cast, so the only saturated green on the
+ * page is the one that means a run passed. The mock spent its accent on the
+ * brand, the borders, the headings AND the failure badge, which left nothing
+ * to signal with -- a refused run looked like every other element on screen.
+ *
+ * Every verdict also carries a shape, not just a hue: filled, half, hollow.
+ * A tool whose entire output is pass or fail cannot encode that in red versus
+ * green alone and still be readable to the eight percent of men who cannot
+ * reliably separate them.
+ *
+ * No webfont. A loopback tool should render with the network off, and the
+ * system mono stack costs nothing, needs no vendored binary, and picks up
+ * JetBrains Mono when it happens to be installed. The wordmark is the same
+ * face, letterspaced -- a pixel display font at 8px was a costume that cost
+ * legibility everywhere it appeared.
+ */
+@theme {
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+  --color-base: #0a0f0d;
+  --color-surface: #0f1712;
+  --color-raised: #12201a;
+  --color-line: #17231c;
+  --color-line-soft: #101a14;
+
+  --color-ink: #dfe7e0;
+  --color-muted: #8fa593;
+  --color-faint: #4d6152;
+
+  --color-pass: #7fb069;
+  --color-retry: #c9a227;
+  --color-fail: #c05746;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-mono);
+  background: var(--color-base);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-faint);
+}
+
+/* Form controls default to the platform's light chrome, which on this page
+ * reads as a hole punched through it -- a white checkbox was the single most
+ * out-of-place thing on screen. Restyled rather than merely recoloured: the
+ * checkbox draws its own mark so the checked state does not depend on an
+ * accent colour the browser picks. */
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-faint) 50%),
+    linear-gradient(135deg, var(--color-faint) 50%, transparent 50%);
+  background-position:
+    right 0.75rem center,
+    right 0.45rem center;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  padding-right: 1.6rem;
+}
+
+input[type='checkbox'] {
+  appearance: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 1px solid var(--color-line);
+  border-radius: 2px;
+  background: var(--color-base);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+input[type='checkbox']:hover:not(:disabled) {
+  border-color: var(--color-faint);
+}
+input[type='checkbox']:checked {
+  border-color: var(--color-pass);
+}
+input[type='checkbox']:checked::after {
+  content: '';
+  width: 0.3rem;
+  height: 0.55rem;
+  border: solid var(--color-pass);
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+input[type='checkbox']:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The one moving thing on the page, and it moves only while a run is in
+ * flight. The mock pulsed dots next to idle agents, which is decoration
+ * pretending to be status. */
+@keyframes working {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.is-working {
+  animation: working 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-working {
+    animation: none;
+  }
+}
