@@ -289,6 +289,22 @@ register(LanguageSpec(
         "PC_CHECK(JSON.stringify(a) === JSON.stringify(b), 'label'). Assume the "
         "thing under test is already defined in the same file."
     ),
+    # The sentence above already asks for this, and asking did not work.
+    #
+    # Measured 2026-08-09: `unique` failed all four attempts on a correct
+    # implementation because every check read `unique([]) === []`, and `[] ===
+    # []` is false in JavaScript for any input. The suite could not pass. The
+    # loop noticed -- "suspecting the tests, redesigning them" -- and the
+    # redesign wrote it again.
+    #
+    # One possible intent, which is what licenses a repair rather than a lint:
+    # the right-hand side is a freshly written array LITERAL, so it can never
+    # be the same reference, so reference equality is never what was meant.
+    # Anchored on that literal, so `=== 3` and `typeof x === 'string'` -- both
+    # correct as written -- are untouched, and a suite that already obeyed the
+    # prompt has no `=== [` to match and survives unchanged.
+    test_fix=((r"(?m)PC_CHECK\(\s*(.+?)\s*===\s*(\[.*?\])\s*,\s*(['\"])",
+               r"PC_CHECK(JSON.stringify(\1) === JSON.stringify(\2), \3"),),
     project=ProjectSpec(
         entry="main.js",
         install="npm install",
@@ -386,6 +402,22 @@ register(LanguageSpec(
         "\"label\"), which is already defined: e.g. PC_CHECK(Add(1, 2) == 3, "
         "\"add\");."
     ),
+    # The same defect as JavaScript's, in a language that gives no warning:
+    # `==` on List<int> is reference equality, and measured 2026-08-09 both
+    # `Unique` and `InsertionSort` failed all four attempts on correct
+    # implementations because every check compared a result against a freshly
+    # constructed list. Unlike JavaScript, the prompt above never asked for
+    # anything else -- there was nothing to ignore.
+    #
+    # One possible intent: the right-hand side is constructed inline, so it is
+    # a new reference by definition and `==` is false whatever the code does.
+    # The call is fully qualified because SequenceEqual as an extension method
+    # needs `using System.Linq`, which writer_system forbids -- the preamble
+    # writes System.Console for exactly that reason.
+    test_fix=((r"(?m)PC_CHECK\(\s*(.+?)\s*==\s*"
+               r"(new\s+List<[^>]*>\s*(?:\{[^}]*\}|\(\))|new\[\]\s*\{[^}]*\})"
+               r"\s*,\s*\"",
+               r'PC_CHECK(System.Linq.Enumerable.SequenceEqual(\1, \2), "'),),
     writer_system=(
         "You output only C# code as top-level statements and local functions "
         "-- no class wrapper, no Main method, no using directives"
