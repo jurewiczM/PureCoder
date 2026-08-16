@@ -32,7 +32,7 @@ export function Roles({ ledger }: { ledger: Ledger | undefined }) {
               {r.name}
             </span>
             <span className="w-24 shrink-0 text-faint">
-              {r.attempts} of {r.budget}
+              {r.attempts} of {r.cap}
             </span>
             <span className="min-w-0 flex-1 truncate text-faint" title={r.reason}>
               {r.reason}

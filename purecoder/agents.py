@@ -38,26 +38,25 @@ from dataclasses import dataclass, field
 class Agent:
     """A named role backed by a model call.
 
-    `budget` is how many attempts the role may spend in one run. It is declared
-    here and currently NOT enforced separately -- every role still runs on the
-    caller's `max_retries`, exactly as before. The field exists because the
-    budgets are genuinely per-role and someone will want to tune them; changing
-    the numbers changes measured behaviour, and this project re-runs its
-    controls when it does that. Declaring the seam and leaving it unused is
-    honest; quietly changing three retry counts inside a refactor is not.
+    Deliberately no per-role budget field. An earlier version declared one and
+    did not enforce it -- every role still ran on the caller's `max_retries` --
+    and the ledger then rendered "tester 2 of 3" while the real cap was 4. A
+    denominator the numerator can exceed is not a bound; it is decoration that
+    reads like a guarantee, which is the one thing this project must not ship.
+    The cap a run actually had is recorded by the Ledger, which knows it.
+
+    Per-role budgets would be a real feature. They need enforcement and a
+    re-run of the controls, because changing three retry counts changes
+    measured behaviour.
     """
 
     name: str
     role: str
-    budget: int
 
 
-CONTRACT = Agent(
-    "contract", "turns prose into a contract both other roles read", 3)
-TESTER = Agent(
-    "tester", "writes the suite from the spec, never seeing the code", 3)
-WRITER = Agent(
-    "writer", "writes the implementation, and only that", 4)
+CONTRACT = Agent("contract", "turns prose into a contract both other roles read")
+TESTER = Agent("tester", "writes the suite from the spec, never seeing the code")
+WRITER = Agent("writer", "writes the implementation, and only that")
 
 #: Order matters here: it is the order a run consults them, and the order the
 #: UI lists them in.
@@ -83,6 +82,9 @@ class Ledger:
     """
 
     entries: dict = field(default_factory=dict)
+    #: The attempt cap this run actually had -- the caller's `max_retries`.
+    #: Reported as the denominator so that "3 of 4" means what it looks like.
+    cap: int = 0
     #: The last role to fail, which is not always the role at fault -- see
     #: `blame`.
     _last_failed: str = ""
@@ -121,7 +123,7 @@ class Ledger:
                 {
                     "name": a.name,
                     "role": a.role,
-                    "budget": a.budget,
+                    "cap": self.cap,
                     "attempts": self.entries.get(a.name, Entry()).attempts,
                     "accepted": self.entries.get(a.name, Entry()).accepted,
                     "reason": self.entries.get(a.name, Entry()).reason,

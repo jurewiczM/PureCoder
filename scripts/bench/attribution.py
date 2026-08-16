@@ -106,6 +106,14 @@ def main() -> int:
         if not ok:
             print(f"{lang}: skipped -- {why}")
             continue
+        if lang == "ocaml":
+            # batch.sh REFUSES this: OCaml is the ignorant case retrieval
+            # exists for, so an ungrounded column cannot be distinguished from
+            # a regression. That guard was written for the 7B. This runner
+            # produces the column and says so rather than silently disagreeing
+            # with the other tool -- the two have not been reconciled.
+            print("ocaml: ungrounded -- batch.sh refuses this measurement; "
+                  "not comparable to grounded OCaml numbers")
         if lang in CANNOT_TAKE_FUNCTION_TASKS:
             print(f"{lang}: skipped -- {CANNOT_TAKE_FUNCTION_TASKS[lang]}")
             continue

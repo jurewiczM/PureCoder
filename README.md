@@ -14,8 +14,8 @@ fix loop feeds real errors back until the output works. It scaffolds whole
 small projects and grounds generation in a library's own docs via retrieval.
 
 Three roles do the work — a **contract** deriver, a **code-blind tester**, and
-a **writer** — each with its own prompt, its own attempt budget, and its own
-line in a ledger that records what it spent. The gate that judges them is
+a **writer** — each with its own prompt and its own line in a ledger that
+records how many attempts it spent against the cap the run actually had. The gate that judges them is
 deliberately *not* one of them: it never asks a model anything. Agents propose;
 tools dispose.
 
@@ -593,6 +593,14 @@ function and SQLite has no user-defined functions, so no attempt could ever
 have passed. That 0/10 is a fact about the task set. The runner now skips SQL
 with that reason rather than reporting a score, because a number nobody reads
 the transcript behind is how this project has misled itself before.
+
+**OCaml's column here is ungrounded, and `batch.sh` refuses to produce that.**
+The older runner exits rather than measure OCaml without its docs index, on the
+grounds that OCaml is the ignorant case retrieval exists for and an ungrounded
+column cannot be told apart from a regression. That guard predates the 30B, and
+this run scored 9/10 ungrounded — so either the guard is now stale or this
+column is not comparable to the grounded numbers elsewhere. Two tools currently
+disagree about the same measurement and that is not resolved.
 
 **The two real refusals differ in kind, and the ledger says which.** OCaml's
 `is_palindrome` spent writer 4 / tester 1 on a genuine type error — a writer

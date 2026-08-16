@@ -930,8 +930,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # exception out of the middle of a half-written project.
     say = reporter(verbose, on_event)
     # Written as the run happens. Which role was being asked is a fact
-    # here and a guess anywhere downstream.
-    ledger = Ledger()
+    # here and a guess anywhere downstream. The cap comes from this run rather
+    # than from a declared constant, so the denominator it reports is the bound
+    # that was actually in force.
+    ledger = Ledger(cap=max_retries)
 
     ok, why = spec.available()
     if not ok:

@@ -24,7 +24,8 @@ export interface Role {
   name: string
   /** One line on what the role is for; comes from the server, not from here. */
   role: string
-  budget: number
+  /** The attempt cap this run actually had, not a declared constant. */
+  cap: number
   attempts: number
   accepted: boolean
   reason: string

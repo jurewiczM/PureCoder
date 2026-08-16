@@ -22,7 +22,18 @@ def test_the_roster_is_only_the_model_backed_roles():
     """
     assert [a.name for a in ROSTER] == ["contract", "tester", "writer"]
     for a in ROSTER:
-        assert a.role and a.budget > 0
+        assert a.role
+
+
+def test_the_reported_cap_is_the_run_s_own_bound():
+    """A denominator the numerator can exceed is not a bound. An earlier
+    version declared a per-role budget of 3, never enforced it, and rendered
+    "tester 2 of 3" on runs whose real cap was 4."""
+    ledger = Ledger(cap=4)
+    for _ in range(4):
+        ledger.spend(WRITER, False, "nope")
+    row = ledger.summary()["roles"][0]
+    assert row["attempts"] == 4 and row["cap"] == 4
 
 
 def test_a_clean_run_blames_nobody():
