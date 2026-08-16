@@ -41,6 +41,7 @@ _Snapshot of what's built, tested, and what's next._
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
+| 12 | toolchain image + `account()` | ✅ tested, ✅ run | one image, 7 toolchains; CI runs the suite in it with nothing allowed to skip — 565 passed / 0 skipped, against 549 / 10 on a bare runner |
 
 | 12 | ten-task cross-language benchmark | ✅ built, ✅ run | 60 tasks over 6 languages, 2026-08-09; four of seven failures were the harness, not the model |
 | 12 | `benchlog.py` failure attribution | ✅ tested, ⚠️ wrong | 14 cases; misattributed 4 of 7 real failures to `writer` on its first live run |
@@ -455,6 +456,22 @@ _Snapshot of what's built, tested, and what's next._
   every attempt once truncation was detectable again. Bounded to 20 lines. The
   same fix as the rambling comment, for the same reason: the prompt asking for
   brevity was ignored three times in a row.
+- **A skip is now a claim, and CI has a job where none is allowed.** "A green
+  run on a machine without `ocamlc` proves less than it looks" was written in
+  CLAUDE.md for weeks and enforced by nothing. `account()` puts every
+  registered language in exactly one state -- runnable, unimplemented,
+  unvalidatable, or missing-toolchain **with the binary named** -- deriving
+  that name from the language's own `probe`/`build`/`run` argv, so it cannot
+  drift from the command that would actually fail. A `toolchains` CI job runs
+  the whole suite inside an image carrying all seven, with
+  `PURECODER_REQUIRE_ALL_LANGUAGES=1` turning the skip report into an
+  assertion: **565 passed, 0 skipped**, against 549 passed and 10 skipped on a
+  bare runner. The ad-hoc gate it replaces listed g++, node, rustc and ocamlc
+  and *not* dotnet -- so C# was the one language it could not have caught
+  leaving, which is the hole it existed to close. What this deliberately does
+  NOT do is make the container mandatory: outside that job a skip is reported,
+  not fatal, because a machine without Docker has to keep working. The image is
+  execution-only; generation still needs the GPU and stays on the host.
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call

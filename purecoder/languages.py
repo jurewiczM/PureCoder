@@ -176,6 +176,67 @@ def names() -> list:
     return sorted(REGISTRY)
 
 
+def binaries(spec: LanguageSpec) -> list:
+    """The executables this language actually invokes. -> names, in order.
+
+    Read off `probe`, `build` and `run` rather than written down a second time.
+    A hand-maintained list would drift from the argv, and the copy that drifts
+    is the one that says a language is fine when its compiler is gone.
+    `{bin}` and `{python}` are substitution placeholders, not programs.
+    """
+    found = []
+    for field in (spec.probe, spec.build, spec.run):
+        if not field:
+            continue
+        head = field[0]
+        if head.startswith("{") or head in found:
+            continue
+        found.append(head)
+    return found
+
+
+def account():
+    """Every registered language and why it is or is not usable here.
+
+    -> [(name, state, detail)], one row per entry, in registry order.
+
+    Four states, and exactly one holds for any language:
+
+      runnable           its execution tests will run
+      unimplemented      declared, but no runner or test idiom exists yet
+      unvalidatable      refused permanently, with the reason in the entry
+      missing-toolchain  runnable in principle; a binary is absent HERE
+
+    The last one is the state that used to be silence. A suite goes green
+    whether a toolchain is present or gone, so a skip has to name itself or the
+    green means less than it looks -- CLAUDE.md has said so for weeks and
+    nothing enforced it.
+    """
+    rows = []
+    for name in names():
+        spec = get(name)
+        # `available()` is the authority on runnable-or-not, not a second copy
+        # of its conditions. It also RUNS the probe where this only looked for
+        # the file, so re-deriving the verdict here meant a binary that exists
+        # and does not work read as runnable to the one caller CI trusts.
+        ok, why = spec.available()
+        if ok:
+            rows.append((name, "runnable", ""))
+        elif spec.unvalidatable:
+            rows.append((name, "unvalidatable", spec.unvalidatable))
+        elif not spec.run or not spec.test_system:
+            rows.append((name, "unimplemented", why))
+        else:
+            # Which binary, from the language's own argv. `available()` names
+            # only the probe; a language whose build or run command needs
+            # something else would be reported without it.
+            missing = [b for b in binaries(spec) if shutil.which(b) is None]
+            rows.append((name, "missing-toolchain",
+                         f"{', '.join(repr(b) for b in missing)} not installed"
+                         if missing else why))
+    return rows
+
+
 def get(name: str) -> LanguageSpec:
     """Resolve a --lang value. Raises KeyError listing the alternatives."""
     key = (name or "").strip().lower()

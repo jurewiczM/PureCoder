@@ -457,3 +457,91 @@ def test_the_ocaml_gate_rejects_a_comparison_against_a_raise():
     ok, err = lint_tests(bad, spec=L.get("ocaml"))
     assert not ok
     assert "raise" in err
+
+
+# ---- accounting for every registered language --------------------------------
+#
+# A skip used to be silence: a toolchain absent, tests self-skipped, the suite
+# green, and the green meaning less than it looked. CI may skip a language it
+# cannot run; it may not do so without saying which and why.
+
+def test_every_registered_language_falls_into_exactly_one_state():
+    from purecoder.languages import account, names
+
+    states = {name: state for name, state, _ in account()}
+    assert set(states) == set(names())
+    assert set(states.values()) <= {"runnable", "unimplemented",
+                                    "unvalidatable", "missing-toolchain"}
+
+
+def test_a_declared_but_unimplemented_language_says_so():
+    from purecoder.languages import account
+
+    states = {name: state for name, state, _ in account()}
+    for name in ("go", "java", "swift"):
+        assert states[name] == "unimplemented"
+
+
+def test_a_permanently_unvalidatable_language_is_its_own_state():
+    """Power Query has no local interpreter at any effort level. That is not a
+    missing toolchain someone could install, and conflating the two would
+    invite a CI job to try."""
+    from purecoder.languages import account
+
+    states = {name: state for name, state, _ in account()}
+    assert states["powerquery"] == "unvalidatable"
+
+
+def test_a_missing_toolchain_names_the_binary_it_wants(monkeypatch):
+    """`skipped c#: 'dotnet' not installed` -- a reviewer can tell "we chose
+    not to install rustc" from "rustc silently vanished"."""
+    import shutil
+
+    from purecoder.languages import account
+
+    monkeypatch.setattr(shutil, "which",
+                        lambda b: None if b == "g++" else "/usr/bin/" + b)
+    entry = {name: (state, detail) for name, state, detail in account()}
+    state, detail = entry["c++"]
+    assert state == "missing-toolchain"
+    assert "g++" in detail
+
+
+def test_the_binary_comes_from_the_spec_not_a_second_list():
+    """Derived from the argv the language actually runs, so it cannot drift
+    from the command that would fail."""
+    from purecoder.languages import binaries, get
+
+    assert binaries(get("c++")) == ["g++"]
+    assert binaries(get("javascript")) == ["node"]
+    assert "{bin}" not in " ".join(binaries(get("rust")))
+    assert "{python}" not in " ".join(binaries(get("python")))
+
+
+def test_the_skips_are_reported_and_in_the_image_there_are_none(capsys):
+    """The check CI leans on, and it does two different jobs.
+
+    Everywhere: print what is skipped and why, so a reviewer can tell "we chose
+    not to install rustc" from "rustc silently vanished". It does NOT fail on a
+    skip -- that would make the container mandatory, and a machine without
+    Docker has to keep working.
+
+    Inside the toolchain image, `PURECODER_REQUIRE_ALL_LANGUAGES=1` turns the
+    same report into an assertion. That is the image's whole claim: if a
+    language it promises to run is missing, the build published something
+    broken and this is where it surfaces.
+    """
+    import os
+
+    from purecoder.languages import account
+
+    rows = account()
+    skipped = [(n, d) for n, s, d in rows if s == "missing-toolchain"]
+    with capsys.disabled():
+        for name, detail in skipped:
+            print(f"  skipped {name}: {detail}")
+
+    if os.environ.get("PURECODER_REQUIRE_ALL_LANGUAGES") == "1":
+        assert not skipped, (
+            "this image promises every runnable language and is missing "
+            + ", ".join(f"{n} ({d})" for n, d in skipped))
