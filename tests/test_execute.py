@@ -4,6 +4,8 @@ import re
 import time
 
 from purecoder.execute import (
+    _DIAGNOSTIC,
+    _failure,
     _trim,
     available_packages,
     defined_names,
@@ -780,80 +782,71 @@ def test_the_expected_exception_idiom_still_counts_as_red():
     assert red, reason
 
 
-# ---- container comparison in JavaScript and C# -------------------------------
+# ---- the diagnostics the fix loop is actually shown ---------------------------
 #
-# Measured on 2026-08-09, not imagined. The ten-task benchmark scored
-# javascript 9/10 and c# 8/10, and every one of those three failures was a
-# CORRECT implementation judged by a suite that could not pass: `unique([]) ===
-# []` is false in JavaScript for any input, and `Unique(x) == new List<int>()`
-# is reference equality in C#. The loop noticed ("suspecting the tests,
-# redesigning them") and the redesign made the same mistake.
+# Measured 2026-08-09. `dotnet run` writes `bad.cs(1,1): error CS0106: ...` to
+# STDOUT and a content-free "compilation failed" to STDERR. run_candidate
+# returned `stderr or stdout`, so the writer was asked to fix an error it was
+# never shown, and one live task burned four attempts doing exactly that.
+
+def test_a_diagnostic_on_stdout_is_not_discarded_by_a_summary_on_stderr():
+    """The C# case, and the reason this changed at all."""
+    out = _failure(1, stdout="bad.cs(1,1): error CS0106: modifier is invalid",
+                   stderr="Compilation failed. Fix the build errors.")
+    assert "CS0106" in out
+    assert "Compilation failed" in out
 
 
-def test_javascript_comparing_a_result_to_an_array_literal_is_repaired():
-    """`a === [1, 2]` compares references and is false for every possible
-    implementation, so the check can only have meant value equality."""
-    bad = "PC_CHECK(unique([1, 1, 2]) === [1, 2], 'duplicates');\n"
-    assert repair_tests(get("javascript"), bad) == (
-        "PC_CHECK(JSON.stringify(unique([1, 1, 2])) === "
-        "JSON.stringify([1, 2]), 'duplicates');\n")
+def test_a_python_traceback_still_leads():
+    """stderr first, so the traceback keeps the position it had. Appending
+    stdout must not bury it."""
+    out = _failure(1, stdout="some printed output",
+                   stderr="Traceback (most recent call last):\nAssertionError")
+    assert out.index("Traceback") < out.index("some printed output")
 
 
-def test_javascript_repairs_the_empty_array_case_that_failed_live():
-    bad = "PC_CHECK(unique([]) === [], 'empty list');\n"
-    assert repair_tests(get("javascript"), bad) == (
-        "PC_CHECK(JSON.stringify(unique([])) === JSON.stringify([]), "
-        "'empty list');\n")
+def test_stdout_alone_is_still_used():
+    out = _failure(1, stdout="only here", stderr="")
+    assert out == "only here"
 
 
-def test_javascript_leaves_a_scalar_comparison_alone():
-    """`=== 3` is exactly right and must not be wrapped. The repair is allowed
-    only where the comparison cannot have meant what it says."""
-    ok = "PC_CHECK(sumList([1, 2]) === 3, 'sums');\n"
-    assert repair_tests(get("javascript"), ok) == ok
+def test_nothing_on_either_stream_names_the_exit_code():
+    assert _failure(3, stdout="", stderr="") == "exited 3"
 
 
-def test_javascript_leaves_a_typeof_guard_alone():
-    """A string literal on the right is not an array literal, and `typeof x
-    === 'string'` is the idiom working as intended."""
-    ok = "PC_CHECK(typeof revString('ab') === 'string', 'returns a string');\n"
-    assert repair_tests(get("javascript"), ok) == ok
+def test_each_stream_is_trimmed_separately_so_neither_evicts_the_other():
+    """Merging first and trimming after would let a chatty stdout push a
+    traceback out of the window entirely."""
+    out = _failure(1, stdout="\n".join(f"line {i}" for i in range(40)),
+                   stderr="Traceback (most recent call last):\nValueError: x")
+    assert "ValueError" in out
+    assert len(out.splitlines()) <= 26
 
 
-def test_javascript_does_not_touch_a_suite_already_written_correctly():
-    """The prompt already asks for this form. A suite that obeyed must survive
-    the repair untouched, or the repair is not idempotent."""
-    ok = ("PC_CHECK(JSON.stringify(unique([1, 1])) === JSON.stringify([1]), "
-          "'dupes');\n")
-    assert repair_tests(get("javascript"), ok) == ok
+def test_the_msbuild_diagnostic_format_is_recognised():
+    """`path(line,col): error CSxxxx:` -- parentheses, not colons, so the
+    pattern written for gcc did not match it and _trim fell back to tailing,
+    which is the wrong end of a compiler's output."""
+    assert _DIAGNOSTIC.search("bad.cs(1,1): error CS0106: modifier is invalid")
 
 
-def test_csharp_comparing_a_result_to_a_new_list_is_repaired():
-    """`==` on List<int> is reference equality, and the right-hand side is a
-    freshly constructed list, so it can never be the same reference."""
-    bad = 'PC_CHECK(Unique(x) == new List<int> { 1, 2 }, "dupes");\n'
-    assert repair_tests(get("c#"), bad) == (
-        'PC_CHECK(System.Linq.Enumerable.SequenceEqual(Unique(x), '
-        'new List<int> { 1, 2 }), "dupes");\n')
+def test_the_ocaml_location_line_is_recognised():
+    """OCaml puts the location on one line and `Error:` on the next. Only the
+    second matched, so a trimmed OCaml failure could name the error without
+    saying where it was."""
+    assert _DIAGNOSTIC.search('File "candidate.ml", line 14, characters 6-12:')
 
 
-def test_csharp_repairs_the_empty_list_case_that_failed_live():
-    bad = 'PC_CHECK(Unique(new List<int>()) == new List<int>(), "empty list");\n'
-    assert repair_tests(get("c#"), bad) == (
-        'PC_CHECK(System.Linq.Enumerable.SequenceEqual(Unique(new List<int>()), '
-        'new List<int>()), "empty list");\n')
+def test_a_plain_line_is_not_mistaken_for_a_diagnostic():
+    for line in ("just some output", "the value was 3", "warnings are off"):
+        assert not _DIAGNOSTIC.search(line)
 
 
-def test_csharp_uses_a_qualified_call_because_using_directives_are_forbidden():
-    """`SequenceEqual` as an extension method needs `using System.Linq`, and
-    this harness's writer_system forbids using directives -- the preamble
-    writes `System.Console` for the same reason."""
-    bad = 'PC_CHECK(Sort(x) == new List<int> { 1 }, "one");\n'
-    out = repair_tests(get("c#"), bad)
-    assert "System.Linq.Enumerable.SequenceEqual" in out
-    assert "using" not in out
+def test_a_python_traceback_frame_is_not_an_ocaml_location():
+    """Both spell it `File "x", line N`. OCaml's carries `characters N-M` and
+    Python's carries `, in <name>` -- and matching Python's turns a traceback
+    into thirty diagnostics, so `_trim` keeps the first frames and drops the
+    exception. Caught by the existing trim test, which is why it is here."""
+    assert not _DIAGNOSTIC.search('File "x.py", line 3, in f')
+    assert _DIAGNOSTIC.search('File "candidate.ml", line 14, characters 6-12:')
 
-
-def test_csharp_leaves_a_scalar_comparison_alone():
-    ok = 'PC_CHECK(Add(1, 2) == 3, "add");\n'
-    assert repair_tests(get("c#"), ok) == ok

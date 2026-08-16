@@ -161,13 +161,15 @@ def run_candidate(spec, code: str, tests: str, timeout: int = 10,
         fill = lambda argv: [a.format(**subs) for a in argv]  # noqa: E731
 
         if spec.build:
-            rc, _, berr = _spawn(fill(spec.build), d, timeout)
+            rc, bout, berr = _spawn(fill(spec.build), d, timeout)
             if rc is None:
                 return False, f"compilation timed out after {timeout}s"
             if rc != 0:
                 # A compile error is an ordinary fix-loop failure, not an
-                # abort: it is exactly the feedback the writer needs.
-                return False, _trim(berr.strip() or f"compiler exited {rc}")
+                # abort: it is exactly the feedback the writer needs. Both
+                # streams, because which one a toolchain uses is its own
+                # business -- this path discarded stdout outright.
+                return False, _failure(rc, bout, berr, verb="compiler exited")
 
         rc, stdout, stderr = _spawn(fill(spec.run), d, timeout)
 
@@ -178,14 +180,41 @@ def run_candidate(spec, code: str, tests: str, timeout: int = 10,
     if rc == 0:
         return True, ""
     # non-zero exit: an assert failed or an exception was raised.
-    # Prefer stderr (the traceback); trim to the last few lines so the
-    # feedback prompt stays small on a tight context budget.
-    return False, _trim(stderr.strip() or stdout.strip() or f"exited {rc}")
+    return False, _failure(rc, stdout, stderr)
 
 
-# a compiler diagnostic line: "path:12:34: error: ..." / "warning:" / "note:"
+# A compiler diagnostic line. Three shapes, because three of the languages here
+# disagree about how to write one:
+#   gcc/rustc   path:12:34: error: ...      and   error[E0425]: ...
+#   MSBuild/C#  path(12,34): error CS0106: ...    -- parentheses, not colons
+#   OCaml       File "candidate.ml", line 14, characters 6-12:
+# The last two were misses, so `_trim` fell back to tailing their output --
+# which is the wrong end of a compiler's message, and the exact failure the
+# tail-vs-head rule below exists to avoid.
 _DIAGNOSTIC = re.compile(r"^\S*[^:]:\d+[:\d]*:\s*(error|warning|note)\b|"
-                         r"^(error|warning)(\[[^\]]+\])?:", re.IGNORECASE)
+                         r"^(error|warning)(\[[^\]]+\])?:|"
+                         r"^\S+\(\d+,\d+\):\s*(error|warning)\b|"
+                         r'^File ".*", line \d+, characters \d+', re.IGNORECASE)
+
+
+def _failure(rc: int, stdout: str = "", stderr: str = "",
+             verb: str = "exited") -> str:
+    """What the fix loop is told about a failed run. -> one bounded string.
+
+    Both streams, stderr first. This returned `stderr or stdout`, and the `or`
+    threw away half the evidence whenever stderr said anything at all: measured
+    2026-08-09, `dotnet run` writes `bad.cs(1,1): error CS0106: ...` to STDOUT
+    and a content-free "compilation failed" to STDERR, so every C# compile
+    error reached the writer as "compilation failed" with no file, line, code
+    or message. One live task spent four attempts being asked to fix an error
+    it was never shown.
+
+    Each stream is trimmed SEPARATELY and then joined. Trimming the join would
+    let a chatty stdout push a Python traceback out of the window entirely,
+    which is the regression the obvious version of this fix introduces.
+    """
+    parts = [_trim(s.strip()) for s in (stderr, stdout) if s and s.strip()]
+    return "\n".join(parts) or f"{verb} {rc}"
 
 
 def _trim(err: str) -> str:
