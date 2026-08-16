@@ -543,6 +543,23 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   NOT do is make the container mandatory: outside that job a skip is reported,
   not fatal, because a machine without Docker has to keep working. The image is
   execution-only; generation still needs the GPU and stays on the host.
+- **The first demo run produced the case the ledger was built for.**
+  `scripts/demo.sh` generates one function per runnable language; six of seven
+  passed and SQL refused after four attempts, reporting `stopped on: writer`.
+  The writer's output was `SELECT COALESCE(SUM(n), 0) AS total FROM totals` --
+  correct, and exactly what the spec asked for. The tester's checks were what
+  could not be satisfied, and the loop had already suspected them: its
+  no-progress rule fired at attempt 4 and redesigned the suite, which the
+  ledger records as `tester 2/writer 4`.
+
+  Two things follow. The attribution is doing its job -- the sequence is
+  visible where previously only `ok=False attempts=4` was. And the *stop* on
+  its own is misleading, which is why the CLI prints every role rather than
+  the last one; a reader who saw only "writer" would go and fix correct code.
+  That is the mistake `benchlog.py` makes from the outside, and this is the
+  sixth measurement pointing at the tester -- the first that did not need a
+  human to read a transcript to find it.
+
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call
