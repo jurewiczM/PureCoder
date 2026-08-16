@@ -4,7 +4,8 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-624 tests, all green, none of them needing a GPU or a running server
+638 tests, all green, none of them needing a GPU or a running server
+623 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 `scripts/smoke.sh` is the live counterpart: six checks — both config
@@ -345,6 +346,48 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   offered to it -- an OCaml docs directory of `.ml` samples was skipped whole.
   The pattern is now derived from the chunker's own extension table, which is
   the third time this session that a working feature was reachable by nothing.
+- **The repaired gate never ran.** `search` was recalibrated to 0.8 after the
+  lexical denominator was fixed, and the entry point the pipeline actually
+  calls -- `retrieve_context` -- kept the `min_score=0.3` it had inherited from
+  when the score was cosine alone, and passed it straight through. Since that
+  is the only retrieval `code`, `ask` and `project` perform, every doc-grounded
+  run in this project has been gated at 0.3 against a corpus whose junk band
+  was measured at 0.50-0.70. Live on the 3017-chunk OCaml index: "best pizza
+  toppings" retrieved three chunks and injected 1311 characters of tutorial
+  into the writer's prompt; "how do I renew my passport", 1350. All three junk
+  queries now retrieve nothing. Two numbers for one decision is how it
+  happened, so retrieval no longer accepts a threshold argument at all and a
+  test asserts that it cannot grow one back. Worth sitting with: the gate was
+  measured, repaired, documented and celebrated, and the number that shipped
+  was the old one two function calls away.
+
+  Re-measured on that index across fifteen queries: ten real OCaml questions
+  score 1.043-1.400 and all retrieve; five unrelated ones score 0.498-0.736 and
+  none do. Those are the same bands the 0.8 threshold was originally calibrated
+  against, which is the evidence that the number was right all along and only
+  the wiring was wrong.
+
+  **It changes `ask`, and that is a real consequence rather than a footnote.**
+  An index that loads but answers nothing used to be unreachable -- at 0.3
+  essentially every query cleared -- and now happens. `code` degrades to an
+  ungrounded run in that case, because its harness proves the output either
+  way. `ask` refuses instead: the index is not an improvement there, it is the
+  command, and answering from the model alone is the one thing the caller did
+  not ask for.
+- **Retrieval runs twice now, and the second query is the error.** The first
+  pass is keyed on the spec, which is what the USER wanted; a retry is keyed on
+  what the TOOLCHAIN objected to, which is usually the better query -- `Unbound
+  value String.rev` names the gap exactly, where prose only describes the goal.
+  It is bounded at half the first pass's budget and excludes whatever the first
+  pass already injected, because the retry prompt already carries the previous
+  attempt, the tests, the error and the quoted source, and finding 4 is that
+  too much context degenerates rather than coheres. Same rules as the
+  did-you-mean hint it sits beside: consulted only after a failure, and its
+  text reaches the prompt and never `error`, so it cannot disturb the
+  no-progress signal. What is NOT yet shown is that the retrieved text helps:
+  on the one error tried by hand it returned a "your first OCaml program"
+  chunk, which is on topic and not obviously useful. The mechanism is proven,
+  the value is not.
 - **RAG only helps where the model is ignorant, and it can actively hurt.**
   Measured: `sum_list` in OCaml passed on the first attempt ungrounded and
   failed four attempts with the docs index attached -- the retrieved tutorial

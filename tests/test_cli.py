@@ -198,7 +198,7 @@ def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys
     no second ingest and no --store."""
     from purecoder.cli import ground_in_docs
 
-    context, hint = ground_in_docs(learned, "alpha", device="cpu")
+    context, hint, _ = ground_in_docs(learned, "alpha", device="cpu")
     assert "Relevant documentation:" in context
     assert "Zig.print" in context
     assert "using the ziglike docs from `learn`" in capsys.readouterr().out
@@ -212,7 +212,7 @@ def test_the_docs_answer_did_you_mean_for_that_language(learned):
     the fix loop, so a name the toolchain rejects gets the real one back."""
     from purecoder.cli import ground_in_docs
 
-    _, hint = ground_in_docs(learned, "alpha", device="cpu")
+    _, hint, _ = ground_in_docs(learned, "alpha", device="cpu")
     assert "Zig.print" in hint("error: cannot find `Zig.prnt` in this scope")
 
 
@@ -225,7 +225,7 @@ def test_an_explicit_store_grounds_any_language(learned, store):
     from purecoder.languages import get
 
     named = str(docs_index_path("ziglike"))     # any index, reached by path
-    context, hint = ground_in_docs(get("python"), "alpha", store=named,
+    context, hint, _ = ground_in_docs(get("python"), "alpha", store=named,
                                    device="cpu")
     assert "Zig.print" in context and hint is not None
 
@@ -267,7 +267,7 @@ def test_a_hand_written_language_is_left_alone():
     from purecoder.cli import ground_in_docs
     from purecoder.languages import get
 
-    assert ground_in_docs(get("python"), "add two numbers", device="cpu") == ("", None)
+    assert ground_in_docs(get("python"), "add two numbers", device="cpu") == ("", None, None)
 
 
 def test_no_docs_turns_it_off():
@@ -275,7 +275,7 @@ def test_no_docs_turns_it_off():
     from purecoder.languages import LanguageSpec
 
     spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
-    assert ground_in_docs(spec, "a thing", no_docs=True, device="cpu") == ("", None)
+    assert ground_in_docs(spec, "a thing", no_docs=True, device="cpu") == ("", None, None)
 
 
 def test_a_missing_index_does_not_stop_generation(capsys, store):
@@ -286,7 +286,7 @@ def test_a_missing_index_does_not_stop_generation(capsys, store):
     from purecoder.languages import LanguageSpec
 
     spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
-    assert ground_in_docs(spec, "a thing", device="cpu") == ("", None)
+    assert ground_in_docs(spec, "a thing", device="cpu") == ("", None, None)
     assert "Traceback" not in capsys.readouterr().out
 
 
@@ -611,3 +611,26 @@ def test_the_smoke_script_calls_a_cli_that_exists():
     # The subcommands it drives, each of which must still be routed.
     for name in ("code", "env", "make", "status"):
         assert f'"{name}": cmd_' in cli_src, f"{name} is no longer routed"
+def test_ask_refuses_when_the_index_answers_nothing(capsys, monkeypatch):
+    """An index that exists and clears nothing is a different failure from no
+    index, and for `ask` it is still a failure.
+
+    This became reachable only when the retrieval gate went back to 0.8. At the
+    0.3 that had been shipping, essentially every query cleared, so `ask` never
+    met an empty context and the path below was dead code. `code` degrades to
+    an ungrounded run because its harness proves the output either way; `ask`
+    has nothing else to offer, and answering from the model alone is the one
+    thing the caller did not ask for.
+    """
+    from purecoder import cli
+
+    monkeypatch.setattr(cli, "ground_in_docs",
+                        lambda *a, **kw: ("", lambda e: "", lambda e: ""))
+
+    args = LangArgs("python", "how do I renew my passport")
+    args.store, args.device, args.retries, args.show_tests = None, "cpu", 1, False
+
+    assert cli.cmd_ask(None, args) == 1
+    out = capsys.readouterr().out
+    assert "clears the retrieval gate" in out
+    assert "ask` will not" in out

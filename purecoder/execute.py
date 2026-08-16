@@ -871,15 +871,22 @@ def _verdict(ok, *, code="", tests="", contract=None, attempts=0, error=""):
 def generate_validated_python(pc, description, tests=None, max_retries=3,
                               timeout=10, verbose=True, *, contract=None,
                               use_contract=False, spec=PYTHON,
-                              error_hint=None, packages=(), tdd=False,
-                              confirm_tests=None, context="", on_event=None,
-                              **kw):
+                              error_hint=None, error_docs=None,
+                              packages=(), tdd=False, confirm_tests=None,
+                              context="", on_event=None, **kw):
     """Generate code, run it against (code-blind) tests, retry on failure
     with the traceback fed back.
 
     With use_contract, the prose is first turned into a contract that both the
     writer and the test designer read. Returns {ok, text, tests, contract,
     attempts, error}.
+
+    `error_docs(error) -> str` retrieves documentation keyed on the failure
+    rather than on the spec. The first attempt is grounded in what the USER
+    asked for; a retry is grounded in what the TOOLCHAIN objected to, which is
+    the better query of the two -- `Unbound value List.fold` names the gap
+    exactly, where prose only describes the goal. Consulted on failure only,
+    and its text reaches the prompt alone, never `error`.
 
     `error_hint(error) -> str` may add context to a failure the toolchain has
     already reported -- `ask` uses it to answer "did you mean" from the indexed
@@ -1206,6 +1213,13 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         # reads the toolchain's last line, and enriching it would make an
         # unchanging failure look like a moving one.
         hint = error_hint(error) if error_hint else ""
+        # Retrieval's second pass, keyed on the error. Appended to the same
+        # slot as every other hint and for the same reason: it is offered
+        # after the toolchain has already refused, never as a gate of its own.
+        retrieved = error_docs(error) if error_docs else ""
+        if retrieved:
+            say("docs", f"[rag] {len(retrieved)} more chars, retrieved on the "
+                        f"error", attempt)
         if hint:
             # Every line, not just the first. The first line is the header --
             # "The documentation does not contain every name in that error:" --
@@ -1215,6 +1229,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                                    for line in hint.splitlines()), attempt)
         # Added to the same slot and for the same reason: a hint offered only
         # after the toolchain has already refused, never a gate of its own.
+        hint += ("\n\n" + retrieved if retrieved else "")
         hint += harness_collision(spec, code, designed)
         hint += missing_relation(spec, error)
         # A compiler that says "line 4" is talking about a file the writer has

@@ -154,7 +154,7 @@ def open_docs(path, device, required=False):
 
 def ground_in_docs(spec, query, store=None, device="cuda",
                    no_docs=False, required=False):
-    """(context, error_hint) for this run: the retrieved block, not a task.
+    """(context, error_hint, error_docs) for this run: blocks, not a task.
 
     One resolver for every command that generates code, so they cannot drift
     apart the way `ask` and `code` already did once. An explicit --store wins;
@@ -167,16 +167,24 @@ def ground_in_docs(spec, query, store=None, device="cuda",
     documentation into the description sent it to the README prompt too, and
     prose cannot use it.
 
-    "" means nothing was retrieved -- the hint is still live, since the symbol
-    library does not depend on any chunk clearing the threshold. None means the
-    documentation was required and is not there.
+    Three things, because retrieval happens twice. `context` is keyed on the
+    SPEC and grounds the first attempt. `error_docs` is keyed on the
+    TOOLCHAIN'S ERROR and grounds a retry -- a different and usually better
+    query, since `Unbound value List.fold` names exactly what the model did
+    not know, where prose only says what the user wanted. It excludes whatever
+    the first pass already injected, so a retry adds documentation instead of
+    repeating it.
+
+    "" means nothing was retrieved -- the hints are still live, since the
+    symbol library does not depend on any chunk clearing the threshold. None
+    means the documentation was required and is not there.
     """
     from .langstore import docs_index_path
-    from .rag import retrieve_context
+    from .rag import retrieve
     from .symbols import did_you_mean
 
     if no_docs:
-        return (None, None) if required else ("", None)
+        return (None, None, None) if required else ("", None, None)
 
     path = store
     if path is None and spec is not None and spec.docs_store:
@@ -184,17 +192,30 @@ def ground_in_docs(spec, query, store=None, device="cuda",
         print(f"[rag] using the {spec.name} docs from `learn`")
     if path is None:
         if not required:
-            return "", None
+            return "", None, None
         path = DEFAULT_STORE
 
     opened = open_docs(path, device, required=required)
     if opened is None:
-        return (None, None) if required else ("", None)
+        return (None, None, None) if required else ("", None, None)
 
-    ctx = retrieve_context(opened, query)
+    ctx, used = retrieve(opened, query)
     print(f"[rag] {len(ctx)} chars of documentation" if ctx else
           "[rag] nothing above the threshold -- generating without context")
-    return ctx, lambda err: did_you_mean(err, opened.symbols)
+
+    def error_docs(error):
+        """Documentation for what the toolchain just complained about.
+
+        Half the budget of the first pass: this arrives in a retry prompt that
+        already carries the previous attempt, the tests, the error and the
+        quoted source, and this project's finding 4 is that too much context
+        on a small card causes degeneration rather than coherence.
+        """
+        block, _ = retrieve(opened, error, k=2, max_chars=700, exclude=used,
+                            header="Documentation for that error:")
+        return block
+
+    return ctx, lambda err: did_you_mean(err, opened.symbols), error_docs
 
 
 def confirm_tests(tests, evidence, ask=input):
@@ -222,7 +243,8 @@ def cmd_code(pc, args):
     spec = resolve_language(args)
     if spec is None:
         return 1
-    context, hint = ground_in_docs(spec, args.spec, **_docs_opts(args))
+    context, hint, docs_for_error = ground_in_docs(spec, args.spec,
+                                                   **_docs_opts(args))
     tdd = bool(getattr(args, "tdd", False))
     # Test-first cannot stub without a name, and the name comes from the
     # contract -- so the flag implies it rather than failing later on a
@@ -235,7 +257,7 @@ def cmd_code(pc, args):
     return _print_result(generate_validated_python(
         pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=True if tdd else resolve_contract(args, default=False),
-        error_hint=hint,
+        error_hint=hint, error_docs=docs_for_error,
         # `--with` lives on this subcommand alone, so `getattr` is the honest
         # read rather than a default nobody set.
         packages=tuple(getattr(args, "packages", None) or ()),
@@ -260,12 +282,14 @@ def cmd_project(pc, args):
     from .scaffold import scaffold_project
     # Grounds the code artifact only -- see scaffold_project for why the
     # Makefile, .env and README are deliberately left out of it.
-    context, hint = ground_in_docs(spec, args.spec, **_docs_opts(args))
+    context, hint, docs_for_error = ground_in_docs(spec, args.spec,
+                                                   **_docs_opts(args))
     r = scaffold_project(pc, args.name, args.spec,
                          outdir=args.outdir or args.name,
                          max_retries=args.retries, spec=spec,
                          use_contract=resolve_contract(args, default=True),
-                         docs=context, error_hint=hint)
+                         docs=context, error_hint=hint,
+                         error_docs=docs_for_error)
     print(f"\nscaffold {'complete' if r['ok'] else 'incomplete'} -> {r['outdir']}/")
     return 0 if r["ok"] else 1
 
@@ -348,14 +372,29 @@ def cmd_ask(pc, args):
     # Everything else -- which index, the did-you-mean hint, degrading on a
     # store that cannot be read -- is the same resolver `code` and `project`
     # use, so the three cannot drift apart again.
-    context, hint = ground_in_docs(spec, args.spec, required=True,
-                                   **_docs_opts(args))
+    context, hint, docs_for_error = ground_in_docs(spec, args.spec,
+                                                   required=True,
+                                                   **_docs_opts(args))
     if context is None:
+        return 1
+    # An index that exists and answers nothing is a different failure from no
+    # index, and for THIS command it is still a failure. `code` degrades to an
+    # ungrounded run because the harness is what proves its output either way;
+    # `ask` has nothing else to offer -- answering from the model alone is the
+    # one thing the user did not ask for. It only became reachable when the
+    # gate went back to 0.8: at 0.3 essentially every query cleared, so this
+    # path existed and never ran.
+    if not context:
+        print("nothing in that index clears the retrieval gate for this "
+              "question.\n"
+              "  Rephrase it toward the API you mean, or point --store at "
+              "documentation that covers it.\n"
+              "  `code` would answer this ungrounded; `ask` will not.")
         return 1
     return _print_result(generate_validated_python(
         pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
-        error_hint=hint),
+        error_hint=hint, error_docs=docs_for_error),
         show_tests=args.show_tests)
 
 
