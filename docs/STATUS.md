@@ -4,7 +4,9 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
+
 568 tests, all green, none of them needing a GPU or a running server
+
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -39,8 +41,10 @@ _Snapshot of what's built, tested, and what's next._
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
+
 | 12 | ten-task cross-language benchmark | ✅ built, ✅ run | 60 tasks over 6 languages, 2026-08-09; four of seven failures were the harness, not the model |
 | 12 | `benchlog.py` failure attribution | ✅ tested, ⚠️ wrong | 14 cases; misattributed 4 of 7 real failures to `writer` on its first live run |
+
 
 ## Key findings from the build
 
