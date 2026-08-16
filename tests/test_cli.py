@@ -548,3 +548,28 @@ def test_anything_but_yes_declines_the_tests(capsys):
     from purecoder import cli
 
     assert cli.confirm_tests("assert x", "boom", ask=lambda _: "n") is False
+
+
+def test_ask_refuses_when_the_index_answers_nothing(capsys, monkeypatch):
+    """An index that exists and clears nothing is a different failure from no
+    index, and for `ask` it is still a failure.
+
+    This became reachable only when the retrieval gate went back to 0.8. At the
+    0.3 that had been shipping, essentially every query cleared, so `ask` never
+    met an empty context and the path below was dead code. `code` degrades to
+    an ungrounded run because its harness proves the output either way; `ask`
+    has nothing else to offer, and answering from the model alone is the one
+    thing the caller did not ask for.
+    """
+    from purecoder import cli
+
+    monkeypatch.setattr(cli, "ground_in_docs",
+                        lambda *a, **kw: ("", lambda e: "", lambda e: ""))
+
+    args = LangArgs("python", "how do I renew my passport")
+    args.store, args.device, args.retries, args.show_tests = None, "cpu", 1, False
+
+    assert cli.cmd_ask(None, args) == 1
+    out = capsys.readouterr().out
+    assert "clears the retrieval gate" in out
+    assert "ask` will not" in out

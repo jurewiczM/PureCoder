@@ -350,6 +350,20 @@ _Snapshot of what's built, tested, and what's next._
   test asserts that it cannot grow one back. Worth sitting with: the gate was
   measured, repaired, documented and celebrated, and the number that shipped
   was the old one two function calls away.
+
+  Re-measured on that index across fifteen queries: ten real OCaml questions
+  score 1.043-1.400 and all retrieve; five unrelated ones score 0.498-0.736 and
+  none do. Those are the same bands the 0.8 threshold was originally calibrated
+  against, which is the evidence that the number was right all along and only
+  the wiring was wrong.
+
+  **It changes `ask`, and that is a real consequence rather than a footnote.**
+  An index that loads but answers nothing used to be unreachable -- at 0.3
+  essentially every query cleared -- and now happens. `code` degrades to an
+  ungrounded run in that case, because its harness proves the output either
+  way. `ask` refuses instead: the index is not an improvement there, it is the
+  command, and answering from the model alone is the one thing the caller did
+  not ask for.
 - **Retrieval runs twice now, and the second query is the error.** The first
   pass is keyed on the spec, which is what the USER wanted; a retry is keyed on
   what the TOOLCHAIN objected to, which is usually the better query -- `Unbound

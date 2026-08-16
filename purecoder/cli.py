@@ -367,6 +367,20 @@ def cmd_ask(pc, args):
                                                    **_docs_opts(args))
     if context is None:
         return 1
+    # An index that exists and answers nothing is a different failure from no
+    # index, and for THIS command it is still a failure. `code` degrades to an
+    # ungrounded run because the harness is what proves its output either way;
+    # `ask` has nothing else to offer -- answering from the model alone is the
+    # one thing the user did not ask for. It only became reachable when the
+    # gate went back to 0.8: at 0.3 essentially every query cleared, so this
+    # path existed and never ran.
+    if not context:
+        print("nothing in that index clears the retrieval gate for this "
+              "question.\n"
+              "  Rephrase it toward the API you mean, or point --store at "
+              "documentation that covers it.\n"
+              "  `code` would answer this ungrounded; `ask` will not.")
+        return 1
     _print_result(generate_validated_python(
         pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
