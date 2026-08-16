@@ -23,6 +23,30 @@ BENCH=${BENCH:-$HOME/models/bench}
 cd "$(dirname "$0")/../.."
 CORPUS=scripts/bench/tasks.tsv
 
+# Refuse a language this machine cannot run, before spending ten tasks
+# discovering it. Every task would land in `refused` with the same reason, and
+# a column of ten identical refusals is a worse way to say "no toolchain" than
+# saying it once. The registry already knows -- `available()` returns the
+# reason -- so this asks rather than maintaining a second list that can drift.
+if ! reason=$(.venv/bin/python -c '
+import sys
+from purecoder import languages
+try:
+    spec = languages.get(sys.argv[1])
+except Exception as e:
+    print(e); sys.exit(1)
+ok, why = spec.available()
+if not ok:
+    print(why); sys.exit(1)
+' "$TARGET" 2>&1); then
+  echo "batch.sh: cannot benchmark $TARGET -- $reason" >&2
+  .venv/bin/python -c '
+from purecoder import languages
+runnable = [n for n in languages.names() if languages.get(n).available()[0]]
+print("  runnable here:", ", ".join(runnable), file=__import__("sys").stderr)' 2>&1 >&2
+  exit 2
+fi
+
 # Ungrounded by default, and deliberately so. ocaml-batch.sh attaches an index
 # because the model has little OCaml in its weights; for a language it already
 # knows, retrieval is measured to HURT -- `sum_list` passed on the first
@@ -71,6 +95,7 @@ slug=$(printf '%s' "$TARGET" | tr 'A-Z' 'a-z' \
 mkdir -p "$BENCH"
 
 passed=0 total=0
+declare -A counts=()
 while IFS=$'\t' read -r name spec <&3; do
   [ -z "$name" ] && continue
   case "$name" in \#*) continue ;; esac
@@ -87,14 +112,42 @@ while IFS=$'\t' read -r name spec <&3; do
   { echo "# lang=$TARGET task=$name"; echo "# spec: $prompt"; echo;
     printf '%s\n' "$out"; } > "$log"
 
-  # Loose on spacing and on `attempts=None`. The verdict line is cli.py's
-  # `ok={ok}  attempts={...}` -- a pattern tight enough to miss it would
-  # report 0/10 against ten correct implementations, which is the failure
-  # this whole directory exists to avoid.
-  verdict=$(printf '%s' "$out" | grep -oE "ok=(True|False) +attempts=[A-Za-z0-9]+" | tail -1)
-  case "$verdict" in ok=True*) passed=$((passed + 1)) ;; esac
+  # Who said no, not just that someone did. `ok=False attempts=4` reads the
+  # same whether the model wrote bad code or a gate refused good code, and a
+  # table of forty runs needs to point at the rows worth opening.
+  #
+  # A classifier is a convenience over the transcript, never a gate on it: if
+  # it cannot run, fall back to the raw verdict line rather than lose the run.
+  if line=$(printf '%s' "$out" | .venv/bin/python -c '
+import sys
+from purecoder.benchlog import classify
+v = classify(sys.stdin.read())
+print(v.verdict, "None" if v.attempts is None else v.attempts, v.reason)
+' 2>/dev/null); then
+    read -r v attempts reason <<< "$line"
+  else
+    # Branching on the classifier's exit status, not on `read` hitting EOF --
+    # the fallback used to fire as a side effect of empty input, which is the
+    # right behaviour arrived at by accident.
+    v=$(printf '%s' "$out" | grep -oE "ok=(True|False) +attempts=[A-Za-z0-9]+" | tail -1)
+    v=${v:-no-verdict}; attempts=?; reason=""
+  fi
+
+  case "$v" in ok) passed=$((passed + 1)) ;; esac
   total=$((total + 1))
-  echo "[${verdict:-no verdict}] $slug/$name -> $log"
+  counts[$v]=$(( ${counts[$v]:-0} + 1 ))
+  printf '[%-13s attempts=%-4s] %s/%s%s\n' "$v" "$attempts" "$slug" "$name" \
+         "${reason:+   $reason}"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$name" "$v" "$attempts" "$reason" \
+         >> "$BENCH/$TAG-results.tsv"
 done 3< "$CORPUS"
 
-echo "$slug: $passed/$total"
+# The summary a cross-language set exists for. `unknown` is listed even at
+# zero: a marker this classifier does not recognise must be visible, not
+# quietly folded into the model's score.
+summary=""
+for k in writer suspect-tests gate contract stuck refused server timeout unknown; do
+  summary+=$(printf ' %s %s' "$k" "${counts[$k]:-0}")
+done
+echo "$slug: $passed/$total  --$summary"
+echo "rows appended to $BENCH/$TAG-results.tsv"
