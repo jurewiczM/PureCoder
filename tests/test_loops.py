@@ -685,3 +685,50 @@ def test_declining_the_tests_stops_before_any_code_is_written():
     assert not res["ok"]
     assert "declined" in res["error"]
     assert pc.code_kwargs == [], "code was written after the tests were declined"
+
+
+# ---- retrieval's second pass, keyed on the failure -----------------------
+
+def test_documentation_is_retrieved_again_on_the_error():
+    """The first attempt is grounded in what the USER asked for; a retry is
+    grounded in what the TOOLCHAIN objected to. The second is the better query
+    of the two -- an unbound name states the gap exactly, where prose only
+    describes the goal."""
+    asked = []
+
+    def error_docs(error):
+        asked.append(error)
+        return "Documentation for that error:\n\n# doc: lists.md\nList.fold_left"
+
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_docs=error_docs)
+    assert res["ok"]
+    assert asked, "the failure was never used as a query"
+    assert "AssertionError" in asked[0], asked[0]
+    assert "List.fold_left" in pc.prompts[1]
+
+
+def test_a_passing_run_retrieves_only_once():
+    """The cost is paid where there is evidence it was needed. A run that
+    passes first time must not spend an embedding call proving it."""
+    asked = []
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_docs=lambda err: asked.append(err) or "docs")
+    assert res["ok"] and asked == []
+
+
+def test_retrieved_documentation_stays_out_of_the_verdict():
+    """Same rule the did-you-mean hint follows: the text reaches the prompt,
+    never `error`. The no-progress check reads the toolchain's last line, and
+    enriching it would make an unchanging failure look like a moving one."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=6, verbose=False,
+        error_docs=lambda err: f"docs for attempt {len(pc.prompts)}")
+    assert not res["ok"]
+    assert "identical failures" in res["error"]
+    assert "docs for attempt" not in res["error"]

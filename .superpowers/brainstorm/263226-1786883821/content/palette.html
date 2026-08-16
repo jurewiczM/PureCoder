@@ -1,0 +1,142 @@
+<h2>Which colour direction?</h2>
+<p class="subtitle">Each tile is the real chrome — header, tab bar, a stat card, verdict badges — so you see the palette doing its job rather than sitting in a swatch. Current mock is D.</p>
+
+<style>
+  .pal { border-radius: 6px; overflow: hidden; font-family: ui-monospace, "JetBrains Mono", monospace; }
+  .pal-head { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; font-size:9px; letter-spacing:.18em; }
+  .pal-tabs { display:flex; gap:0; padding:0 12px; font-size:8px; letter-spacing:.14em; }
+  .pal-tabs span { padding:8px 9px; }
+  .pal-body { padding:12px; display:flex; flex-direction:column; gap:9px; }
+  .pal-card { border-radius:4px; padding:10px 12px; }
+  .pal-k { font-size:7px; letter-spacing:.18em; text-transform:uppercase; }
+  .pal-v { font-size:22px; font-weight:300; margin-top:3px; }
+  .pal-badges { display:flex; gap:6px; }
+  .pal-badges b { font-size:8px; font-weight:400; padding:3px 7px; border-radius:3px; border:1px solid; }
+  .pal-row { display:flex; justify-content:space-between; font-size:9px; padding:5px 0; border-bottom:1px solid; }
+  .pal-note { font-size:12px; opacity:.75; margin-top:6px; line-height:1.5; }
+</style>
+
+<div class="cards">
+
+  <!-- A -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="pal" style="background:#0c0e10;color:#e8e6e3;border:1px solid #1c2126">
+        <div class="pal-head" style="border-bottom:1px solid #1c2126;color:#d98a3d">PURECODER
+          <span style="color:#5a6570;letter-spacing:0">574 green</span></div>
+        <div class="pal-tabs" style="border-bottom:1px solid #1c2126;color:#5a6570">
+          <span style="color:#d98a3d;box-shadow:inset 0 -2px 0 #d98a3d">RUNS</span><span>GRAMMARS</span><span>GATE</span><span>LANGS</span>
+        </div>
+        <div class="pal-body">
+          <div class="pal-card" style="background:#12161a;border:1px solid #1c2126">
+            <div class="pal-k" style="color:#5a6570">attempts to green</div>
+            <div class="pal-v" style="color:#e8e6e3">2</div>
+          </div>
+          <div class="pal-badges">
+            <b style="color:#6ea86e;border-color:#26402a;background:#101a12">ok</b>
+            <b style="color:#d98a3d;border-color:#3d2c17;background:#1a1310">retry</b>
+            <b style="color:#b4544a;border-color:#3d1f1c;background:#1a1010">refused</b>
+          </div>
+          <div class="pal-row" style="border-color:#1c2126;color:#8b959e"><span>makefile.gbnf</span><span style="color:#5a6570">item{0,14}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A · Graphite + ember</h3>
+      <p>Cool near-black, one warm signal. Colour is reserved for verdicts — nothing decorative is tinted. Reads as an instrument.</p>
+    </div>
+  </div>
+
+  <!-- B -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="pal" style="background:#f2f0eb;color:#1a1a18;border:1px solid #ddd9d0">
+        <div class="pal-head" style="border-bottom:1px solid #ddd9d0;color:#9b2c2c">PURECODER
+          <span style="color:#8a857c;letter-spacing:0">574 green</span></div>
+        <div class="pal-tabs" style="border-bottom:1px solid #ddd9d0;color:#8a857c">
+          <span style="color:#9b2c2c;box-shadow:inset 0 -2px 0 #9b2c2c">RUNS</span><span>GRAMMARS</span><span>GATE</span><span>LANGS</span>
+        </div>
+        <div class="pal-body">
+          <div class="pal-card" style="background:#fbfaf7;border:1px solid #e3ded4">
+            <div class="pal-k" style="color:#8a857c">attempts to green</div>
+            <div class="pal-v" style="color:#1a1a18">2</div>
+          </div>
+          <div class="pal-badges">
+            <b style="color:#2f6b3d;border-color:#bcd3c1;background:#eef5ef">ok</b>
+            <b style="color:#8a5a1c;border-color:#e0d0b0;background:#f8f2e6">retry</b>
+            <b style="color:#9b2c2c;border-color:#e6c4c4;background:#faeeee">refused</b>
+          </div>
+          <div class="pal-row" style="border-color:#e3ded4;color:#4a4740"><span>makefile.gbnf</span><span style="color:#8a857c">item{0,14}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · Paper</h3>
+      <p>Light, document-like. Nobody ships a light dev dashboard, which is exactly why it stands out. Transcripts and diffs read better on it.</p>
+    </div>
+  </div>
+
+  <!-- C -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="pal" style="background:#0a0f0d;color:#dfe7e0;border:1px solid #17231c">
+        <div class="pal-head" style="border-bottom:1px solid #17231c;color:#7fb069">PURECODER
+          <span style="color:#4d6152;letter-spacing:0">574 green</span></div>
+        <div class="pal-tabs" style="border-bottom:1px solid #17231c;color:#4d6152">
+          <span style="color:#7fb069;box-shadow:inset 0 -2px 0 #7fb069">RUNS</span><span>GRAMMARS</span><span>GATE</span><span>LANGS</span>
+        </div>
+        <div class="pal-body">
+          <div class="pal-card" style="background:#0f1712;border:1px solid #17231c">
+            <div class="pal-k" style="color:#4d6152">attempts to green</div>
+            <div class="pal-v" style="color:#dfe7e0">2</div>
+          </div>
+          <div class="pal-badges">
+            <b style="color:#7fb069;border-color:#2a3d24;background:#111a10">ok</b>
+            <b style="color:#c9a227;border-color:#3d3417;background:#1a170f">retry</b>
+            <b style="color:#c05746;border-color:#3d211c;background:#1a1110">refused</b>
+          </div>
+          <div class="pal-row" style="border-color:#17231c;color:#8fa593"><span>makefile.gbnf</span><span style="color:#4d6152">item{0,14}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · Phosphor</h3>
+      <p>Muted terminal green, amber and rust for the other two states. Honest to what this is — but green as the base colour weakens green as the pass signal.</p>
+    </div>
+  </div>
+
+  <!-- D -->
+  <div class="card" data-choice="d" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="pal" style="background:#100a0a;color:#f0e8e8;border:1px solid #2a1010">
+        <div class="pal-head" style="border-bottom:1px solid #1e0f0f;color:#c41818">PURECODER
+          <span style="color:#3a2020;letter-spacing:0">574 green</span></div>
+        <div class="pal-tabs" style="border-bottom:1px solid #1e0f0f;color:#3a2020">
+          <span style="color:#c41818;box-shadow:inset 0 -2px 0 #c41818">RUNS</span><span>GRAMMARS</span><span>GATE</span><span>LANGS</span>
+        </div>
+        <div class="pal-body">
+          <div class="pal-card" style="background:#130909;border:1px solid #2a1010">
+            <div class="pal-k" style="color:#3a2020">attempts to green</div>
+            <div class="pal-v" style="color:#f0e8e8">2</div>
+          </div>
+          <div class="pal-badges">
+            <b style="color:#22c55e;border-color:#14532d;background:#052e16">ok</b>
+            <b style="color:#f59e0b;border-color:#3d2c17;background:#1a1310">retry</b>
+            <b style="color:#c41818;border-color:#3a1818;background:#1a0808">refused</b>
+          </div>
+          <div class="pal-row" style="border-color:#1e0f0f;color:#c4a4a4"><span>makefile.gbnf</span><span style="color:#3a2020">item{0,14}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>D · Current mock</h3>
+      <p>Maroon on black, pure #c41818 accent. Everything is tinted red, so red cannot also mean failure — the badge and the brand fight for the same colour.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section">
+  <p class="pal-note"><strong>My pick: A.</strong> The mock's real problem is not the hue, it's that the accent is spent on decoration — headers, borders, brand, and the failure badge are all the same red, so nothing is left to signal a refused run. A neutral base with one warm accent frees green/amber/red to mean only pass, retry and refusal, which is the only thing this UI has to communicate. B is the interesting outsider if you want it to look like nothing else.</p>
+  <p class="pal-note">Click a tile, or say a hue you'd rather have — these are starting points, not a menu.</p>
+</div>

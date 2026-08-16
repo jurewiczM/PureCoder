@@ -863,12 +863,32 @@ class DocStore:
 
 # ---- retrieve-when-needed gate + injection ------------------------------
 
-def retrieve_context(store, query, k=3, min_score=0.3, max_chars=1500):
-    hits = store.search(query, k=k, min_score=min_score)
+def retrieve(store, query, k=3, max_chars=1500, exclude=(), header=None):
+    """(block, chunks) for a query -- the text to inject and what went into it.
+
+    No threshold of its own, deliberately. `retrieve_context` carried
+    `min_score=0.3` while `search` had been recalibrated to 0.8, and since it
+    is the only retrieval the pipeline performs, the repaired gate never ran
+    in production. Measured on the 3017-chunk OCaml index: "best pizza
+    toppings" cleared 0.3 with three chunks and injected 1311 characters of
+    tutorial into the writer's prompt. Two numbers for one decision is how
+    that happens, so now there is one and `search` owns it.
+
+    `exclude` skips chunks that are already in the prompt. The retry pass
+    retrieves a second time on the toolchain's error, and re-injecting what
+    the first attempt was already shown spends context to say nothing new.
+
+    Returns the chunks alongside the block so a caller can exclude them next
+    time without parsing its own prompt back out again.
+    """
+    hits = store.search(query, k=k)
     if not hits:
-        return ""
-    blocks, used = [], 0
+        return "", []
+    seen = set(exclude)
+    blocks, chunks, used = [], [], 0
     for chunk, source, _score in hits:
+        if chunk in seen:
+            continue
         block = f"# doc: {source}\n{chunk}"
         # `continue`, not `break`: one oversized top hit used to discard every
         # smaller one below it. Prompt order stops matching score order, which
@@ -876,10 +896,17 @@ def retrieve_context(store, query, k=3, min_score=0.3, max_chars=1500):
         if used + len(block) > max_chars:
             continue
         blocks.append(block)
+        chunks.append(chunk)
         used += len(block)
     # A header with nothing under it is truthy, so the caller reported
     # injecting context and the model was handed a promise of documentation
     # followed by none of it.
     if not blocks:
-        return ""
-    return "Relevant documentation:\n\n" + "\n\n".join(blocks)
+        return "", []
+    head = header or "Relevant documentation:"
+    return f"{head}\n\n" + "\n\n".join(blocks), chunks
+
+
+def retrieve_context(store, query, k=3, max_chars=1500, exclude=()):
+    """`retrieve`, for callers that do not need to know what was used."""
+    return retrieve(store, query, k=k, max_chars=max_chars, exclude=exclude)[0]

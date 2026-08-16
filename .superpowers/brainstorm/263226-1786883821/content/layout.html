@@ -1,0 +1,138 @@
+<h2>How much should the layout move?</h2>
+<p class="subtitle">All three in the Phosphor palette you picked. You said "a little" — that's option 2. Option 3 is a rethink, and I want to make the case for it before you rule it out.</p>
+
+<style>
+  .wf { background:#0a0f0d; border:1px solid #17231c; border-radius:6px; overflow:hidden;
+        font-family: ui-monospace,"JetBrains Mono",monospace; font-size:8px; color:#8fa593; }
+  .wf-top { display:flex; align-items:center; justify-content:space-between;
+            padding:7px 10px; border-bottom:1px solid #17231c; }
+  .wf-brand { color:#7fb069; letter-spacing:.16em; font-size:8px; }
+  .wf-tabs { display:flex; border-bottom:1px solid #17231c; padding:0 8px; }
+  .wf-tabs span { padding:6px 7px; letter-spacing:.1em; }
+  .wf-on { color:#7fb069; box-shadow:inset 0 -2px 0 #7fb069; }
+  .wf-main { display:flex; min-height:186px; }
+  .wf-rail { width:74px; border-right:1px solid #17231c; padding:8px 0; flex-shrink:0; }
+  .wf-rail div { padding:5px 10px; letter-spacing:.08em; }
+  .wf-list { width:118px; border-right:1px solid #17231c; flex-shrink:0; }
+  .wf-list div { padding:6px 8px; border-bottom:1px solid #101a14; display:flex; gap:5px; align-items:center; }
+  .wf-body { flex:1; padding:9px; display:flex; flex-direction:column; gap:7px; min-width:0; }
+  .box { border:1px solid #17231c; background:#0f1712; border-radius:3px; padding:7px 8px; }
+  .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+  .num { font-size:15px; color:#dfe7e0; font-weight:300; }
+  .k { font-size:6px; letter-spacing:.16em; color:#4d6152; text-transform:uppercase; }
+  .dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
+  .ok { background:#7fb069 } .warn { background:#c9a227 } .bad { background:#c05746 }
+  .hollow { background:none; border:1px solid #4d6152 }
+  .line { height:4px; background:#101a14; border-radius:2px; }
+  .line.w70{width:70%} .line.w45{width:45%} .line.w85{width:85%} .line.w30{width:30%}
+  .sel { background:#101a14; color:#dfe7e0; }
+  .note { font-size:12px; line-height:1.55; opacity:.8; }
+</style>
+
+<div class="section">
+
+  <!-- 1 -->
+  <div class="card" data-choice="tabs" onclick="toggleSelect(this)" style="margin-bottom:16px">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="wf">
+        <div class="wf-top"><span class="wf-brand">PURECODER</span><span style="color:#4d6152">server up · 33 tok/s</span></div>
+        <div class="wf-tabs"><span class="wf-on">RUNS</span><span>GRAMMARS</span><span>GATE</span><span>LANGUAGES</span><span>DOCS</span><span>BENCH</span></div>
+        <div class="wf-main"><div class="wf-body">
+          <div class="grid4">
+            <div class="box"><div class="k">runs</div><div class="num">12</div></div>
+            <div class="box"><div class="k">refused</div><div class="num">3</div></div>
+            <div class="box"><div class="k">attempts</div><div class="num">2.1</div></div>
+            <div class="box"><div class="k">langs</div><div class="num">7</div></div>
+          </div>
+          <div class="box" style="flex:1">
+            <div class="k" style="margin-bottom:6px">recent</div>
+            <div class="line w85" style="margin-bottom:5px"></div>
+            <div class="line w70" style="margin-bottom:5px"></div>
+            <div class="line w45"></div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>1 · Same shape, tightened</h3>
+      <p>Top tabs kept. Wider container, denser rows, real section names. Smallest change — but it keeps the stat-tile row, which is the most generic thing on the page.</p>
+    </div>
+  </div>
+
+  <!-- 2 -->
+  <div class="card" data-choice="rail" onclick="toggleSelect(this)" style="margin-bottom:16px">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="wf">
+        <div class="wf-top"><span class="wf-brand">PURECODER</span><span style="color:#4d6152">server up · 33 tok/s</span></div>
+        <div class="wf-main">
+          <div class="wf-rail">
+            <div class="sel" style="color:#7fb069">RUNS</div><div>GRAMMARS</div><div>GATE</div><div>LANGUAGES</div><div>DOCS</div><div>BENCH</div>
+          </div>
+          <div class="wf-body">
+            <div class="grid3">
+              <div class="box"><div class="k">ok / refused</div><div class="num">9 / 3</div></div>
+              <div class="box"><div class="k">median attempts</div><div class="num">2</div></div>
+              <div class="box"><div class="k">gate rejects</div><div class="num">5</div></div>
+            </div>
+            <div class="box" style="flex:1">
+              <div class="k" style="margin-bottom:6px">runs</div>
+              <div style="display:flex;gap:5px;align-items:center;margin-bottom:6px"><span class="dot ok"></span><div class="line w70"></div></div>
+              <div style="display:flex;gap:5px;align-items:center;margin-bottom:6px"><span class="dot bad"></span><div class="line w45"></div></div>
+              <div style="display:flex;gap:5px;align-items:center"><span class="dot warn"></span><div class="line w85"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>2 · Left rail</h3>
+      <p>Nav moves to a persistent rail, content gets the full height back. Sections can grow past six without the tab bar scrolling. This is "a little" — same content, better frame.</p>
+    </div>
+  </div>
+
+  <!-- 3 -->
+  <div class="card" data-choice="transcript" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:none">
+      <div class="wf">
+        <div class="wf-top"><span class="wf-brand">PURECODER</span><span style="color:#4d6152">server up · 33 tok/s</span></div>
+        <div class="wf-main">
+          <div class="wf-rail">
+            <div class="sel" style="color:#7fb069">RUNS</div><div>GRAMMARS</div><div>GATE</div><div>LANGUAGES</div><div>DOCS</div><div>BENCH</div>
+          </div>
+          <div class="wf-list">
+            <div class="sel"><span class="dot ok"></span>word_count</div>
+            <div><span class="dot bad"></span>parse_ports</div>
+            <div><span class="dot ok"></span>sum_list · ml</div>
+            <div><span class="dot warn"></span>Makefile</div>
+            <div><span class="dot hollow"></span>bubble_sort</div>
+          </div>
+          <div class="wf-body">
+            <div style="display:flex;justify-content:space-between;align-items:baseline">
+              <span style="color:#dfe7e0;font-size:9px">word_count · python</span>
+              <span style="color:#7fb069">ok · 2 attempts</span>
+            </div>
+            <div class="box" style="flex:1;line-height:1.9">
+              <div style="color:#4d6152">[tests] accepted on attempt 1 (19 lines)</div>
+              <div style="color:#c9a227">[attempt 1] AttributeError: 'NoneType' → retrying</div>
+              <div style="color:#7fb069">[attempt 2] all tests passed</div>
+              <div style="color:#101a14">─────────────</div>
+              <div class="line w85" style="margin:5px 0"></div>
+              <div class="line w45"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>3 · Run list → transcript</h3>
+      <p>Rail, then a run list, then the actual transcript of the selected run. The verdict is a dot; the evidence is the page.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section">
+  <p class="note"><strong>My pick: 3, and it's a project argument rather than a taste one.</strong> Your CLAUDE.md says it twice — "a classifier over the transcripts is not a substitute for reading them", and <em>ok=False attempts=4</em> reads identically whether the model wrote bad code or the harness refused good code. A dashboard of counters is precisely the thing that hid nine defects until someone opened a log. If the UI puts a stat tile first, it is built around the number this project has already learned not to trust; if it puts the transcript first, the layout carries the discipline.</p>
+  <p class="note">3 is more work than "a little" — the run list needs state the mock doesn't have. If you want the smaller move now, take 2: it's a strict subset, and 3 stays reachable later without a rewrite.</p>
+</div>

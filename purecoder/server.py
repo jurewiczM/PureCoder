@@ -59,7 +59,7 @@ def _code(pc, body, required_docs=False):
     # Straight to the shared resolver: which index, the did-you-mean hint and
     # degrading on a store that cannot be read are decided in one place, and
     # the API inherits all of it rather than keeping a second copy.
-    context, hint = ground_in_docs(
+    context, hint, docs_for_error = ground_in_docs(
         spec, body["spec"], store=body.get("store"),
         device=body.get("device", "cuda"),
         no_docs=bool(body.get("no_docs", False)), required=required_docs)
@@ -70,7 +70,7 @@ def _code(pc, body, required_docs=False):
         pc, body["spec"], context=context, spec=spec,
         max_retries=int(body.get("retries", 4)),
         use_contract=bool(body.get("contract", False)),
-        error_hint=hint,
+        error_hint=hint, error_docs=docs_for_error,
         packages=tuple(body.get("with") or ()),
         verbose=False)
     return 200, _answer(ok=bool(res["ok"]), code=res["text"],
