@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { streamRun, type RunEvent, type Verdict } from '../api'
 import { Marker, VerdictLine, type State } from '../components/Verdict'
+import { Roles } from '../components/Roles'
 
 export interface Run {
   id: string
@@ -101,8 +102,16 @@ function Transcript({ run }: { run: Run }) {
 
       <div className="flex-1 px-5 py-4 text-xs leading-7">
         {run.events.map((event, i) => (
-          <div key={i} className={EVENT_TONE[event.kind] ?? 'text-muted'}>
-            {event.text}
+          <div key={i} className="flex gap-3">
+            <span
+              className="w-16 shrink-0 text-right text-faint select-none"
+              title={event.agent ? `emitted by the ${event.agent}` : undefined}
+            >
+              {event.agent}
+            </span>
+            <span className={`min-w-0 flex-1 ${EVENT_TONE[event.kind] ?? 'text-muted'}`}>
+              {event.text}
+            </span>
           </div>
         ))}
         {run.running && run.events.length === 0 ? (
@@ -115,6 +124,8 @@ function Transcript({ run }: { run: Run }) {
             {verdict.error}
           </div>
         ) : null}
+
+        <Roles ledger={verdict?.agents} />
 
         {verdict?.code ? (
           <pre className="mt-5 overflow-x-auto border-t border-line pt-4 text-ink">

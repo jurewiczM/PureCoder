@@ -831,6 +831,15 @@ def design_tests(pc, description, targets=None, max_retries=3, verbose=True,
 
 # ---- progress reporting -------------------------------------------------
 
+#: Which role a line of narration belongs to. `verdict` and `docs` are absent
+#: on purpose: the executor and the retriever are tools, and listing a tool as
+#: an agent would blur the one distinction this architecture rests on.
+AGENT_FOR_KIND = {
+    "tests": TESTER.name,
+    "contract": CONTRACT.name,
+    "attempt": WRITER.name,
+}
+
 def reporter(verbose=True, on_event=None):
     """Where a run's progress goes. -> say(kind, text, attempt=0).
 
@@ -848,17 +857,23 @@ def reporter(verbose=True, on_event=None):
     "verdict". A consumer that needs more than that should read `text`, which
     is the thing a person would have read.
 
-    `agent` names the role the line came from, so a reader of the stream can
-    tell the tester's failures from the writer's without parsing the text for
-    a `[tests]` prefix. Empty for lines the loop itself emits rather than any
-    role -- the executor's verdict belongs to the harness, not to an agent.
+    Each line also names the role it came from, so a reader of the stream can
+    tell the tester's failures from the writer's without parsing the text for a
+    `[tests]` prefix. That mapping lives here rather than at the fifteen call
+    sites: it is total and mechanical, and a per-call argument is fifteen
+    chances for one of them to say the wrong thing or none at all.
+
+    `verdict` and `docs` deliberately map to no role. The executor's verdict
+    belongs to the harness, which is not an agent and must not be shown as
+    one -- it is the thing with the veto -- and retrieval is a tool the loop
+    calls, not somebody's turn.
     """
-    def say(kind, text, attempt=0, agent=""):
+    def say(kind, text, attempt=0):
         if verbose:
             print(text)
         if on_event is not None:
             on_event({"kind": kind, "attempt": attempt, "text": text,
-                      "agent": agent})
+                      "agent": AGENT_FOR_KIND.get(kind, "")})
     return say
 
 

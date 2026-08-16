@@ -16,6 +16,28 @@ export interface Verdict {
   tests: string
   contract: Contract | null
   attempts: number
+  agents: Ledger
+}
+
+/** What each role spent, recorded by the loop as the run happened. */
+export interface Role {
+  name: string
+  /** One line on what the role is for; comes from the server, not from here. */
+  role: string
+  budget: number
+  attempts: number
+  accepted: boolean
+  reason: string
+}
+
+export interface Ledger {
+  /**
+   * Where the run ran out — NOT whose fault it was. The two differ: when the
+   * tester writes a suite that cannot pass, the writer spends the attempts and
+   * is not at fault. Show the whole roster, never this field alone.
+   */
+  stopped_on: string
+  roles: Role[]
 }
 
 export interface Contract {
@@ -32,6 +54,8 @@ export interface RunEvent {
   kind: 'tests' | 'attempt' | 'contract' | 'docs' | 'verdict'
   attempt: number
   text: string
+  /** The role that produced the line. Empty for the loop's own lines. */
+  agent: string
 }
 
 export interface LanguageInfo {

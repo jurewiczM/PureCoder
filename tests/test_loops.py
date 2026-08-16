@@ -791,3 +791,20 @@ def test_every_event_names_the_role_that_produced_it():
         on_event=seen.append)
     assert seen, "the run narrated nothing"
     assert all("agent" in e for e in seen)
+
+
+def test_the_role_on_an_event_comes_from_its_kind():
+    """One mapping, not fifteen call sites. A per-call argument is fifteen
+    chances for one line to claim the wrong role, and the compiler cannot see
+    a string that is merely wrong."""
+    from purecoder.execute import AGENT_FOR_KIND, reporter
+
+    seen = []
+    say = reporter(verbose=False, on_event=seen.append)
+    say("tests", "x")
+    say("attempt", "y", 1)
+    say("verdict", "z", 2)
+    assert [e["agent"] for e in seen] == ["tester", "writer", ""]
+    # The harness and the retriever are tools, and a tool must not appear as a
+    # role -- the veto is the one thing that cannot be an agent.
+    assert "verdict" not in AGENT_FOR_KIND and "docs" not in AGENT_FOR_KIND
