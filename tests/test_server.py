@@ -163,7 +163,8 @@ def test_a_dead_llama_server_is_503_with_the_same_shape(live, monkeypatch):
     assert status == 503
     assert body["ok"] is False
     assert "llama-server request failed" in body["error"]
-    assert set(body) == {"ok", "error", "code", "tests", "contract", "attempts"}
+    assert set(body) == {"ok", "error", "code", "tests", "contract", "attempts",
+                         "agents"}
 
 
 def test_a_refusal_carries_the_same_keys_as_a_success(live, monkeypatch):

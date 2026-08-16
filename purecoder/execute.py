@@ -19,6 +19,7 @@ import sys
 import tempfile
 from collections import Counter
 
+from .agents import CONTRACT, TESTER, WRITER, Ledger
 from .client import strip_fences
 from .contract import derive_contract, render_contract, validate_contract
 from .languages import PYTHON
@@ -846,26 +847,39 @@ def reporter(verbose=True, on_event=None):
     `kind` is coarse on purpose -- "tests", "attempt", "contract", "docs",
     "verdict". A consumer that needs more than that should read `text`, which
     is the thing a person would have read.
+
+    `agent` names the role the line came from, so a reader of the stream can
+    tell the tester's failures from the writer's without parsing the text for
+    a `[tests]` prefix. Empty for lines the loop itself emits rather than any
+    role -- the executor's verdict belongs to the harness, not to an agent.
     """
-    def say(kind, text, attempt=0):
+    def say(kind, text, attempt=0, agent=""):
         if verbose:
             print(text)
         if on_event is not None:
-            on_event({"kind": kind, "attempt": attempt, "text": text})
+            on_event({"kind": kind, "attempt": attempt, "text": text,
+                      "agent": agent})
     return say
 
 
 # ---- the execution fix loop ---------------------------------------------
 
-def _verdict(ok, *, code="", tests="", contract=None, attempts=0, error=""):
+def _verdict(ok, *, code="", tests="", contract=None, attempts=0, error="",
+             ledger=None):
     """The loop's return shape, in one place.
 
     Fifteen exits wrote this dict out longhand, keys agreeing by hand across
     returns whose whole point is that a refusal must look exactly like a
     failure. `bench.py`, `scaffold.py` and the CLI read these keys.
+
+    `agents` is the ledger: what each role spent and which one the run stopped
+    on, recorded while it happened rather than guessed from the transcript
+    afterwards. It is always present, so a caller never has to branch on
+    whether attribution is available.
     """
     return {"ok": ok, "text": code, "tests": tests, "contract": contract,
-            "attempts": attempts, "error": error}
+            "attempts": attempts, "error": error,
+            "agents": (ledger or Ledger()).summary()}
 
 
 def generate_validated_python(pc, description, tests=None, max_retries=3,
@@ -900,10 +914,14 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
     # output directory) gets the loop's ordinary failure dict rather than an
     # exception out of the middle of a half-written project.
     say = reporter(verbose, on_event)
+    # Written as the run happens. Which role was being asked is a fact
+    # here and a guess anywhere downstream.
+    ledger = Ledger()
 
     ok, why = spec.available()
     if not ok:
-        return _verdict(False, error=f"cannot generate {spec.name}: {why}")
+        return _verdict(False, error=f"cannot generate {spec.name}: {why}",
+                        ledger=ledger)
 
     # TDD mode, refused before any model call when it cannot be honoured. It
     # needs two things: a language that can be stubbed, and a contract to take
@@ -916,12 +934,12 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 False,
                 error=f"cannot run test-first for {spec.name}: it has no stub "
                       f"form, so the tests cannot be watched failing before an "
-                      f"implementation exists")
+                      f"implementation exists", ledger=ledger)
         if not use_contract and contract is None:
             return _verdict(
                 False,
                 error="test-first needs a contract: the stub is built from the "
-                      "name it declares. Use --contract.")
+                      "name it declares. Use --contract.", ledger=ledger)
 
     # Declared packages, checked before a single model call. Two refusals, both
     # cheap: a language with no import story cannot honour the request at all,
@@ -933,7 +951,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             False,
             error=f"cannot declare packages for {spec.name}: only the python "
                   f"path installs and imports them. Drop the declaration, or "
-                  f"generate python.")
+                  f"generate python.", ledger=ledger)
     have, missing = available_packages(packages)
     if not have:
         return _verdict(
@@ -946,6 +964,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
         contract, cerr = derive_contract(pc, description,
                                          max_retries=max_retries,
                                          verbose=verbose, say=say)
+        ledger.spend(CONTRACT, contract is not None, cerr)
         if contract is None:
             say("contract", f"[contract] {cerr} -> continuing without one")
     elif contract is not None:
@@ -997,7 +1016,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             return _verdict(
                 False,
                 error="test-first needs a contract and none could be derived, "
-                      "so there is no name to stub")
+                      "so there is no name to stub", ledger=ledger)
         red_target = target_name
 
     if tests is None:
@@ -1012,6 +1031,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             pc, grounded, max_retries=max_retries, verbose=verbose, spec=spec,
             targets=[target_name] if target_name else None,
             red_target=red_target, timeout=timeout, say=say)
+        ledger.spend(TESTER, gate_ok, gate_reason)
         if not gate_ok:
             # The gate rejected every attempt. Using the last one anyway is how
             # a zero-assertion suite reaches the executor and reports success.
@@ -1019,7 +1039,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                          f"-> giving up")
             return _verdict(
                 False, tests=designed, contract=contract,
-                error=f"test design failed the quality gate: {gate_reason}")
+                error=f"test design failed the quality gate: {gate_reason}", ledger=ledger)
     else:
         designed = tests
 
@@ -1031,7 +1051,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             return _verdict(
                 False, tests=designed, contract=contract,
                 error="declined: the tests were not accepted, so no "
-                      "implementation was written")
+                      "implementation was written", ledger=ledger)
 
     task = writing
     code, error = "", ""
@@ -1052,6 +1072,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         if res["truncated"]:
             error = "output was cut off (hit n_predict)"
+            ledger.spend(WRITER, False, error)
             task = (f"{writing}{constraints}\n\n"
                     f"Previous output was cut off. Be complete but concise.")
             say("attempt", f"[attempt {attempt}] truncated -> retrying", attempt)
@@ -1080,7 +1101,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                         False, code=code, tests=designed, contract=contract,
                         attempts=attempt,
                         error=f"the tests you supplied fail the quality gate: "
-                              f"{gate_reason}")
+                              f"{gate_reason}", ledger=ledger)
                 if not gate_ok:
                     say("tests", f"[tests] post-code gate: {gate_reason} "
                                  f"-> redesigning", attempt)
@@ -1088,6 +1109,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                         pc, grounded, targets=targets, max_retries=max_retries,
                         verbose=verbose, spec=spec,
                         strict_targets=bool(from_code), say=say)
+                    ledger.spend(TESTER, redo_ok, redo_reason)
                     if not redo_ok:
                         say("tests", f"[tests] gate never satisfied: "
                                      f"{redo_reason} -> giving up", attempt)
@@ -1095,7 +1117,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                             False, code=code, tests=designed, contract=contract,
                             attempts=attempt,
                             error=f"test design failed the quality gate: "
-                                  f"{redo_reason}")
+                                  f"{redo_reason}", ledger=ledger)
 
         # Reject an implementation carrying its own tests before running it --
         # they would execute alongside the real ones and pollute the artifact.
@@ -1110,6 +1132,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             impl_ok, impl_reason = defines_target(code, target_name,
                                                   designed)
         if not impl_ok:
+            ledger.spend(WRITER, False, impl_reason)
             say("attempt", f"[attempt {attempt}] {impl_reason} -> retrying",
                 attempt)
             error = impl_reason
@@ -1120,6 +1143,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
 
         ok, error = run_candidate(spec, code, designed, timeout=timeout,
                                   require_checks=1)
+        # The executor's verdict on this attempt. `run_candidate` is the tool,
+        # not a role -- what is recorded is the writer having spent an attempt
+        # and what the tool said about it.
+        ledger.spend(WRITER, ok, error)
 
         dep = missing_dependency(error)
         if dep:
@@ -1152,13 +1179,13 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 attempts=attempt,
                 error=f"cannot validate: the sandbox has no module {dep!r}, and "
                       f"the stdlib-only retry still imported it. Install it, or "
-                      f"ask for stdlib-only code.")
+                      f"ask for stdlib-only code.", ledger=ledger)
 
         if ok:
             if verbose:
                 print(f"[attempt {attempt}] all tests passed")
             return _verdict(True, code=code, tests=designed, contract=contract,
-                            attempts=attempt)
+                            attempts=attempt, ledger=ledger)
 
         # An identical failure means the feedback is not moving the model.
         # Observed live: 5x "API endpoint is unreachable", 4x the same
@@ -1190,12 +1217,13 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                     pc, grounded, targets=from_code,
                     max_retries=max_retries, verbose=verbose, spec=spec,
                     strict_targets=bool(from_code), say=say)
+                ledger.spend(TESTER, redo_ok, redo_reason)
                 if not redo_ok:
                     return _verdict(
                         False, code=code, tests=designed, contract=contract,
                         attempts=attempt,
                         error=f"test design failed the quality gate: "
-                              f"{redo_reason}")
+                              f"{redo_reason}", ledger=ledger)
                 task = f"{writing}{constraints}"
                 continue
 
@@ -1205,7 +1233,7 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
             return _verdict(
                 False, code=code, tests=designed, contract=contract,
                 attempts=attempt,
-                error=f"stopped after {repeats + 1} identical failures: {error}")
+                error=f"stopped after {repeats + 1} identical failures: {error}", ledger=ledger)
 
         say("attempt", f"[attempt {attempt}] tests failed: {first} "
                        f"-> retrying", attempt)
@@ -1259,4 +1287,4 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 f"Output only the corrected implementation, nothing else.")
 
     return _verdict(False, code=code, tests=designed, contract=contract,
-                    attempts=max_retries, error=error)
+                    attempts=max_retries, error=error, ledger=ledger)

@@ -37,7 +37,8 @@ from .execute import generate_validated_python
 from .status import collect
 
 
-def _answer(ok=False, error="", code="", tests="", contract=None, attempts=0):
+def _answer(ok=False, error="", code="", tests="", contract=None, attempts=0,
+            agents=None):
     """One envelope for every `/code` and `/ask` outcome.
 
     Success, refusal and a dead llama-server all carry the same keys. A caller
@@ -45,7 +46,8 @@ def _answer(ok=False, error="", code="", tests="", contract=None, attempts=0):
     time that matters is the time the server died in the middle of a run.
     """
     return {"ok": ok, "error": error, "code": code, "tests": tests,
-            "contract": contract, "attempts": attempts}
+            "contract": contract, "attempts": attempts,
+            "agents": agents or {"stopped_on": "", "roles": []}}
 
 
 def _code(pc, body, required_docs=False):
@@ -78,7 +80,8 @@ def _code(pc, body, required_docs=False):
                         tests=res.get("tests", ""),
                         contract=res.get("contract"),
                         attempts=res.get("attempts"),
-                        error=res.get("error", ""))
+                        error=res.get("error", ""),
+                        agents=res.get("agents"))
 
 
 def _status(pc, _body=None):
@@ -182,7 +185,8 @@ class _Handler(BaseHTTPRequestHandler):
                              tests=res.get("tests", ""),
                              contract=res.get("contract"),
                              attempts=res.get("attempts"),
-                             error=res.get("error", ""))
+                             error=res.get("error", ""),
+                             agents=res.get("agents"))
         except RuntimeError as e:
             answer = _answer(error=str(e))
         except (BrokenPipeError, ConnectionResetError):

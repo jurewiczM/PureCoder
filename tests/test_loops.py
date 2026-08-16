@@ -732,3 +732,62 @@ def test_retrieved_documentation_stays_out_of_the_verdict():
     assert not res["ok"]
     assert "identical failures" in res["error"]
     assert "docs for attempt" not in res["error"]
+
+
+# ---- attribution, recorded rather than guessed ---------------------------
+
+def test_a_passing_run_records_who_did_the_work():
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False)
+    roles = {r["name"]: r for r in res["agents"]["roles"]}
+    assert res["agents"]["stopped_on"] == ""
+    assert roles["writer"]["attempts"] == 1 and roles["writer"]["accepted"]
+
+
+def test_the_two_failures_a_verdict_cannot_tell_apart_are_distinguishable():
+    """This is the whole point of the ledger.
+
+    Both runs below end `ok=False`, and the score is identical. One is the
+    model writing code that does not pass; the other is the harness refusing a
+    suite before any code was written. Reading the transcript was the only way
+    to tell them apart, which is why `benchlog.py` exists and why it got four
+    of seven wrong. The ledger states it.
+    """
+    # The writer spends every attempt and never passes.
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    bad_code = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=2, verbose=False)
+
+    # The tester never clears the gate, so the writer is never reached.
+    pc2 = FakeModel(code_outputs=[GOOD_CODE], completions=["assert True\n"])
+    refused = generate_validated_python(
+        pc2, "add two numbers", max_retries=2, verbose=False)
+
+    assert not bad_code["ok"] and not refused["ok"]
+    assert bad_code["agents"]["stopped_on"] == "writer"
+    assert refused["agents"]["stopped_on"] == "tester"
+    # And the one that never reached the writer says so by omission.
+    assert "writer" not in {r["name"] for r in refused["agents"]["roles"]}
+
+
+def test_a_refusal_before_any_role_runs_blames_nobody():
+    """An unavailable language is refused before a single model call. There is
+    no role to attribute that to, and inventing one would be a lie the UI would
+    then display."""
+    from purecoder import languages
+
+    res = generate_validated_python(
+        None, "anything", spec=languages.get("go"), verbose=False)
+    assert not res["ok"]
+    assert res["agents"] == {"stopped_on": "", "roles": []}
+
+
+def test_every_event_names_the_role_that_produced_it():
+    seen = []
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        on_event=seen.append)
+    assert seen, "the run narrated nothing"
+    assert all("agent" in e for e in seen)

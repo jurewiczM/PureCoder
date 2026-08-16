@@ -120,6 +120,15 @@ def _print_result(res, show_tests=False):
         print("\n[tests used]\n" + res["tests"])
     if not ok and res.get("error"):
         print(f"error: {res['error']}")
+    # Where the run stopped, which the verdict alone cannot say: `ok=False`
+    # reads identically whether the model wrote bad code or the harness refused
+    # a suite before any code existed.
+    stopped = (res.get("agents") or {}).get("stopped_on")
+    if not ok and stopped:
+        roles = {r["name"]: r for r in res["agents"]["roles"]}
+        spent = roles[stopped]["attempts"]
+        print(f"stopped on: {stopped} ({spent} attempt"
+              f"{'' if spent == 1 else 's'})")
     return 0 if ok else 1
 
 
