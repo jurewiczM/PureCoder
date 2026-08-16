@@ -32,7 +32,8 @@ def _write(outdir: str, filename: str, content: str) -> str:
 
 def scaffold_project(pc, name, description, outdir="build",
                      entry=None, max_retries=5, verbose=True,
-                     use_contract=True, spec=PYTHON, docs="", error_hint=None):
+                     use_contract=True, spec=PYTHON, docs="", error_hint=None,
+                     error_docs=None):
     # Refuse before creating anything. A declared-but-unwired language has no
     # ProjectSpec, so it cannot even name its entry file -- and a directory
     # created then abandoned is worse than a refusal that explains itself.
@@ -82,6 +83,7 @@ def scaffold_project(pc, name, description, outdir="build",
         f"{grounded}\n\nThis is the main module `{entry}`.",
         use_contract=use_contract, spec=spec,
         max_retries=max_retries, verbose=verbose, error_hint=error_hint,
+        error_docs=error_docs,
     )
     code = code_res["text"]
     # A compiled language needs an entry point to link. The sandbox supplies

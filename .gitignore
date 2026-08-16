@@ -36,3 +36,7 @@ dashboardTest/
 
 # local agent notes, not part of the repo
 CLAUDE.md
+
+# the UI is not part of this branch; keep its installed deps out regardless
+UI/app/node_modules/
+UI/app/dist/
