@@ -14,15 +14,16 @@ from .client import GRAMMARS_DIR
 
 
 def _check_server(pc):
-    import requests
+    # Through the client's session, not a bare requests.get: same connection,
+    # same configuration, one place to change either.
     try:
-        r = requests.get(f"{pc.base_url}/health", timeout=3)
+        r = pc.session.get(f"{pc.base_url}/health", timeout=3)
         up = r.status_code == 200
     except Exception:
         return False, None
     model = None
     try:
-        props = requests.get(f"{pc.base_url}/props", timeout=3).json()
+        props = pc.session.get(f"{pc.base_url}/props", timeout=3).json()
         model = os.path.basename(props.get("default_generation_settings", {})
                                  .get("model", "") or props.get("model_path", ""))
     except Exception:
@@ -62,20 +63,38 @@ def _check_grammars():
     return sorted(f.name for f in d.iterdir() if f.suffix == ".gbnf")
 
 
+def collect(pc) -> dict:
+    """Everything the status probes know, as data. -> dict.
+
+    Split from the printing so `GET /status` answers with the same facts the
+    CLI shows rather than a second set gathered its own way.
+    """
+    up, model = _check_server(pc)
+    return {
+        "server": {"up": up, "url": pc.base_url, "model": model},
+        "gpu": _check_gpu(),
+        "grammars": _check_grammars(),
+        "modules": {m: (True if v is True else str(v))
+                    for m, v in _check_modules().items()},
+    }
+
+
 def print_status(pc):
     print("=" * 56)
     print(" PureCoder — system status")
     print("=" * 56)
 
-    up, model = _check_server(pc)
+    info = collect(pc)
+    up = info["server"]["up"]
+    model = info["server"]["model"]
     print(f" server    : {'UP' if up else 'DOWN'}  ({pc.base_url})")
     if model:
         print(f" model     : {model}")
 
-    gpu = _check_gpu()
+    gpu = info["gpu"]
     print(f" gpu       : {gpu or 'no nvidia-smi found'}")
 
-    grams = _check_grammars()
+    grams = info["grammars"]
     print(f" grammars  : {', '.join(grams) if grams else 'none found in grammars/'}")
 
     print(" modules   :")

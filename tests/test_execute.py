@@ -849,3 +849,4 @@ def test_a_python_traceback_frame_is_not_an_ocaml_location():
     exception. Caught by the existing trim test, which is why it is here."""
     assert not _DIAGNOSTIC.search('File "x.py", line 3, in f')
     assert _DIAGNOSTIC.search('File "candidate.ml", line 14, characters 6-12:')
+

@@ -198,7 +198,7 @@ def test_generating_reads_the_docs_the_language_was_learned_from(learned, capsys
     no second ingest and no --store."""
     from purecoder.cli import ground_in_docs
 
-    context, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
+    context, hint = ground_in_docs(learned, "alpha", device="cpu")
     assert "Relevant documentation:" in context
     assert "Zig.print" in context
     assert "using the ziglike docs from `learn`" in capsys.readouterr().out
@@ -212,7 +212,7 @@ def test_the_docs_answer_did_you_mean_for_that_language(learned):
     the fix loop, so a name the toolchain rejects gets the real one back."""
     from purecoder.cli import ground_in_docs
 
-    _, hint = ground_in_docs(DocArgs("ziglike"), learned, "alpha")
+    _, hint = ground_in_docs(learned, "alpha", device="cpu")
     assert "Zig.print" in hint("error: cannot find `Zig.prnt` in this scope")
 
 
@@ -225,8 +225,8 @@ def test_an_explicit_store_grounds_any_language(learned, store):
     from purecoder.languages import get
 
     named = str(docs_index_path("ziglike"))     # any index, reached by path
-    context, hint = ground_in_docs(DocArgs("python", store=named),
-                                   get("python"), "alpha")
+    context, hint = ground_in_docs(get("python"), "alpha", store=named,
+                                   device="cpu")
     assert "Zig.print" in context and hint is not None
 
 
@@ -267,7 +267,7 @@ def test_a_hand_written_language_is_left_alone():
     from purecoder.cli import ground_in_docs
     from purecoder.languages import get
 
-    assert ground_in_docs(DocArgs(), get("python"), "add two numbers") == ("", None)
+    assert ground_in_docs(get("python"), "add two numbers", device="cpu") == ("", None)
 
 
 def test_no_docs_turns_it_off():
@@ -275,7 +275,7 @@ def test_no_docs_turns_it_off():
     from purecoder.languages import LanguageSpec
 
     spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
-    assert ground_in_docs(DocArgs(no_docs=True), spec, "a thing") == ("", None)
+    assert ground_in_docs(spec, "a thing", no_docs=True, device="cpu") == ("", None)
 
 
 def test_a_missing_index_does_not_stop_generation(capsys, store):
@@ -286,7 +286,7 @@ def test_a_missing_index_does_not_stop_generation(capsys, store):
     from purecoder.languages import LanguageSpec
 
     spec = LanguageSpec(name="zig", extension=".zig", docs_store="zig")
-    assert ground_in_docs(DocArgs(), spec, "a thing") == ("", None)
+    assert ground_in_docs(spec, "a thing", device="cpu") == ("", None)
     assert "Traceback" not in capsys.readouterr().out
 
 

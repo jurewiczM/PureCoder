@@ -4,7 +4,9 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-559 tests, all green, none of them needing a GPU or a running server
+
+568 tests, all green, none of them needing a GPU or a running server
+
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 | Phase | Component | Status | How it was verified |
@@ -39,6 +41,10 @@ _Snapshot of what's built, tested, and what's next._
 | — | `scaffold.py` orchestrator | ✅ tested | every artifact written; failure correctly reported |
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
+
+| 12 | ten-task cross-language benchmark | ✅ built, ✅ run | 60 tasks over 6 languages, 2026-08-09; four of seven failures were the harness, not the model |
+| 12 | `benchlog.py` failure attribution | ✅ tested, ⚠️ wrong | 14 cases; misattributed 4 of 7 real failures to `writer` on its first live run |
+
 
 ## Key findings from the build
 
@@ -195,6 +201,32 @@ _Snapshot of what's built, tested, and what's next._
   [scripts/bench/](../scripts/bench/), transcripts and all -- an earlier
   version discarded them and a batch of correct implementations was nearly
   recorded as a capability result.
+- **A fourth live run found six, and the suites could not pass** --
+  [docs/live-runs/2026-08-09-the-tests-could-not-pass.md](live-runs/2026-08-09-the-tests-could-not-pass.md).
+  The first sixty tasks the cross-language benchmark ever ran scored 53/60, and
+  four of the seven failures were correct implementations judged by tests that
+  no implementation could satisfy: `unique([]) === []` is false in JavaScript
+  for every input, `==` on `List<int>` is reference equality in C#, and a
+  Python suite asserted `count_vowels(...) == 10` where the answer is 9 --
+  counting Y, against a spec that says "never counting y". Corrected, five of
+  six languages score 10/10. Three consequences are recorded there and only the
+  first is fixed: `test_fix` now repairs the container comparison in both
+  languages (control re-run: javascript 9->10, c# 8->9); `execute.py` returns
+  `stderr or stdout`, so every C# compile diagnostic is discarded and the fix
+  loop is told only "compilation failed"; and `benchlog.py`, written the day
+  before to prevent exactly this misreading, attributed all four harness
+  failures to `writer`. Its `unknown` bucket returned zero across sixty tasks,
+  which looked like validation and was not -- the error was inside a
+  *recognised* bucket.
+- **The cross-language benchmark saturates as a capability instrument.**
+  Corrected for the harness failures above, only OCaml discriminates, and only
+  because the model is weak in it. `roman` -- the intended hardest of the ten,
+  and the reason for a 3/4/3 difficulty ramp -- passed on the first attempt in
+  every other language. As a *pipeline* benchmark 53/60 is a real result; as a
+  way to compare two models or catch a regression it cannot see. Same shape as
+  `bench.py`'s recorded failure, for a different reason. Also measured: pinning
+  a task's edge cases in its spec text does not stop a tester contradicting
+  them, because a spec is a prompt and the rule about prompts applies to it.
 - **The bootstrap's own prompts were three of its four failure modes.** Six
   `learn ocaml` runs against real stdlib `.mli` files produced: a model
   explanation compiled as source (`unfence` strips fences, not prose); a
@@ -431,14 +463,40 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Next steps (priority order)
 
-1. **Make the contract measurement conclusive.** The instrument is built and
+1. **Give the fix loop C#'s diagnostics back.** `execute.py` ends a failed run
+   with `stderr.strip() or stdout.strip()`, and the `or` discards stdout
+   whenever stderr says anything. `dotnet run` splits its streams the opposite
+   way from Python: `file(line,col): error CS0106: ...` goes to stdout, and
+   stderr carries a content-free "compilation failed". So the writer is asked
+   to fix an error it is never shown, and a live task burned four attempts
+   doing exactly that. First because it is a few lines, because it silently
+   defeats the whole fix-loop-shows-its-output design for one language, and
+   because it is probably not C#-specific -- any toolchain that puts
+   diagnostics on stdout and a summary on stderr loses them here. Two ways:
+   merge both streams (general, changes behaviour for all seven languages, so
+   it needs its own control re-run) or declare the diagnostic stream per
+   language (data not heuristics, but only fixes what someone thinks to mark).
+2. **Teach `benchlog` that a redesigned suite is the tester's failure.** It
+   put four of seven real failures in `writer`, the one bucket documented as
+   accusing the model. The marker is already in the transcripts it reads: a run
+   that printed `suspecting the tests, redesigning them` and still failed is
+   not a writer failure. Until this is fixed, every number the cross-language
+   benchmark produces has to be read against its transcripts by hand, which is
+   the labour the classifier exists to remove.
+3. **Re-pitch the corpus, now that there is data.** Five of six languages score
+   10/10 corrected. The 3/4/3 ramp was judgement with nothing behind it and the
+   top of it is not a top: `roman` passed first try everywhere but OCaml. This
+   is worth doing only after the two above, because a harder corpus measured by
+   a classifier that blames the wrong component is a worse instrument, not a
+   better one.
+4. **Make the contract measurement conclusive.** The instrument is built and
    has been RUN -- twice -- and it could not see what it exists to see: zero
    divergence in both arms, because nine of ten arms ended in the loop
    refusing. Spec-divergence only exists downstream of a passing run, so a
    model that fails closed on these specs starves the measurement. It needs a
    larger or easier task set, more repeats, or a stronger model, and the
    choice between those is a real decision rather than a chore.
-2. **The tester, which every measurement now points at.** Eight of ten
+5. **The tester, which every measurement now points at.** Eight of ten
    measured arms ended in "suspecting the tests". Two of today's three
    mechanical wins were tester-shaped (`test_lint`, `test_fix`), and test-first
    proves a suite CAN fail without judging whether its expectations are right.
@@ -452,25 +510,24 @@ _Snapshot of what's built, tested, and what's next._
    The remaining known gap is narrower than it was: the gate can now tell that
    a suite is aimed at the target, in any language, but still not that its
    expectations are right.
-3. **HTML in `ingest`.** It matches prose and source extensions, and the web's
+6. **HTML in `ingest`.** It matches prose and source extensions, and the web's
    documentation is HTML -- skipped whole rather than stripped and indexed. The
    ocaml.org tutorials only worked because they are markdown in their source
    repository, which is not how most projects publish.
-4. **A per-run venv, if the declaration ever needs to install anything.**
+7. **A per-run venv, if the declaration ever needs to install anything.**
    `--with` covers what the environment already has; anything else is still a
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-5. **Merge the branch stack.** One branch left:
-   `feat/09-tree-sitter-chunking`, 112 commits ahead of `main`, merging
-   cleanly. It holds **every non-merge commit in the repository** -- verified
-   against `main` and all seven other branches with
-   `git log --no-merges <branch> --not origin/feat/09-tree-sitter-chunking`,
-   which returns nothing for every one of them. So one PR lands the lot, and
-   the other branches are subsets rather than remaining work.
+8. **The branch stack is landed.** `main` carries the lot as of 2026-08-09
+   (PR #19, 113 commits). Nothing of the old chain is outstanding. New work is
+   a branch off `main` and a PR against it -- the stacked shape is not worth
+   rebuilding, and the reasons are recorded below.
 
-   That is not how it was meant to go, and the way it failed is the useful
-   part. Every PR in the stack was merged **head into base** -- downward,
+   What it cost, kept because the shape is cheap to recreate by accident.
+
+   The way it failed is the useful part. Every PR in the stack was first
+   merged **head into base** -- downward,
    away from `main` -- so content flowed from `feat/14` back toward
    `feat/03` instead of forward. Then `feat/03 -> main` (#18) fired at
    15:08, four minutes *before* the cascade reached `feat/03` at 15:12, so
@@ -524,7 +581,7 @@ _Snapshot of what's built, tested, and what's next._
    order that silently dropped 11,000 lines on the floor. The failure modes
    are all in the *shape*, not in any commit. Next time: fewer, wider
    branches, each merged to `main` before the next is cut.
-6. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
+9. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
    [docs/superpowers/specs/2026-08-04-specialization-plan.md](superpowers/specs/2026-08-04-specialization-plan.md).

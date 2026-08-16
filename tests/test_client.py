@@ -3,6 +3,7 @@
 import re
 
 import pytest
+import requests
 
 from purecoder.client import GRAMMARS_DIR, PureCoder, strip_fences
 
@@ -127,24 +128,22 @@ def test_env_grammar_bounds_line_length():
 
 
 # ---- truncation, which stopped being reported ----------------------------
-
-class _FakeResponse:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return self._payload
+#
+# `_FakeResponse` and `_FakeSession` live below with the transport tests.
 
 
 def _completion(monkeypatch, payload):
-    import purecoder.client as C
+    """One completion against a scripted response, with no server involved.
 
-    monkeypatch.setattr(C.requests, "post",
-                        lambda *a, **kw: _FakeResponse(payload))
-    return C.PureCoder().complete(system="s", user="u")
+    This used to patch `requests.post` at module level. When the client moved
+    onto a session that patch stopped intercepting, and the tests did not all
+    fail -- they reached the llama-server actually listening on 8080 and one of
+    them passed on its answer. Injecting the session is the seam that cannot
+    silently stop working: there is no global left to miss.
+    """
+    pc = PureCoder()
+    pc.session = _FakeSession(_FakeResponse(payload))
+    return pc.complete(system="s", user="u")
 
 
 def test_a_generation_cut_off_at_n_predict_is_reported(monkeypatch):
@@ -180,3 +179,115 @@ def test_a_truncated_prompt_is_not_a_truncated_answer(monkeypatch):
     out = _completion(monkeypatch, {"content": "x", "truncated": True,
                                     "stop_type": "eos"})
     assert out["truncated"] is False
+
+
+# ---- the transport -------------------------------------------------------
+#
+# One TCP connection per run instead of one per call, and a bounded retry for
+# a blip that is not the server being down. Hermetic: a fake session stands in
+# for requests, so none of this needs a llama-server.
+
+class _FakeResponse:
+    def __init__(self, payload=None, status=200):
+        self._payload = payload if payload is not None else {"content": "ok"}
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Server Error")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    """Records every post and replays a scripted sequence of outcomes."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def post(self, url, **kw):
+        self.calls += 1
+        out = self.outcomes[min(self.calls - 1, len(self.outcomes) - 1)]
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def test_every_call_goes_through_one_session():
+    """A new connection per call is 60+ handshakes over a benchmark run. The
+    session is the thing that makes them one."""
+    pc = PureCoder()
+    assert pc.session is not None
+    assert pc.session is pc.session          # same object, not rebuilt per call
+
+
+def test_a_transient_connection_error_is_retried(monkeypatch):
+    """llama-server restarting mid-batch should cost a retry, not the run."""
+    monkeypatch.setattr("purecoder.client.time.sleep", lambda s: None)
+    pc = PureCoder()
+    pc.session = _FakeSession(requests.ConnectionError("reset"),
+                              _FakeResponse({"content": "recovered"}))
+    assert pc.complete("s", "u")["text"] == "recovered"
+    assert pc.session.calls == 2
+
+
+def test_a_timeout_is_retried_too(monkeypatch):
+    monkeypatch.setattr("purecoder.client.time.sleep", lambda s: None)
+    pc = PureCoder()
+    pc.session = _FakeSession(requests.Timeout("slow"),
+                              _FakeResponse({"content": "recovered"}))
+    assert pc.complete("s", "u")["text"] == "recovered"
+
+
+def test_retries_are_bounded_so_a_dead_server_still_fails_fast(monkeypatch):
+    """The pipeline depends on a dead server failing rather than hanging: the
+    contract layer falls back on it and the benchmark buckets it."""
+    monkeypatch.setattr("purecoder.client.time.sleep", lambda s: None)
+    pc = PureCoder(retries=2)
+    pc.session = _FakeSession(requests.ConnectionError("refused"))
+    with pytest.raises(RuntimeError):
+        pc.complete("s", "u")
+    assert pc.session.calls == 3             # the first try plus two retries
+
+
+def test_the_failure_message_is_unchanged_because_things_match_on_it():
+    """`benchlog.classify` reads this exact wording to bucket a run as
+    `server`, and a fake in test_contract.py raises it verbatim. Rewording it
+    breaks failure attribution silently, which is this project's favourite
+    bug."""
+    pc = PureCoder(retries=0)
+    pc.session = _FakeSession(requests.ConnectionError("refused"))
+    with pytest.raises(RuntimeError, match="llama-server request failed"):
+        pc.complete("s", "u")
+
+
+def test_an_http_error_is_not_retried(monkeypatch):
+    """A 500 from llama-server is a real answer, not a blip. Retrying it hides
+    a server-side problem behind three identical failures."""
+    monkeypatch.setattr("purecoder.client.time.sleep", lambda s: None)
+    pc = PureCoder(retries=2)
+    pc.session = _FakeSession(_FakeResponse(status=500))
+    with pytest.raises(RuntimeError, match="llama-server request failed"):
+        pc.complete("s", "u")
+    assert pc.session.calls == 1
+
+
+def test_status_probes_share_the_client_session(monkeypatch):
+    """status.py opened its own connections with bare requests.get, which is
+    the same drift the session exists to remove."""
+    from purecoder import status
+
+    seen = []
+
+    class _GetSession(_FakeSession):
+        def get(self, url, **kw):
+            seen.append(url)
+            return _FakeResponse({"model_path": "/models/m.gguf"})
+
+    pc = PureCoder()
+    pc.session = _GetSession()
+    up, model = status._check_server(pc)
+    assert up is True
+    assert seen and all(u.startswith(pc.base_url) for u in seen)
