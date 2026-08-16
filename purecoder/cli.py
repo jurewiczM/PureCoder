@@ -120,15 +120,27 @@ def _print_result(res, show_tests=False):
         print("\n[tests used]\n" + res["tests"])
     if not ok and res.get("error"):
         print(f"error: {res['error']}")
-    # Where the run stopped, which the verdict alone cannot say: `ok=False`
+    # What each role spent, which the verdict alone cannot say: `ok=False`
     # reads identically whether the model wrote bad code or the harness refused
     # a suite before any code existed.
-    stopped = (res.get("agents") or {}).get("stopped_on")
-    if not ok and stopped:
-        roles = {r["name"]: r for r in res["agents"]["roles"]}
-        spent = roles[stopped]["attempts"]
-        print(f"stopped on: {stopped} ({spent} attempt"
-              f"{'' if spent == 1 else 's'})")
+    #
+    # Every role, not just the one it stopped on. Printing the stop alone is
+    # actively misleading and a live SQL run showed why: it read `stopped on:
+    # writer` while the implementation was a correct `COALESCE(SUM(n), 0)` and
+    # the tester -- which had already been redesigned once by the no-progress
+    # rule, and shows here as two attempts -- was what could not be satisfied.
+    # The sequence is the evidence; the last line of it is not.
+    agents = res.get("agents") or {}
+    if not ok and agents.get("roles"):
+        print("roles:")
+        for role in agents["roles"]:
+            mark = "ok " if role["accepted"] else "no "
+            note = f"  {role['reason'][:44]}" if role["reason"] else ""
+            print(f"  {mark} {role['name']:9} {role['attempts']} attempt"
+                  f"{'' if role['attempts'] == 1 else 's'}{note}")
+        if agents.get("stopped_on"):
+            print(f"  stopped on: {agents['stopped_on']} -- where it ran out, "
+                  f"which is not always what was wrong")
     return 0 if ok else 1
 
 

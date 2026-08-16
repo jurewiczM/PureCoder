@@ -41,3 +41,6 @@ CLAUDE.md
 # the UI's installed deps and build output
 UI/app/node_modules/
 UI/app/dist/
+
+# transcripts scripts/demo.sh keeps for a refused run
+demo-*.log
