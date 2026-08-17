@@ -291,3 +291,24 @@ def test_status_probes_share_the_client_session(monkeypatch):
     up, model = status._check_server(pc)
     assert up is True
     assert seen and all(u.startswith(pc.base_url) for u in seen)
+
+
+def test_the_start_command_names_weights_that_are_already_on_disk(tmp_path):
+    """`-hf` resolves against the HuggingFace cache and nothing else.
+
+    Measured 2026-08-17: the 30B was sitting in ~/models as a plain file, the
+    printed command asked for it by repo id, and llama.cpp began a 14.7 GB
+    download that ran for fifty minutes before anyone looked at where it was
+    writing. Nothing was broken -- the cache genuinely did not hold it -- which
+    is exactly why a status line that names a path costs nothing and a status
+    line that names a repo can cost an hour.
+    """
+    from purecoder import status
+
+    weights = tmp_path / "Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf"
+    weights.write_bytes(b"\x00")
+
+    assert status._local_weights([tmp_path]) == weights
+    assert status._start_command([tmp_path]).startswith(f"-m {weights}")
+    # Nothing on disk: the repo id is still the answer, not an error.
+    assert "-hf unsloth/" in status._start_command([tmp_path / "absent"])

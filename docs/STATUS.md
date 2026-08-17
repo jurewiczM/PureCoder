@@ -4,7 +4,7 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-653 tests, all green, none of them needing a GPU or a running server
+655 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
 
 Two counts stood here for a day, 652 and 623, one above the other -- a merge
@@ -625,6 +625,36 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   worth opening*. Same two runs, and one answer is evidence while the other is
   a pointer.
 
+- **A seventh live session, and it found the ledger's own output.** Smoke was
+  6/6 and the demo was 6 passed / 1 refused, with SQL reproducing the
+  documented case exactly -- `stopped on: writer`, the writer's
+  `COALESCE(SUM(n), 0)` correct, the tester at two attempts because the
+  no-progress rule had already redesigned the suite. Then the roles block
+  printed this:
+
+      no  writer    4 attempts  CHECK FAILED: empty table sum
+      CHECK FAILED:
+        stopped on: writer -- where it ran out, ...
+
+  `role['reason'][:44]` sliced a string with a newline in it, so the second
+  line became a row with no role attached and truncated mid-token -- in the one
+  block whose whole purpose is to make attribution unambiguous. SQL is where it
+  surfaces because SQL reports EVERY failing check rather than the first, which
+  is the thing it gets in exchange for having no assertion. First line, then
+  truncate; the full text is in the `error:` line above and in the transcript.
+  Neither the suite nor six languages of passing demo could see it, because
+  every other language's reason is one line.
+- **`-hf` is the wrong start command the moment weights are on disk.** It
+  resolves against the HuggingFace cache and nothing else, so a 14.7 GB GGUF
+  sitting in `~/models` is invisible to it. `purecoder status` printed that
+  form unconditionally, a download started, and it ran for fifty minutes before
+  anyone looked at where it was writing -- the file was already there and the
+  server came up in nine seconds from `-m`. Nothing was broken, which is the
+  point: the failure is that a status line naming a repo id can cost an hour
+  and one naming a path cannot. `status.py` now looks in `~/models` and the
+  llama.cpp cache and prints `-m <path>` when it finds the documented file,
+  falling back to `-hf` when it does not. `scripts/smoke.sh` prints the same
+  line, so it is fixed there too.
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
   end, including grammar-constrained contract derivation; the embedding call
