@@ -46,13 +46,11 @@ function RunList({
   selected: string | null
   onSelect: (id: string) => void
 }) {
+  if (runs.length === 0) return null
+
   return (
-    <div className="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-line">
-      {runs.length === 0 ? (
-        <p className="px-5 py-4 text-xs leading-relaxed text-faint">
-          No runs in this session. The list is not stored — a reload clears it.
-        </p>
-      ) : null}
+    <div className="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-line bg-base">
+      <p className="eyebrow px-4 pt-4 pb-2">This session</p>
       {runs.map((run) => {
         const on = run.id === selected
         const state = runState(run)
@@ -60,17 +58,50 @@ function RunList({
           <button
             key={run.id}
             onClick={() => onSelect(run.id)}
-            className={`flex items-center gap-2.5 border-b border-line-soft px-4 py-3 text-left transition-colors ${
-              on ? 'bg-surface' : 'hover:bg-line-soft'
+            className={`flex items-baseline gap-2.5 px-4 py-3 text-left transition-colors ${
+              on ? 'bg-sheet' : 'hover:bg-line-soft'
             }`}
           >
-            <Marker state={state} />
+            <Marker state={state} size={8} className="translate-y-[-1px]" />
             <span className="min-w-0 flex-1 truncate text-xs text-ink">{run.spec}</span>
-            <span className="shrink-0 text-[11px] text-faint">{run.lang}</span>
+            <span className="shrink-0 font-mono text-[11px] text-faint">{run.lang}</span>
           </button>
         )
       })}
+      <p className="mt-auto px-4 py-4 text-[11px] leading-relaxed text-faint">
+        Kept in this tab only. A reload clears the list; nothing is written to
+        disk.
+      </p>
     </div>
+  )
+}
+
+/**
+ * A block of machine output: code, a suite, a diagnostic.
+ *
+ * Always monospaced, always on the raised surface, always scrollable in its
+ * own right rather than widening the record. Long lines are the normal case
+ * here -- a compiler diagnostic carries a whole path -- and a page that grows
+ * sideways to fit one of them is unreadable for everything else.
+ */
+function Evidence({
+  label,
+  children,
+  tone = 'text-ink',
+}: {
+  label: string
+  children: string
+  tone?: string
+}) {
+  return (
+    <figure className="mt-6">
+      <figcaption className="eyebrow mb-2">{label}</figcaption>
+      <pre
+        className={`overflow-x-auto rounded border border-line bg-raised px-4 py-3.5 font-mono text-xs leading-6 ${tone}`}
+      >
+        {children}
+      </pre>
+    </figure>
   )
 }
 
@@ -84,61 +115,95 @@ function Transcript({ run }: { run: Run }) {
   }, [run.events.length, run.running])
 
   const verdict = run.verdict
+  const state = runState(run)
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <div className="flex items-baseline justify-between border-b border-line px-5 py-3">
-        <span className="mr-4 truncate text-xs text-ink">{run.spec}</span>
-        <VerdictLine
-          state={runState(run)}
-          detail={
-            run.running
-              ? run.startedAt
-              : verdict
-                ? `${verdict.attempts} attempt${verdict.attempts === 1 ? '' : 's'}`
-                : undefined
-          }
-        />
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-sheet">
+      {/* The head of the record: what was asked, and how it was ruled on. */}
+      <div className="sticky top-0 z-10 border-b border-line bg-sheet px-6 pt-5 pb-4">
+        <p className="eyebrow mb-1.5">The request</p>
+        <p className="max-w-3xl text-[15px] leading-snug text-ink">{run.spec}</p>
+        <div className="mt-3.5 flex items-baseline gap-4">
+          <VerdictLine
+            large
+            state={state}
+            detail={
+              run.running
+                ? `started ${run.startedAt}`
+                : verdict
+                  ? `${verdict.attempts} attempt${verdict.attempts === 1 ? '' : 's'}`
+                  : undefined
+            }
+          />
+          <span className="font-mono text-xs text-faint">{run.lang}</span>
+        </div>
+        {run.running ? (
+          <div className="is-scanning relative mt-4 h-px overflow-hidden bg-line" />
+        ) : null}
       </div>
 
-      <div className="flex-1 px-5 py-4 text-xs leading-7">
-        {run.events.map((event, i) => (
-          <div key={i} className="flex gap-3">
-            <span
-              className="w-16 shrink-0 text-right text-faint select-none"
-              title={event.agent ? `emitted by the ${event.agent}` : undefined}
-            >
-              {event.agent}
-            </span>
-            <span className={`min-w-0 flex-1 ${EVENT_TONE[event.kind] ?? 'text-muted'}`}>
-              {event.text}
-            </span>
+      <div className="px-6 py-5">
+        {/* THE LEDGER. Role in the margin, a continuous rule, the line beside
+         * it -- so who produced a line is read off the layout rather than
+         * hunted for inside it. */}
+        {run.events.length ? (
+          <div className="ledger">
+            <div className="ledger-spine" aria-hidden />
+            {run.events.map((event, i) => (
+              <div key={i} className="contents">
+                <div className="ledger-role py-0.5">{event.agent}</div>
+                <div
+                  className={`ledger-body py-0.5 font-mono text-xs leading-6 ${
+                    EVENT_TONE[event.kind] ?? 'text-muted'
+                  }`}
+                >
+                  {event.agent ? (
+                    <Marker
+                      state="idle"
+                      size={6}
+                      className="ledger-mark translate-y-[-2px]"
+                    />
+                  ) : null}
+                  {event.text}
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-        {run.running && run.events.length === 0 ? (
-          <div className="is-working text-faint">waiting for the first attempt…</div>
         ) : null}
-        {run.failure ? <div className="text-fail">{run.failure}</div> : null}
+
+        {run.running && run.events.length === 0 ? (
+          <p className="text-xs text-muted">
+            <span className="is-working">Asking the tester for a suite.</span>{' '}
+            Nothing is generated until there is something to judge it with.
+          </p>
+        ) : null}
+
+        {run.failure ? (
+          <p className="mt-4 rounded border border-fail/40 bg-fail/5 px-3.5 py-2.5 text-xs text-fail">
+            {run.failure}
+          </p>
+        ) : null}
 
         {verdict && !verdict.ok && verdict.error ? (
-          <div className="mt-4 border-l-2 border-fail pl-3 whitespace-pre-wrap text-fail">
+          <Evidence label="Why it refused" tone="text-fail">
             {verdict.error}
-          </div>
+          </Evidence>
         ) : null}
 
         <Roles ledger={verdict?.agents} />
 
         {verdict?.code ? (
-          <pre className="mt-5 overflow-x-auto border-t border-line pt-4 text-ink">
-            {verdict.code}
-          </pre>
+          <Evidence label={`The ${run.lang} it emitted`}>{verdict.code}</Evidence>
         ) : null}
 
         {verdict?.tests ? (
-          <details className="mt-4 border-t border-line pt-3">
-            <summary className="cursor-pointer text-faint hover:text-muted">
-              the suite it was judged against
+          <details className="mt-6 rounded border border-line">
+            <summary className="cursor-pointer px-3.5 py-2.5 text-xs text-muted transition-colors hover:text-ink">
+              The suite it was judged against
             </summary>
-            <pre className="mt-3 overflow-x-auto text-muted">{verdict.tests}</pre>
+            <pre className="overflow-x-auto border-t border-line px-4 py-3.5 font-mono text-xs leading-6 text-muted">
+              {verdict.tests}
+            </pre>
           </details>
         ) : null}
 
@@ -157,27 +222,47 @@ const CORPUS: [string, string][] = [
   ['gcd', 'a function gcd that returns the greatest common divisor of two non-negative integers; gcd of x and 0 is x, and gcd of 0 and 0 is 0'],
 ]
 
+/**
+ * The empty state, which is where a first-time reader starts.
+ *
+ * It has one job: explain why this page is a transcript and not a dashboard,
+ * then hand over a spec to run. The corpus entries used to be bare words that
+ * looked like prose and behaved like buttons; they are cards now, because a
+ * control that does not look like one is not an affordance.
+ */
 function Empty({ onPick }: { onPick: (spec: string) => void }) {
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-8">
-      <p className="max-w-xl text-xs leading-relaxed text-muted">
-        A run reports the same verdict whether the model wrote bad code or the
-        harness refused good code. The transcript is what tells them apart, so
-        it is the page here rather than a detail view.
-      </p>
-      <p className="mt-6 mb-2 text-xs text-faint">
-        Three specs from the benchmark corpus, if you want one to hand:
-      </p>
-      <div className="flex flex-col items-start gap-1">
-        {CORPUS.map(([name, spec]) => (
-          <button
-            key={name}
-            onClick={() => onPick(spec)}
-            className="text-xs text-faint transition-colors hover:text-pass"
-          >
-            {name}
-          </button>
-        ))}
+    <div className="flex-1 overflow-y-auto bg-sheet px-6 py-10">
+      <div className="mx-auto max-w-2xl">
+        <h2 className="text-xl leading-snug font-semibold text-ink">
+          Read the run, not the score.
+        </h2>
+        <p className="mt-3 text-sm leading-relaxed text-muted">
+          A run reports the same verdict whether the model wrote bad code or the
+          harness refused good code. Those are opposite bugs and the verdict
+          cannot tell them apart — only the transcript can, which is why it is
+          the page here rather than a detail view.
+        </p>
+
+        <p className="eyebrow mt-9 mb-3">Start with a spec from the corpus</p>
+        <div className="grid gap-2">
+          {CORPUS.map(([name, spec]) => (
+            <button
+              key={name}
+              onClick={() => onPick(spec)}
+              className="group rounded border border-line bg-raised px-4 py-3 text-left transition-colors hover:border-faint"
+            >
+              <span className="font-mono text-xs text-ink">{name}</span>
+              <span className="mt-1 block text-xs leading-relaxed text-faint group-hover:text-muted">
+                {spec}
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="mt-3 text-[11px] text-faint">
+          These are the tasks the benchmark measures this pipeline against, word
+          for word.
+        </p>
       </div>
     </div>
   )
@@ -206,55 +291,65 @@ function Composer({
   }
 
   return (
-    <div className="shrink-0 border-t border-line bg-surface px-5 py-4">
-      <textarea
-        value={spec}
-        onChange={(e) => setSpec(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit()
-        }}
-        rows={2}
-        disabled={busy}
-        placeholder="a function that…"
-        className="w-full resize-none rounded border border-line bg-base px-3 py-2.5 text-xs leading-relaxed text-ink outline-none placeholder:text-faint focus:border-faint disabled:opacity-40"
-      />
-      <div className="mt-2.5 flex items-center gap-4 text-xs">
-        <label className="flex items-center gap-2 text-faint">
-          language
-          <select
-            value={lang}
-            onChange={(e) => setLang(e.target.value)}
-            disabled={busy}
-            className="rounded border border-line bg-base px-2 py-1 text-ink outline-none focus:border-faint"
+    <div className="shrink-0 border-t border-line bg-base px-6 py-4">
+      <div className="mx-auto max-w-4xl">
+        <textarea
+          value={spec}
+          onChange={(e) => setSpec(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit()
+          }}
+          rows={2}
+          disabled={busy}
+          placeholder="Describe one function — what it takes, what it returns, and what the empty case does."
+          className="w-full resize-none rounded border border-line bg-sheet px-3.5 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-faint focus:border-faint disabled:opacity-40"
+        />
+
+        {/* The controls sit together and the action sits with them. `run` used
+         * to be flung to the far right of a full-width bar, a thousand pixels
+         * from the language it applies to. */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3 text-xs">
+          <label className="flex items-center gap-2 text-muted">
+            Language
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value)}
+              disabled={busy}
+              className="rounded border border-line bg-sheet px-2.5 py-1.5 font-mono text-xs text-ink outline-none focus:border-faint"
+            >
+              {languages.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-2 text-muted">
+            <input
+              type="checkbox"
+              checked={contract}
+              onChange={(e) => setContract(e.target.checked)}
+              disabled={busy}
+            />
+            Derive a contract first
+          </label>
+
+          <button
+            onClick={submit}
+            disabled={busy || !spec.trim()}
+            className="rounded border border-faint px-5 py-1.5 text-xs font-medium text-ink transition-colors hover:border-pass hover:text-pass disabled:opacity-30 disabled:hover:border-faint disabled:hover:text-ink"
           >
-            {languages.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center gap-2 text-faint">
-          <input
-            type="checkbox"
-            checked={contract}
-            onChange={(e) => setContract(e.target.checked)}
-            disabled={busy}
-            className="accent-pass"
-          />
-          derive a contract first
-        </label>
-        <button
-          onClick={submit}
-          disabled={busy || !spec.trim()}
-          className="ml-auto rounded border border-faint px-4 py-1.5 text-ink transition-colors hover:border-pass hover:text-pass disabled:opacity-30"
-        >
-          {busy ? 'running' : 'run'}
-        </button>
+            {busy ? 'Running…' : 'Run'}
+          </button>
+
+          <span className="ml-auto text-[11px] text-faint">
+            {busy
+              ? 'The run blocks until the pipeline decides.'
+              : 'Ctrl+Enter runs it.'}
+          </span>
+        </div>
       </div>
-      <p className="mt-2 text-[11px] text-faint">
-        Runs block until the pipeline decides. Nothing is written to disk.
-      </p>
     </div>
   )
 }
@@ -300,11 +395,7 @@ export function RunsPane({ languages }: { languages: string[] }) {
     <div className="flex min-h-0 flex-1">
       <RunList runs={runs} selected={selected} onSelect={setSelected} />
       <div className="flex min-w-0 flex-1 flex-col">
-        {current ? (
-          <Transcript run={current} />
-        ) : (
-          <Empty onPick={setSpec} />
-        )}
+        {current ? <Transcript run={current} /> : <Empty onPick={setSpec} />}
         <Composer
           busy={busy}
           languages={languages}

@@ -1,43 +1,61 @@
 @import 'tailwindcss';
 
-/* Phosphor.
+/* The record.
  *
- * Two rules hold this palette together, and both are reactions to what the
- * mock did.
+ * This page is not a terminal and should stop dressing as one. What it shows
+ * is a LABORATORY RECORD: what was asked, which role answered, what the tools
+ * ruled, and the evidence attached. Three rules hold the design together and
+ * each one encodes something true about that.
  *
- * Colour is reserved for verdicts. The chrome greens are desaturated far
- * enough to read as slate with a cast, so the only saturated green on the
- * page is the one that means a run passed. The mock spent its accent on the
- * brand, the borders, the headings AND the failure badge, which left nothing
- * to signal with -- a refused run looked like every other element on screen.
+ * 1. TYPE IS EVIDENCE CLASS. Proportional means the interface is talking;
+ *    monospace means the machine produced this and it is exact. Nothing is
+ *    monospaced for atmosphere. The previous version set every word on the
+ *    page in mono, which reads as a costume and -- worse -- left no way to
+ *    rank anything: the verdict and the word "language" were the same size in
+ *    the same face.
  *
- * Every verdict also carries a shape, not just a hue: filled, half, hollow.
- * A tool whose entire output is pass or fail cannot encode that in red versus
- * green alone and still be readable to the eight percent of men who cannot
- * reliably separate them.
+ * 2. COLOUR IS RESERVED FOR VERDICTS. The chrome is neutral graphite with no
+ *    cast, so the only chroma on screen is a ruling. This rule was already
+ *    right and is enforced harder here: the ground used to be a green-black
+ *    that put a phosphor tint behind everything, which is a hue competing with
+ *    the one thing that needs to signal.
  *
- * No webfont. A loopback tool should render with the network off, and the
- * system mono stack costs nothing, needs no vendored binary, and picks up
- * JetBrains Mono when it happens to be installed. The wordmark is the same
- * face, letterspaced -- a pixel display font at 8px was a costume that cost
- * legibility everywhere it appeared.
+ * 3. EVERY VERDICT CARRIES A SHAPE. Filled, half, hollow. A tool whose entire
+ *    output is pass or fail cannot encode that in red against green alone and
+ *    stay readable to the eight percent of men who cannot separate them.
+ *
+ * No webfont, deliberately. A loopback tool should render with the network
+ * off, so both families are stacks the machine already has -- and the UI face
+ * being the platform's own is why the interface layer can carry weight and
+ * width without vendoring a binary.
  */
 @theme {
-  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  --font-ui:
+    system-ui, -apple-system, 'Segoe UI', Cantarell, Ubuntu, 'Noto Sans',
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
 
-  --color-base: #0a0f0d;
-  --color-surface: #0f1712;
-  --color-raised: #12201a;
-  --color-line: #17231c;
-  --color-line-soft: #101a14;
+  /* Graphite, faintly warm, with no green in it. The record sheet sits one
+   * step up from the instrument ground so evidence reads as a different
+   * material from the chrome around it. */
+  --color-base: #131519;
+  --color-sheet: #1a1d23;
+  --color-raised: #22262e;
+  --color-line: #2c313a;
+  --color-line-soft: #22262d;
 
-  --color-ink: #dfe7e0;
-  --color-muted: #8fa593;
-  --color-faint: #4d6152;
+  /* Paper white rather than pure white: #fff on a dark ground haloes. */
+  --color-ink: #eae8e3;
+  --color-muted: #a9acb4;
+  /* Raised from the old #4d6152, which sat at about 3:1 and was carrying body
+   * prose, hints and the disclosure control. Nothing readable is below 4.5:1
+   * now; this tone is for text that is genuinely secondary. */
+  --color-faint: #7c818b;
 
-  --color-pass: #7fb069;
-  --color-retry: #c9a227;
-  --color-fail: #c05746;
+  --color-pass: #63bf92;
+  --color-retry: #d9a441;
+  --color-fail: #e2685c;
 }
 
 html,
@@ -48,7 +66,9 @@ body,
 
 body {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.55;
   background: var(--color-base);
   color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
@@ -60,44 +80,51 @@ body {
   box-sizing: border-box;
 }
 
+/* Keyboard focus has to be visible on every control, and the ring is the ink
+ * colour rather than a verdict colour -- focus is not a ruling. */
+:focus-visible {
+  outline: 2px solid var(--color-muted);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-line);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-faint);
 }
 
 /* Form controls default to the platform's light chrome, which on this page
- * reads as a hole punched through it -- a white checkbox was the single most
- * out-of-place thing on screen. Restyled rather than merely recoloured: the
- * checkbox draws its own mark so the checked state does not depend on an
+ * reads as a hole punched through it. Restyled rather than merely recoloured:
+ * the checkbox draws its own mark, so the checked state does not depend on an
  * accent colour the browser picks. */
 select {
   appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--color-faint) 50%),
-    linear-gradient(135deg, var(--color-faint) 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-muted) 50%),
+    linear-gradient(135deg, var(--color-muted) 50%, transparent 50%);
   background-position:
     right 0.75rem center,
     right 0.45rem center;
   background-size: 4px 4px;
   background-repeat: no-repeat;
-  padding-right: 1.6rem;
+  padding-right: 1.7rem;
 }
 
 input[type='checkbox'] {
   appearance: none;
-  width: 0.85rem;
-  height: 0.85rem;
+  width: 0.95rem;
+  height: 0.95rem;
   border: 1px solid var(--color-line);
-  border-radius: 2px;
+  border-radius: 3px;
   background: var(--color-base);
   display: grid;
   place-content: center;
@@ -112,7 +139,7 @@ input[type='checkbox']:checked {
 input[type='checkbox']:checked::after {
   content: '';
   width: 0.3rem;
-  height: 0.55rem;
+  height: 0.6rem;
   border: solid var(--color-pass);
   border-width: 0 1.5px 1.5px 0;
   transform: translateY(-1px) rotate(45deg);
@@ -122,24 +149,111 @@ input[type='checkbox']:disabled {
   cursor: default;
 }
 
+/* An eyebrow: the small proportional label that names a region of the record.
+ * Letterspaced caps because it has to read as an annotation on the sheet
+ * rather than as content -- the same job a printed form's field labels do. */
+.eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* THE SIGNATURE.
+ *
+ * The transcript is laid out as a ledger: a hanging column of role names, a
+ * continuous rule, then what happened. The rule is one element behind the
+ * rows rather than a border on each of them, so it reads as a single spine
+ * down the record and does not break between lines.
+ *
+ * This is the project's own thesis rendered as layout. A run reports
+ * `ok=False attempts=4` whether the model wrote bad code or the harness
+ * refused good code, and the only thing that separates those is WHO spent
+ * each attempt. Attribution is therefore structure here, not a badge hung on
+ * a line.
+ */
+.ledger {
+  display: grid;
+  grid-template-columns: 4.75rem 1px minmax(0, 1fr);
+  column-gap: 0;
+}
+.ledger-spine {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  background: var(--color-line);
+}
+.ledger-role {
+  grid-column: 1;
+  padding-right: 0.85rem;
+  text-align: right;
+  font-size: 11px;
+  color: var(--color-faint);
+  user-select: none;
+}
+.ledger-body {
+  grid-column: 3;
+  padding-left: 0.85rem;
+  min-width: 0;
+}
+
+/* A role's mark sits ON the spine, which is why it is pulled left by half its
+ * own width. It marks the moment a role was asked for something. */
+.ledger-mark {
+  position: relative;
+  left: calc(-0.85rem - 3px);
+  margin-right: -6px;
+}
+
 /* The one moving thing on the page, and it moves only while a run is in
- * flight. The mock pulsed dots next to idle agents, which is decoration
- * pretending to be status. */
+ * flight. Idle status does not pulse: that is decoration pretending to be
+ * information. */
 @keyframes working {
   0%,
   100% {
     opacity: 1;
   }
   50% {
-    opacity: 0.35;
+    opacity: 0.3;
   }
 }
 .is-working {
   animation: working 1.4s ease-in-out infinite;
 }
 
+/* A run takes tens of seconds and used to show one faint line for all of it.
+ * The bar is indeterminate on purpose -- the pipeline cannot say how far
+ * through it is, and a progress bar that invents a percentage would be the
+ * kind of claim this project exists not to make. */
+@keyframes scanning {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+.is-scanning::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 25%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-retry),
+    transparent
+  );
+  animation: scanning 1.8s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .is-working {
+  .is-working,
+  .is-scanning::after {
     animation: none;
+  }
+  .is-scanning::after {
+    width: 100%;
+    opacity: 0.4;
   }
 }

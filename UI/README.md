@@ -44,9 +44,33 @@ already learned not to trust — see
 [docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md](../docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md),
 where nine defects sat behind a plausible score until someone opened a log.
 
-Colour is reserved for verdicts; nothing decorative is tinted. Each verdict
-also carries a shape — filled, half, hollow — because a tool whose entire
-output is pass or fail cannot encode that in red against green alone.
+**The page is a record, not a terminal.** Three rules carry that, and each
+encodes something true rather than decorating something.
+
+*Type is evidence class.* Proportional means the interface is talking;
+monospace means the machine produced this and it is exact. Nothing is
+monospaced for atmosphere. The first version set every word on the page in
+mono, which reads as a costume and — worse — left nothing able to outrank
+anything else: the verdict and the word "language" were the same size in the
+same face, on a page whose whole job is to make one of them findable.
+
+*Colour is reserved for verdicts.* The chrome is neutral graphite with no cast,
+so the only chroma on screen is a ruling. The ground used to be a green-black
+that put a phosphor tint behind everything, which is a hue competing with the
+one thing that needs to signal. Each verdict also carries a shape — filled,
+half, hollow — because a tool whose entire output is pass or fail cannot encode
+that in red against green alone.
+
+*Attribution is structure.* The transcript is laid out as a ledger: role names
+hang in a left margin against a continuous rule, and the line sits beside them.
+Who produced a line is read off the layout rather than hunted for inside it —
+which is the project's own thesis about `ok=False attempts=4` in the one place
+it can be seen at a glance. On the SQL refusal it renders as
+tester → writer ×3 → *tester redesigns the suite* → tester, and the redesign is
+the tell that the writer was not what went wrong.
+
+No webfont, deliberately: a loopback tool should render with the network off,
+so both families are stacks the machine already has.
 
 ## The Figma export
 
