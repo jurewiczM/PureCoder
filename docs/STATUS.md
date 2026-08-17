@@ -4,9 +4,14 @@ _Snapshot of what's built, tested, and what's next._
 
 ## Done and tested
 
-652 tests, all green, none of them needing a GPU or a running server
-623 tests, all green, none of them needing a GPU or a running server
+653 tests, all green, none of them needing a GPU or a running server
 (`pytest -q`). CI runs the same suite on Python 3.10–3.12.
+
+Two counts stood here for a day, 652 and 623, one above the other -- a merge
+took both sides of a line each branch had edited, and neither number was ever
+right. Worth a sentence because this file is the handoff: a claim nobody
+re-derives is a claim that rots, and the cheap counter-measure is to re-run the
+command rather than reconcile the text.
 
 `scripts/smoke.sh` is the live counterpart: six checks — both config
 artifacts, Python and OCaml end to end, the contract seam, and the refusal
@@ -47,10 +52,11 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
 | 12 | toolchain image + `account()` | ✅ tested, ✅ run | one image, 7 toolchains; CI runs the suite in it with nothing allowed to skip — 565 passed / 0 skipped, against 549 / 10 on a bare runner |
-
 | 12 | ten-task cross-language benchmark | ✅ built, ✅ run | 60 tasks over 6 languages, 2026-08-09; four of seven failures were the harness, not the model |
-| 12 | `benchlog.py` failure attribution | ✅ tested, ⚠️ wrong | 14 cases; misattributed 4 of 7 real failures to `writer` on its first live run |
-
+| 12 | `benchlog.py` failure attribution | ✅ tested, ✅ repaired | misattributed 4 of 7 real failures to `writer` on its first live run; re-classified over those same 60 transcripts, `writer` now holds exactly the 2 that did not compile |
+| 13 | `agents.py` role ledger | ✅ tested, ✅ run | the loop records what each role spent as it spends it; separated the two genuine refusals of the 2026-08-16 run by role count alone |
+| 13 | `scripts/bench/attribution.py` | ✅ built, ✅ run | 60 runs, 58 passes, median 1 attempt, 16 min; found SQL's 0/10 to be the task set and refuses it by name |
+| 13 | `scripts/demo.sh` | ✅ run | one function per runnable language; 6 of 7 passed and the seventh's refusal was the tester, which the ledger showed |
 | — | `purecoder serve` local HTTP API | ✅ tested | 14 cases over a real socket; same gates and refusals as the CLI; loopback-only asserted; a live generation driven through it |
 | — | `POST /code/stream` (SSE) | ✅ tested | events arrive per attempt, last one is the `/code` envelope; driven live through the browser |
 | — | the UI layer (`UI/app`) | ✅ built, ⬜ untested | three sections, each backed by an endpoint; typechecks and builds; a real run driven end to end in a browser. No component tests -- see UI/README.md |
@@ -218,15 +224,41 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   for every input, `==` on `List<int>` is reference equality in C#, and a
   Python suite asserted `count_vowels(...) == 10` where the answer is 9 --
   counting Y, against a spec that says "never counting y". Corrected, five of
-  six languages score 10/10. Three consequences are recorded there and only the
-  first is fixed: `test_fix` now repairs the container comparison in both
-  languages (control re-run: javascript 9->10, c# 8->9); `execute.py` returns
-  `stderr or stdout`, so every C# compile diagnostic is discarded and the fix
-  loop is told only "compilation failed"; and `benchlog.py`, written the day
-  before to prevent exactly this misreading, attributed all four harness
-  failures to `writer`. Its `unknown` bucket returned zero across sixty tasks,
-  which looked like validation and was not -- the error was inside a
-  *recognised* bucket.
+  six languages score 10/10. Three consequences are recorded there, and all
+  three are now fixed. `test_fix` repairs the container comparison in both
+  languages (control re-run: javascript 9->10, c# 8->9). `execute.py` returned
+  `stderr or stdout`, and the `or` discarded every C# compile diagnostic --
+  `dotnet` writes `candidate.cs(11,1): error CS0106: ...` to stdout and a
+  content-free "compilation failed" to stderr, so the fix loop was asked to
+  repair an error it was never shown. Both streams are joined now, stderr
+  first, each trimmed separately so a chatty stdout cannot push a traceback out
+  of the window, and `_DIAGNOSTIC` learned MSBuild's and OCaml's formats so
+  `_trim` keeps the head of a message rather than its tail. And `benchlog.py`,
+  written the day before to prevent exactly this misreading, attributed all
+  four harness failures to `writer`; its `unknown` bucket returned zero across
+  sixty tasks, which looked like validation and was not -- the error was inside
+  a *recognised* bucket. See the entry below for what fixed it and what it
+  measures now.
+- **The classifier was repaired, and the fix had to be measured in both
+  directions.** `benchlog.py` now requires two things before it will blame the
+  model: the loop printed `suspecting the tests, redesigning them` (its
+  no-progress rule fires only on the SAME failure across DIFFERENT code) AND a
+  check actually ran. Keying on the marker alone was tried first and was the
+  original defect with its sign flipped -- it moved all seven failures out of
+  `writer`, including three OCaml runs whose code genuinely did not compile.
+  A build that never produced a binary is the writer's however many times the
+  suite was rewritten.
+
+  Re-run over the same sixty transcripts on 2026-08-17, with no server needed:
+  53 ok, and of the seven failures `writer` holds exactly the two that did not
+  compile (`ocaml-is_palindrome`, `ocaml-roman`) while five are flagged
+  `suspect-tests`. Zero of the four harness failures remain in `writer`.
+
+  The bucket is `suspect-tests` rather than `tester` on purpose: it is a flag
+  meaning *open this transcript*, not a verdict. Whether a failing check means
+  wrong code or a wrong expectation is the boundary the gate has never crossed,
+  and one of the five flagged runs (`ocaml-unique`) was genuinely the model's --
+  flagged rather than mislabelled, which is the honest limit rather than a bug.
 - **The cross-language benchmark saturates as a capability instrument.**
   Corrected for the harness failures above, only OCaml discriminates, and only
   because the model is weak in it. `roman` -- the intended hardest of the ten,
@@ -556,9 +588,9 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   visible where previously only `ok=False attempts=4` was. And the *stop* on
   its own is misleading, which is why the CLI prints every role rather than
   the last one; a reader who saw only "writer" would go and fix correct code.
-  That is the mistake `benchlog.py` makes from the outside, and this is the
-  sixth measurement pointing at the tester -- the first that did not need a
-  human to read a transcript to find it.
+  That is the mistake `benchlog.py` made from the outside before it was
+  repaired, and this is the sixth measurement pointing at the tester -- the
+  first that did not need a human to read a transcript to find it.
 
 - **The corpus was re-run with attribution, and SQL's 0/10 was the task set.**
   Sixty runs over six languages on the 30B: 58 passed, 50 of them on the first
@@ -582,8 +614,16 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
   `assert count_vowels('bcdfgHIJKL') == 2` against a string containing one
   vowel -- the expectation was wrong, the no-progress rule suspected the tests
   and redesigned them, and that redesign is the second tester attempt. Both
-  report `stopped on: writer`. That is the case the ledger exists for and the
-  case `benchlog.py` gets wrong.
+  report `stopped on: writer`, which is the case the ledger exists for.
+
+  The repaired `benchlog.py` separates these two as well, from the outside:
+  the equivalent pair in the 2026-08-09 corpus classifies as `writer` (a type
+  error, no check ran) and `suspect-tests` (redesigned suite, check ran and
+  disagreed). What it still cannot do is what the ledger does directly. The
+  ledger says `tester 2` -- a count of what the loop actually spent, written
+  while it was spending it -- where the classifier can only say *this one is
+  worth opening*. Same two runs, and one answer is evidence while the other is
+  a pointer.
 
 - Two seams are outside the automated suite: the live `/completion` call and
   the live embedding call. `/completion` has now been exercised by hand end to
@@ -593,40 +633,29 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
 
 ## Next steps (priority order)
 
-1. **Give the fix loop C#'s diagnostics back.** `execute.py` ends a failed run
-   with `stderr.strip() or stdout.strip()`, and the `or` discards stdout
-   whenever stderr says anything. `dotnet run` splits its streams the opposite
-   way from Python: `file(line,col): error CS0106: ...` goes to stdout, and
-   stderr carries a content-free "compilation failed". So the writer is asked
-   to fix an error it is never shown, and a live task burned four attempts
-   doing exactly that. First because it is a few lines, because it silently
-   defeats the whole fix-loop-shows-its-output design for one language, and
-   because it is probably not C#-specific -- any toolchain that puts
-   diagnostics on stdout and a summary on stderr loses them here. Two ways:
-   merge both streams (general, changes behaviour for all seven languages, so
-   it needs its own control re-run) or declare the diagnostic stream per
-   language (data not heuristics, but only fixes what someone thinks to mark).
-2. **Teach `benchlog` that a redesigned suite is the tester's failure.** It
-   put four of seven real failures in `writer`, the one bucket documented as
-   accusing the model. The marker is already in the transcripts it reads: a run
-   that printed `suspecting the tests, redesigning them` and still failed is
-   not a writer failure. Until this is fixed, every number the cross-language
-   benchmark produces has to be read against its transcripts by hand, which is
-   the labour the classifier exists to remove.
-3. **Re-pitch the corpus, now that there is data.** Five of six languages score
-   10/10 corrected. The 3/4/3 ramp was judgement with nothing behind it and the
-   top of it is not a top: `roman` passed first try everywhere but OCaml. This
-   is worth doing only after the two above, because a harder corpus measured by
-   a classifier that blames the wrong component is a worse instrument, not a
-   better one.
-4. **Make the contract measurement conclusive.** The instrument is built and
+The first two entries here were the diagnostics loss and the classifier's
+misattribution. Both are done -- `c201f19` and `9e81587` -- and the entries
+above record what each was measured at. They are named here because a list that
+silently drops its top two items reads as if nothing moved.
+
+1. **Re-pitch the corpus, now that there is data.** Five of six languages score
+   10/10 corrected, and the 2026-08-16 attribution run put 50 of 58 passes on
+   the first attempt. The 3/4/3 difficulty ramp was judgement with nothing
+   behind it and the top of it is not a top: `roman` passed first try
+   everywhere but OCaml. The two prerequisites this was waiting on -- a
+   classifier that does not blame the wrong component, and a fix loop that is
+   shown the diagnostics -- are both in, so the reason to defer it is gone.
+   The design question is what a harder task should be *for*: the set is a
+   pipeline instrument, and a task nobody's writer can pass measures the model
+   instead, which is the confound this directory keeps rediscovering.
+2. **Make the contract measurement conclusive.** The instrument is built and
    has been RUN -- twice -- and it could not see what it exists to see: zero
    divergence in both arms, because nine of ten arms ended in the loop
    refusing. Spec-divergence only exists downstream of a passing run, so a
    model that fails closed on these specs starves the measurement. It needs a
    larger or easier task set, more repeats, or a stronger model, and the
    choice between those is a real decision rather than a chore.
-5. **The tester, which every measurement now points at.** Eight of ten
+3. **The tester, which every measurement now points at.** Eight of ten
    measured arms ended in "suspecting the tests". Two of today's three
    mechanical wins were tester-shaped (`test_lint`, `test_fix`), and test-first
    proves a suite CAN fail without judging whether its expectations are right.
@@ -640,16 +669,16 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
    The remaining known gap is narrower than it was: the gate can now tell that
    a suite is aimed at the target, in any language, but still not that its
    expectations are right.
-6. **HTML in `ingest`.** It matches prose and source extensions, and the web's
+4. **HTML in `ingest`.** It matches prose and source extensions, and the web's
    documentation is HTML -- skipped whole rather than stripped and indexed. The
    ocaml.org tutorials only worked because they are markdown in their source
    repository, which is not how most projects publish.
-7. **A per-run venv, if the declaration ever needs to install anything.**
+5. **A per-run venv, if the declaration ever needs to install anything.**
    `--with` covers what the environment already has; anything else is still a
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-8. **The branch stack is landed.** `main` carries the lot as of 2026-08-09
+6. **The branch stack is landed.** `main` carries the lot as of 2026-08-09
    (PR #19, 113 commits). Nothing of the old chain is outstanding. New work is
    a branch off `main` and a PR against it -- the stacked shape is not worth
    rebuilding, and the reasons are recorded below.
@@ -711,7 +740,7 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
    order that silently dropped 11,000 lines on the floor. The failure modes
    are all in the *shape*, not in any commit. Next time: fewer, wider
    branches, each merged to `main` before the next is cut.
-9. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
+7. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
    [docs/superpowers/specs/2026-08-04-specialization-plan.md](superpowers/specs/2026-08-04-specialization-plan.md).
