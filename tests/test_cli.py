@@ -575,6 +575,47 @@ def test_make_reports_a_failed_run_through_its_exit_code(monkeypatch):
     assert cli.cmd_make(None, Args()) == 1
 
 
+def test_a_role_is_one_line_however_many_checks_failed(capsys):
+    """A reason with a newline in it broke the roles block into two rows.
+
+    Found live 2026-08-17, the SQL arm of `scripts/demo.sh`. SQL reports EVERY
+    failing check rather than the first, so the reason was two lines, and
+    slicing it to 44 characters cut the second mid-token:
+
+        no  writer    4 attempts  CHECK FAILED: empty table sum
+        CHECK FAILED:
+          stopped on: writer -- ...
+
+    The continuation reads as a row of its own with no role attached to it,
+    which is the one thing this block exists to make unambiguous. Same rule
+    `benchlog.py` already applies to its own output, and for the same reason:
+    one record, one line.
+    """
+    from purecoder import cli
+
+    cli._print_result({
+        "ok": False, "text": "SELECT 1", "attempts": 4,
+        "error": "CHECK FAILED: empty table sum\nCHECK FAILED: sum is integer",
+        "agents": {
+            "stopped_on": "writer",
+            "roles": [
+                {"name": "tester", "role": "", "cap": 4, "attempts": 2,
+                 "accepted": True, "reason": ""},
+                {"name": "writer", "role": "", "cap": 4, "attempts": 4,
+                 "accepted": False,
+                 "reason": "CHECK FAILED: empty table sum\n"
+                           "CHECK FAILED: sum is integer"},
+            ],
+        },
+    })
+
+    block = capsys.readouterr().out.split("roles:\n")[1]
+    rows = [ln for ln in block.splitlines() if ln.strip()]
+    assert all(ln.startswith("  ") for ln in rows), rows
+    assert sum(ln.lstrip().startswith(("ok ", "no ")) for ln in rows) == 2
+    assert "\nCHECK FAILED: sum is integer" not in block
+
+
 def test_every_generating_command_returns_its_verdict():
     """A guard against the next command that prints ok=False and exits 0."""
     import inspect

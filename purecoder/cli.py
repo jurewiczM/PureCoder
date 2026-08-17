@@ -135,7 +135,15 @@ def _print_result(res, show_tests=False):
         print("roles:")
         for role in agents["roles"]:
             mark = "ok " if role["accepted"] else "no "
-            note = f"  {role['reason'][:44]}" if role["reason"] else ""
+            # First line only, and only then truncated. SQL reports every
+            # failing check rather than the first, so a reason is routinely
+            # several lines; slicing the whole string put the tail on a row of
+            # its own with no role attached to it. The full text is in `error:`
+            # above and in the transcript -- this column is an identifier, not
+            # the evidence.
+            head = role["reason"].strip().splitlines()[0] if role["reason"] \
+                else ""
+            note = f"  {head[:44]}" if head else ""
             print(f"  {mark} {role['name']:9} {role['attempts']} attempt"
                   f"{'' if role['attempts'] == 1 else 's'}{note}")
         if agents.get("stopped_on"):
