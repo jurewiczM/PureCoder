@@ -93,6 +93,35 @@ loop is reworded they degrade to `unknown` rather than to a wrong number.
 `kind`, `agent` and `attempt` are structured fields and are used wherever they
 can answer the question instead.
 
+## Asking again
+
+The pipeline already goes back and forth inside one run: the writer retries,
+and when the same failure survives *different* code the no-progress rule has
+the suite redesigned. That is the writer/tester cycle, and the attempt budget
+bounds it — the same rule is the evidence that more attempts will not help,
+because an identical failure means the next attempt is the previous one again.
+
+What the buttons add is a **second run**. The model is stochastic and a refused
+spec often passes on the next ask, which is a different thing from spending
+attempt five. Every repeat lands as its own record with its own transcript,
+because two runs of one spec is exactly the comparison this project keeps
+saying to make.
+
+- **Attempts** — the budget inside one run, 2 to 10. The real bound is
+  `MAX_RETRIES` in `purecoder/server.py`; the control only avoids offering what
+  the server would clamp.
+- **Ask again** — the same question, unchanged, as a fresh record. A refused
+  run also offers **Ask again with N attempts**, which doubles the budget.
+- **Keep asking on a refusal** — the machine's half. It repeats a refusal only,
+  never a pass, and a transport failure ends it rather than repeating a broken
+  question at a missing server.
+- **Cycles** — how many runs that may take, or **no limit**. Unlimited is a
+  real setting: only a pass or a person ends it, so the run counter stays on
+  screen and *Stop after this run* stays reachable the whole time. Worth
+  knowing before leaving one unattended: a refusal that is a property of the
+  spec never converges — SQLite has no user-defined functions, so a task asking
+  for one cannot pass in any number of runs.
+
 ## The Figma export
 
 `AI Module UI Layer.make` is the original mock, kept as the design artifact it

@@ -94,8 +94,17 @@ export interface RunRequest {
   spec: string
   lang: string
   contract: boolean
+  /** Attempts this run may spend. The server clamps it; see `MAX_RETRIES`. */
   retries: number
   no_docs: boolean
+}
+
+/** What a run was asked for, kept so it can be asked for again unchanged. */
+export interface RunAsk {
+  spec: string
+  lang: string
+  contract: boolean
+  retries: number
 }
 
 /**

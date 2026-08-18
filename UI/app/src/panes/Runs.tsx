@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { streamRun, type RunEvent, type Verdict } from '../api'
+import { streamRun, type RunAsk, type RunEvent, type Verdict } from '../api'
 import { Marker, VerdictLine, type State } from '../components/Verdict'
 import { Roles } from '../components/Roles'
 import { Cards } from '../components/Cards'
@@ -8,6 +8,8 @@ export interface Run {
   id: string
   spec: string
   lang: string
+  /** Exactly what was asked for, kept so a repeat is the same question. */
+  ask: RunAsk
   startedAt: string
   /** Wall clock, for elapsed. `startedAt` is for display and cannot be
    * subtracted from anything. */
@@ -32,6 +34,24 @@ const clock = () =>
     minute: '2-digit',
     hour12: false,
   })
+
+/** Mirrors `MAX_RETRIES` in purecoder/server.py, which is where the real
+ * bound lives: this one keeps the control from offering what the server would
+ * only clamp, and is not itself a guarantee. */
+const MAX_RETRIES = 10
+
+/** The cycle counts offered. 0 is deliberate and means no limit: keep asking
+ * until the spec passes or a person stops it.
+ *
+ * Unlimited is a real setting rather than a hidden one, and the honesty it
+ * needs is in the interface around it -- the count of runs so far is always on
+ * screen and "Stop after this run" is always reachable, because the only thing
+ * that ends an unlimited chain is a pass or a person. A refusal that is a
+ * property of the spec (SQLite has no user-defined functions, so a task asking
+ * for one cannot pass in any number of runs) will not converge, and the run
+ * counter is what makes that visible instead of quietly expensive. */
+const CYCLE_CHOICES = [2, 3, 5, 10, 0] as const
+const DEFAULT_CYCLES = 3
 
 /** The line's tone follows what the loop was reporting, nothing else. */
 const EVENT_TONE: Record<RunEvent['kind'], string> = {
@@ -110,7 +130,71 @@ function Evidence({
   )
 }
 
-function Transcript({ run }: { run: Run }) {
+/**
+ * What to do about a run that has finished.
+ *
+ * The pipeline already goes back and forth on its own -- the writer retries,
+ * and when the same failure survives different code the no-progress rule has
+ * the suite redesigned. That is the cycle, and it is bounded because the same
+ * rule is the evidence that more of it will not help: identical failures mean
+ * the next attempt is the previous one again.
+ *
+ * So what a person needs is not a longer loop but a SECOND run. The model is
+ * stochastic and a refused spec often passes on the next ask, which is a
+ * different thing from spending attempt five. Each repeat lands as its own
+ * record with its own transcript, because two runs of one spec is exactly the
+ * comparison this project keeps saying to make.
+ */
+function Actions({
+  run,
+  busy,
+  onRepeat,
+}: {
+  run: Run
+  busy: boolean
+  onRepeat: (ask: RunAsk) => void
+}) {
+  if (run.running) return null
+  const refused = !run.verdict?.ok
+  const roomier = Math.min(MAX_RETRIES, run.ask.retries * 2)
+  const canGoLonger = refused && roomier > run.ask.retries
+
+  return (
+    <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-line pt-5">
+      <button
+        onClick={() => onRepeat(run.ask)}
+        disabled={busy}
+        className="rounded border border-line px-3.5 py-1.5 text-xs text-ink transition-colors hover:border-faint disabled:opacity-30"
+      >
+        Ask again
+      </button>
+      {canGoLonger ? (
+        <button
+          onClick={() => onRepeat({ ...run.ask, retries: roomier })}
+          disabled={busy}
+          className="rounded border border-line px-3.5 py-1.5 text-xs text-ink transition-colors hover:border-faint disabled:opacity-30"
+        >
+          Ask again with {roomier} attempts
+        </button>
+      ) : null}
+      <span className="text-[11px] text-faint">
+        {refused
+          ? 'A repeat is a fresh run, kept beside this one. The model is stochastic; the same spec often passes on the next ask.'
+          : 'Runs again from the same spec, as a separate record.'}
+      </span>
+    </div>
+  )
+}
+
+function Transcript({
+  run,
+  busy,
+  onRepeat,
+}: {
+  run: Run
+  busy: boolean
+  onRepeat: (ask: RunAsk) => void
+}) {
   const tail = useRef<HTMLDivElement>(null)
 
   // Follow the run while it is producing lines. Scrolling the container rather
@@ -222,6 +306,8 @@ function Transcript({ run }: { run: Run }) {
           </details>
         ) : null}
 
+        <Actions run={run} busy={busy} onRepeat={onRepeat} />
+
         <div ref={tail} />
       </div>
     </div>
@@ -289,19 +375,28 @@ function Composer({
   spec,
   setSpec,
   onRun,
+  keepAsking,
+  setKeepAsking,
+  maxCycles,
+  setMaxCycles,
 }: {
   busy: boolean
   languages: string[]
   spec: string
   setSpec: (s: string) => void
-  onRun: (spec: string, lang: string, contract: boolean) => void
+  onRun: (ask: RunAsk) => void
+  keepAsking: boolean
+  setKeepAsking: (v: boolean) => void
+  maxCycles: number
+  setMaxCycles: (n: number) => void
 }) {
   const [lang, setLang] = useState('python')
   const [contract, setContract] = useState(false)
+  const [retries, setRetries] = useState(4)
 
   const submit = () => {
     if (!spec.trim() || busy) return
-    onRun(spec.trim(), lang, contract)
+    onRun({ spec: spec.trim(), lang, contract, retries })
     setSpec('')
   }
 
@@ -341,6 +436,22 @@ function Composer({
           </label>
 
           <label className="flex items-center gap-2 text-muted">
+            Attempts
+            <select
+              value={retries}
+              onChange={(e) => setRetries(Number(e.target.value))}
+              disabled={busy}
+              className="rounded border border-line bg-sheet px-2.5 py-1.5 font-mono text-xs text-ink outline-none focus:border-faint"
+            >
+              {[2, 4, 6, 8, 10].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-2 text-muted">
             <input
               type="checkbox"
               checked={contract}
@@ -349,6 +460,35 @@ function Composer({
             />
             Derive a contract first
           </label>
+
+          <label
+            className="flex items-center gap-2 text-muted"
+            title="On a refusal, ask the same spec again as a fresh run. A pass ends it."
+          >
+            <input
+              type="checkbox"
+              checked={keepAsking}
+              onChange={(e) => setKeepAsking(e.target.checked)}
+            />
+            Keep asking on a refusal
+          </label>
+
+          {keepAsking ? (
+            <label className="flex items-center gap-2 text-muted">
+              Cycles
+              <select
+                value={maxCycles}
+                onChange={(e) => setMaxCycles(Number(e.target.value))}
+                className="rounded border border-line bg-sheet px-2.5 py-1.5 font-mono text-xs text-ink outline-none focus:border-faint"
+              >
+                {CYCLE_CHOICES.map((n) => (
+                  <option key={n} value={n}>
+                    {n === 0 ? 'no limit' : n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
           <button
             onClick={submit}
@@ -373,17 +513,32 @@ export function RunsPane({ languages }: { languages: string[] }) {
   const [runs, setRuns] = useState<Run[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [spec, setSpec] = useState('')
+  const [keepAsking, setKeepAsking] = useState(false)
+  /** 0 means unlimited -- see CYCLE_CHOICES. */
+  const [maxCycles, setMaxCycles] = useState<number>(DEFAULT_CYCLES)
+  /** Which run of the current chain is in flight, counting from 1. */
+  const [cycle, setCycle] = useState(0)
   const busy = runs.some((r) => r.running)
+
+  // Read inside the stream's completion handler, which closes over the state
+  // it was created with. A ref is the value AT THAT MOMENT rather than at the
+  // moment the run started -- so unticking the box stops the chain, which is
+  // the only way a person can call it off mid-flight.
+  const asking = useRef(keepAsking)
+  asking.current = keepAsking
+  const limit = useRef(maxCycles)
+  limit.current = maxCycles
 
   const patch = (id: string, change: Partial<Run>) =>
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, ...change } : r)))
 
-  const start = (text: string, lang: string, contract: boolean) => {
+  const start = (ask: RunAsk, nth = 1) => {
     const id = `${Date.now()}`
     const run: Run = {
       id,
-      spec: text,
-      lang,
+      spec: ask.spec,
+      lang: ask.lang,
+      ask,
       startedAt: clock(),
       startedMs: Date.now(),
       endedMs: null,
@@ -395,17 +550,33 @@ export function RunsPane({ languages }: { languages: string[] }) {
     setRuns((prev) => [run, ...prev])
     setSelected(id)
 
+    setCycle(nth)
+
     streamRun(
-      { spec: text, lang, contract, retries: 4, no_docs: true },
+      { ...ask, no_docs: true },
       (event) =>
         setRuns((prev) =>
           prev.map((r) => (r.id === id ? { ...r, events: [...r.events, event] } : r)),
         ),
     )
-      .then((verdict) => patch(id, { verdict, running: false, endedMs: Date.now() }))
-      .catch((e: Error) =>
-        patch(id, { failure: e.message, running: false, endedMs: Date.now() }),
-      )
+      .then((verdict) => {
+        patch(id, { verdict, running: false, endedMs: Date.now() })
+        // The machine's half of the cycle. It repeats a REFUSAL, never a
+        // pass, and only while the box is still ticked -- and the bound is
+        // mechanical rather than a promise in the label, because an unattended
+        // loop on a local card is the one failure here that costs real money.
+        // Unlimited (0) never runs out; a set limit stops when it is reached.
+        const room = limit.current === 0 || nth < limit.current
+        if (!verdict.ok && asking.current && room) start(ask, nth + 1)
+        else setCycle(0)
+      })
+      // A transport failure is not a refusal and is never repeated: the run
+      // never reached the pipeline, so asking again asks the same broken
+      // question of the same missing server.
+      .catch((e: Error) => {
+        patch(id, { failure: e.message, running: false, endedMs: Date.now() })
+        setCycle(0)
+      })
   }
 
   const current = runs.find((r) => r.id === selected) ?? null
@@ -414,13 +585,44 @@ export function RunsPane({ languages }: { languages: string[] }) {
     <div className="flex min-h-0 flex-1">
       <RunList runs={runs} selected={selected} onSelect={setSelected} />
       <div className="flex min-w-0 flex-1 flex-col">
-        {current ? <Transcript run={current} /> : <Empty onPick={setSpec} />}
+        {current ? (
+          <Transcript run={current} busy={busy} onRepeat={(ask) => start(ask)} />
+        ) : (
+          <Empty onPick={setSpec} />
+        )}
+        {busy && keepAsking && cycle > 0 ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-base px-6 py-2.5">
+            <span className="is-working text-xs text-retry">
+              Asking again on a refusal
+            </span>
+            <span className="font-mono text-[11px] text-faint">
+              {maxCycles === 0
+                ? `run ${cycle}, no limit set`
+                : `run ${cycle} of ${maxCycles}`}
+            </span>
+            {maxCycles === 0 ? (
+              <span className="text-[11px] text-faint">
+                Only a pass or you will end this.
+              </span>
+            ) : null}
+            <button
+              onClick={() => setKeepAsking(false)}
+              className="ml-auto rounded border border-line px-3 py-1 text-[11px] text-ink transition-colors hover:border-fail hover:text-fail"
+            >
+              Stop after this run
+            </button>
+          </div>
+        ) : null}
         <Composer
           busy={busy}
           languages={languages}
           spec={spec}
           setSpec={setSpec}
-          onRun={start}
+          onRun={(ask) => start(ask)}
+          keepAsking={keepAsking}
+          setKeepAsking={setKeepAsking}
+          maxCycles={maxCycles}
+          setMaxCycles={setMaxCycles}
         />
       </div>
     </div>

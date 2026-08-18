@@ -50,6 +50,33 @@ def _answer(ok=False, error="", code="", tests="", contract=None, attempts=0,
             "agents": agents or {"stopped_on": "", "roles": []}}
 
 
+#: The most attempts one request may buy. A run holds this machine's GPU for
+#: as long as it lasts, and the loop's own no-progress rule already says that
+#: identical failures across different code will not be fixed by more of them.
+#: Ten is well past where that rule fires and still bounded.
+MAX_RETRIES = 10
+
+
+def _retries(body) -> int:
+    """The retry budget a request asked for, bounded to something sane.
+
+    This reached the loop as a bare cast with no ceiling, so a client could
+    hold the card indefinitely, and with no guard, so a non-numeric value
+    raised out of the handler as a 500 where a refusal was the honest answer.
+    A limit enforced in the form the number is typed into is a convention
+    rather than a bound -- the next caller is a script.
+
+    A malformed budget falls back to the default rather than refusing the run:
+    the number is an optional knob on an otherwise well-formed request, and the
+    caller's spec is not made wrong by a bad value in a field beside it.
+    """
+    try:
+        asked = int(body.get("retries", 4))
+    except (TypeError, ValueError):
+        return 4
+    return max(1, min(MAX_RETRIES, asked))
+
+
 def _code(pc, body, required_docs=False):
     """POST /code and /ask share everything but whether docs are mandatory."""
     if not str(body.get("spec", "")).strip():
@@ -71,7 +98,7 @@ def _code(pc, body, required_docs=False):
 
     res = generate_validated_python(
         pc, body["spec"], context=context, spec=spec,
-        max_retries=int(body.get("retries", 4)),
+        max_retries=_retries(body),
         use_contract=bool(body.get("contract", False)),
         error_hint=hint, error_docs=docs_for_error,
         packages=tuple(body.get("with") or ()),
@@ -176,7 +203,7 @@ class _Handler(BaseHTTPRequestHandler):
                 no_docs=bool(body.get("no_docs", False)))
             res = generate_validated_python(
                 self.server.pc, body["spec"], context=context or "",
-                spec=spec, max_retries=int(body.get("retries", 4)),
+                spec=spec, max_retries=_retries(body),
                 use_contract=bool(body.get("contract", False)),
                 error_hint=hint, error_docs=docs_for_error,
                 packages=tuple(body.get("with") or ()),

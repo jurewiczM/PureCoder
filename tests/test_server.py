@@ -277,3 +277,52 @@ def test_grammars_reports_each_root_rule(live):
     assert env["root"].startswith("root")
     assert "line" in env["root"]
     assert env["text"].strip()
+
+
+def test_the_retry_budget_is_clamped_by_the_server(live, monkeypatch):
+    """A client asking for 999 attempts is not a client the server obeys.
+
+    `retries` reached `max_retries` as `int(body.get("retries", 4))` with no
+    bound, so a UI control -- or a typo in a curl -- could hold this machine's
+    GPU for as long as the loop kept failing. The UI grew such a control, and a
+    limit enforced in the form it is typed into is a convention, not a bound:
+    the next caller is a script.
+
+    Clamped where it cannot be routed around, and the two ends are asymmetric
+    on purpose. Zero attempts is a request to generate nothing, which is a
+    malformed ask rather than a cheap one, so it floors at 1.
+    """
+    seen = {}
+
+    def fake(pc, description, **kw):
+        seen["retries"] = kw.get("max_retries")
+        return {"ok": True, "text": "x = 1", "tests": "", "attempts": 1,
+                "error": "", "agents": {"stopped_on": "", "roles": []}}
+
+    monkeypatch.setattr(S, "generate_validated_python", fake)
+
+    live("/code", {"spec": "a function", "retries": 999})
+    assert seen["retries"] == S.MAX_RETRIES
+
+    live("/code", {"spec": "a function", "retries": 0})
+    assert seen["retries"] == 1
+
+    live("/code", {"spec": "a function", "retries": -3})
+    assert seen["retries"] == 1
+
+    live("/code", {"spec": "a function", "retries": 3})
+    assert seen["retries"] == 3
+
+
+def test_a_junk_retry_budget_does_not_take_the_server_down(live, monkeypatch):
+    """`int("lots")` raises, and an unhandled ValueError in a handler is a 500
+    where a refusal was the honest answer."""
+    monkeypatch.setattr(
+        S, "generate_validated_python",
+        lambda pc, description, **kw: {
+            "ok": True, "text": "x = 1", "tests": "", "attempts": 1,
+            "error": "", "agents": {"stopped_on": "", "roles": []}})
+
+    status, body = live("/code", {"spec": "a function", "retries": "lots"})
+    assert status == 200
+    assert body["ok"] is True
