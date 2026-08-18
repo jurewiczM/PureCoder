@@ -436,9 +436,12 @@ SKIP_DIRS = frozenset({
 
 # ---- the lexical signal -------------------------------------------------
 
-# How much an exact-name match is worth next to cosine similarity. At 0.5,
-# against the default min_score of 0.3, a chunk containing every rare token of
-# the query clears the gate on the lexical signal alone. That is the point:
+# How much an exact-name match is worth next to cosine similarity. At 0.5 a
+# chunk holding every rare token of the query scores 0.5 on this signal alone,
+# which `min_lexical` -- not `min_score` -- is what lets through. This comment
+# said "against the default min_score of 0.3" and was left behind when the gate
+# moved to 0.8; the arithmetic it described stopped holding at that point. The
+# rescue it is describing is the point:
 # `Printf.eprintf` should retrieve the page defining it even when a page merely
 # *about* output formatting embeds closer.
 LEXICAL_WEIGHT = 0.5

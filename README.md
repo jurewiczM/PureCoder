@@ -239,56 +239,6 @@ otherwise flagged 45 pieces of correct code in the measurement that settled it
 — but once the compiler has rejected a name, it answers *did you mean* from the
 real API instead of leaving the fix loop guessing.
 
-## Teaching it a language it has never run
-
-Seven languages exist because someone wrote seven registry entries — the
-seventh, OCaml, after six live attempts to *draft* one never registered. `learn`
-points the pipeline at a language's own documentation and has it draft the
-eighth:
-
-```bash
-purecoder learn zig ./zig-docs --ext .zig
-purecoder --lang zig code "a function add(a, b) returning their sum"
-```
-
-What the model drafts from those docs: the check helper, the harness tail that
-fails a run where no check executed, and the build/run commands (shown to you as
-argv, confirmed before anything is executed). What it does **not** draft is the
-tester's own instructions — those are templated, because a model writing its own
-instructions is the technique that measured worst. The writer's extra demand is
-templated too, but from the drafted harness rather than from prose: it is told
-that the file already defines the check helper, and either supplies the entry
-point or runs statements at top level, so it should write neither and wrap
-nothing. Without it a writer that emits its own `main` produces a link error
-about a file it never saw; with it, and when it happens anyway, the retry names
-what collided.
-
-Then the gate. Five mechanical probes must pass before anything is registered:
-correct code passes, **wrong code fails**, an empty suite fails, a suite that
-never runs a check fails. A harness that cannot fail wrong code is a rubber
-stamp, not a language entry, and is refused with the compiler's own message.
-Plus one live round — a real generate-and-validate cycle — unless you pass
-`--no-live`.
-
-`learn` also drafts a **project layout** — entry filename, make targets, and an
-entry point for languages that need one to link — and probes that separately:
-a project of correct code must build and run, and one of code that cannot parse
-must fail. If it does not hold the language is still registered without a
-layout, so `project` refuses it and `code` is unaffected. `make install` is
-shown to you but never run: it installs software, and a drafted command is not
-reason enough. `--no-project` skips the whole thing.
-
-A learned language **keeps the index of its documentation**, so the second
-command above is doc-grounded automatically: no second `ingest`, no `--store` to
-remember, and once the toolchain rejects a name, the docs answer *did you mean*.
-`--no-docs` opts out. A registered language is two things on disk under
-`$PURECODER_HOME` (or XDG) — `languages/<name>.json` and its index at
-`docs/<name>.npy` / `.json` — so removing one by hand means removing both:
-
-```bash
-rm "$PURECODER_HOME"/languages/zig.json "$PURECODER_HOME"/docs/zig.*
-```
-
 ## Commands
 
 | command | what it does |
@@ -413,7 +363,7 @@ purecoder/
 UI/app/          a local page over the HTTP surface (see UI/README.md)
 examples/        runnable scripts + portcheck/, a real scaffolder output
 scripts/         demo.sh, smoke.sh, and the benchmark corpus
-tests/           651 tests (no GPU, no server; toolchain ones self-skip)
+tests/           655 tests (no GPU, no server; toolchain ones self-skip)
 docs/            ARCHITECTURE.md, STATUS.md
 ```
 
@@ -581,41 +531,27 @@ a 6 GB card, 2026-08-16 (`scripts/bench/attribution.py`):
 
 Now the caveats, which matter more than the table.
 
-**This corpus saturates.** Five of six languages score 10/10, and they did
-before this measurement too. A high pass rate here is evidence that the tasks
-are easy, not that the model is good — the number that still moves is attempts,
-and 50 first-attempt passes is the 30B's actual case over the 7B it replaced.
+**This corpus saturates.** Five of six languages score 10/10, and did before
+this measurement too. A high pass rate here is evidence that the tasks are
+easy, not that the model is good — the number that still moves is attempts, and
+50 first-attempt passes is the 30B's actual case over the 7B it replaced.
 
 **SQL is absent, and that is the interesting part.** It scored 0/10 on the
-first run of this, every task "stopped on writer". Reading one transcript
-explains it: `no such function: sum_list`. Every task in the corpus asks for a
-function and SQLite has no user-defined functions, so no attempt could ever
-have passed. That 0/10 is a fact about the task set. The runner now skips SQL
-with that reason rather than reporting a score, because a number nobody reads
-the transcript behind is how this project has misled itself before.
+first run, every task "stopped on writer". One transcript explains it: `no such
+function: sum_list`. Every task asks for a function and SQLite has no
+user-defined functions, so no attempt could ever have passed. That 0/10 is a
+fact about the task set, and the runner now skips SQL with that reason rather
+than reporting a score — because a number nobody reads the transcript behind is
+how this project has misled itself before.
 
-**OCaml's column here is ungrounded, and `batch.sh` refuses to produce that.**
-The older runner exits rather than measure OCaml without its docs index, on the
-grounds that OCaml is the ignorant case retrieval exists for and an ungrounded
-column cannot be told apart from a regression. That guard predates the 30B, and
-this run scored 9/10 ungrounded — so either the guard is now stale or this
-column is not comparable to the grounded numbers elsewhere. Two tools currently
-disagree about the same measurement and that is not resolved.
-
-**The two real refusals differ in kind, and the ledger says which.** OCaml's
-`is_palindrome` spent writer 4 / tester 1 on a genuine type error — a writer
-failure. Python's `count_vowels` spent writer 4 / **tester 2**, and the suite
-it failed asserts `count_vowels('bcdfgHIJKL') == 2` against a string with one
-vowel. The expectation was wrong; the loop suspected the tests and redesigned
-them, which is what the second tester attempt is. Both runs report `stopped on:
-writer`. Only the role counts separate them, which is the whole argument for
-recording them.
+The rest of the caveats, including the two runners that disagree about
+measuring OCaml ungrounded, are in [docs/STATUS.md](docs/STATUS.md).
 
 ## What is proven, and what is not
 
 Worth being plain about, because the distinction is the point of the project.
 
-**Proven.** Seven languages compile, run and prove a check executed. 651 tests
+**Proven.** Seven languages compile, run and prove a check executed. 655 tests
 pass without a GPU or a server, and a CI job runs them in a container carrying
 every toolchain with nothing allowed to skip. A refusal is returned as a
 refusal, all the way out to the shell's exit code.
