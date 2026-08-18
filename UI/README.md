@@ -72,6 +72,27 @@ the tell that the writer was not what went wrong.
 No webfont, deliberately: a loopback tool should render with the network off,
 so both families are stacks the machine already has.
 
+## The three cards, and what they are allowed to claim
+
+Above the transcript: **This run** (attempts against the cap, elapsed,
+grounded or not), **The tester** (suites accepted, drafts the gate threw back,
+suite size, and whether the no-progress rule had it rewritten) and **What was
+proved** (the gates, each with what it checks and what it actually did on this
+run).
+
+Two rules keep them honest. `not run` is a first-class answer — a gate that
+never fired proved nothing, and rendering it as a tick would be a false green
+in the one panel built to prevent those. And `status.ts` derives every field
+from events the loop emitted or from the verdict envelope; nothing is
+estimated.
+
+The weak seam is named in that file: the suite's line count and the gate's
+rejection reason exist only inside sentences meant for a person, so those two
+are parsed out of text. The patterns sit in one `MARKERS` table, and if the
+loop is reworded they degrade to `unknown` rather than to a wrong number.
+`kind`, `agent` and `attempt` are structured fields and are used wherever they
+can answer the question instead.
+
 ## The Figma export
 
 `AI Module UI Layer.make` is the original mock, kept as the design artifact it

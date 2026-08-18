@@ -2,12 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { streamRun, type RunEvent, type Verdict } from '../api'
 import { Marker, VerdictLine, type State } from '../components/Verdict'
 import { Roles } from '../components/Roles'
+import { Cards } from '../components/Cards'
 
 export interface Run {
   id: string
   spec: string
   lang: string
   startedAt: string
+  /** Wall clock, for elapsed. `startedAt` is for display and cannot be
+   * subtracted from anything. */
+  startedMs: number
+  endedMs: number | null
   events: RunEvent[]
   verdict: Verdict | null
   /** Transport-level failure. A refusal is not this -- that is a verdict. */
@@ -143,6 +148,16 @@ function Transcript({ run }: { run: Run }) {
       </div>
 
       <div className="px-6 py-5">
+        <Cards
+          events={run.events}
+          verdict={verdict}
+          lang={run.lang}
+          startedMs={run.startedMs}
+          endedMs={run.endedMs}
+        />
+
+        <p className="eyebrow mt-8 mb-2">The run, line by line</p>
+
         {/* THE LEDGER. Role in the margin, a continuous rule, the line beside
          * it -- so who produced a line is read off the layout rather than
          * hunted for inside it. */}
@@ -370,6 +385,8 @@ export function RunsPane({ languages }: { languages: string[] }) {
       spec: text,
       lang,
       startedAt: clock(),
+      startedMs: Date.now(),
+      endedMs: null,
       events: [],
       verdict: null,
       failure: '',
@@ -385,8 +402,10 @@ export function RunsPane({ languages }: { languages: string[] }) {
           prev.map((r) => (r.id === id ? { ...r, events: [...r.events, event] } : r)),
         ),
     )
-      .then((verdict) => patch(id, { verdict, running: false }))
-      .catch((e: Error) => patch(id, { failure: e.message, running: false }))
+      .then((verdict) => patch(id, { verdict, running: false, endedMs: Date.now() }))
+      .catch((e: Error) =>
+        patch(id, { failure: e.message, running: false, endedMs: Date.now() }),
+      )
   }
 
   const current = runs.find((r) => r.id === selected) ?? null
