@@ -616,7 +616,7 @@ class IngestPlan:
 # -- they would have been cut into paragraphs -- and an OCaml docs
 # directory full of samples was skipped entirely, which is the shape of
 # gap this project keeps finding between a capability and its wiring.
-INGEST_PATTERN = (r".*\.(py|md|markdown|txt|rst|"
+INGEST_PATTERN = (r".*\.(py|md|markdown|txt|rst|html|htm|xhtml|"
                   + "|".join(sorted(e.lstrip(".") for e in CODE_LANGUAGES))
                   + r")$")
 

@@ -142,6 +142,26 @@ def test_html_without_main_keeps_the_body():
     assert "Only prose here." in text
 
 
+def test_the_ingest_pattern_admits_html():
+    """It matched prose and source extensions, and the web publishes HTML --
+    so ocaml.org only worked because its tutorials are markdown in the source
+    repository, which is not how most projects publish."""
+    import re as _re
+    rx = _re.compile(rag.INGEST_PATTERN)
+    for name in ("guide.html", "guide.htm", "guide.xhtml"):
+        assert rx.match(name), name
+    assert not rx.match("logo.png")
+
+
+def test_html_files_reach_the_plan(tmp_path):
+    (tmp_path / "guide.html").write_text(PAGE)
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n")
+    plan = rag.plan_ingest(str(tmp_path))
+    assert {os.path.basename(s) for s in plan.sources} == {"guide.html"}
+    assert any("finite lists" in c for c in plan.chunks)
+    assert not any("track(" in c for c in plan.chunks)
+
+
 def test_markdown_and_python_are_routed_exactly_as_before():
     """The routing change must be invisible to every extension it does not
     name."""
