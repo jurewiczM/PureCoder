@@ -133,6 +133,56 @@ def test_gate_rejects_empty_output():
     assert not ok
 
 
+def test_gate_rejects_a_count_the_tester_had_to_derive_by_hand():
+    """Live twice, python/count_vowels: thirty characters asserted to hold ten
+    vowels when they hold nine -- 10 being what you get by counting the 'y'
+    the spec says never to count. Four correct implementations refused, while
+    the same spec passed first attempt in the five other languages."""
+    tests = ("assert count_vowels('') == 0\n"
+             "assert count_vowels('hello') == 2\n"
+             "assert count_vowels('AEIOUbcdEfGhIjKlMnOpQrStUvWxYz') == 10\n")
+    ok, err = lint_tests(tests, targets=["count_vowels"])
+    assert not ok
+    assert "30 elements" in err
+
+
+def test_gate_accepts_the_same_task_over_inputs_a_reader_can_check():
+    """The bound must leave the suite the tester should have written."""
+    tests = ("assert count_vowels('') == 0\n"
+             "assert count_vowels('AeIoU') == 5\n"
+             "assert count_vowels('xyz') == 0\n")
+    ok, err = lint_tests(tests, targets=["count_vowels"])
+    assert ok, err
+
+
+def test_gate_bounds_only_counts_not_transcriptions():
+    """A string or boolean expectation is copied, not counted, however long
+    the input -- and an argument that is a call was never scanned by eye.
+    Gating those would refuse `run_length_encode` and `is_palindrome`, which
+    both pass live."""
+    for tests, target in (
+            ("assert rle('') == ''\nassert rle('aa') == 'a2'\n"
+             "assert rle('aaabbbcccddddeeeee') == 'a3b3c3d4e5'\n", "rle"),
+            ("assert is_pal('') == True\nassert is_pal('aba') == True\n"
+             "assert is_pal('A man, a plan, a canal: Panama') == False\n",
+             "is_pal"),
+            ("assert sum_list([]) == 0\nassert sum_list([1]) == 1\n"
+             "assert sum_list(list(range(100))) == 4950\n", "sum_list")):
+        ok, err = lint_tests(tests, targets=[target])
+        assert ok, f"{target}: {err}"
+
+
+def test_gate_bounds_nothing_before_the_target_is_known():
+    """The first design pass runs without a contract, so `targets` is empty
+    and mode 6 is inert -- it fires at the post-code regate, which routes to a
+    redesign rather than blaming the writer."""
+    tests = ("assert count_vowels('AEIOUbcdEfGhIjKlMnOpQrStUvWxYz') == 10\n"
+             "assert count_vowels('') == 0\n"
+             "assert count_vowels('a') == 1\n")
+    ok, err = lint_tests(tests, targets=None)
+    assert ok, err
+
+
 def test_gate_accepts_type_only_exception_tests():
     """The style the prompt asks for must survive the gate."""
     tests = ("assert add(1, 2) == 3\n"
