@@ -475,9 +475,16 @@ register(LanguageSpec(
     # The call is fully qualified because SequenceEqual as an extension method
     # needs `using System.Linq`, which writer_system forbids -- the preamble
     # writes System.Console for exactly that reason.
+    # Both operand orders: which side the model put the literal on says
+    # nothing about what it meant, and `new List<int>() == Unique(x)` is the
+    # same reference comparison mirrored.
     test_fix=((r"(?m)PC_CHECK\(\s*(.+?)\s*==\s*"
                r"(new\s+List<[^>]*>\s*(?:\{[^}]*\}|\(\))|new\[\]\s*\{[^}]*\})"
                r"\s*,\s*\"",
+               r'PC_CHECK(System.Linq.Enumerable.SequenceEqual(\1, \2), "'),
+              (r"(?m)PC_CHECK\(\s*"
+               r"(new\s+List<[^>]*>\s*(?:\{[^}]*\}|\(\))|new\[\]\s*\{[^}]*\})"
+               r"\s*==\s*(.+?)\s*,\s*\"",
                r'PC_CHECK(System.Linq.Enumerable.SequenceEqual(\1, \2), "'),),
     writer_system=(
         "You output only C# code as top-level statements and local functions "
