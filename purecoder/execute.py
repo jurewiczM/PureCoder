@@ -31,6 +31,12 @@ MIN_ASSERTIONS = 3
 # the same assertion line repeated more than this is a generation spiral.
 MAX_REPEATED_ASSERT = 5
 
+# an integer expectation over a literal longer than this asks the tester to
+# count by hand, and hand-counting is where wrong-but-plausible expected
+# values come from. Measured 2026-08-09 and again 2026-08-21 on
+# python/count_vowels -- see mode 6.
+MAX_ORACLE_LITERAL = 12
+
 # this many IDENTICAL consecutive failures means the feedback is not landing;
 # further attempts only spend model calls on a decided outcome.
 NO_PROGRESS_LIMIT = 2
@@ -696,17 +702,29 @@ def repair_tests(spec, tests: str) -> str:
     return tests
 
 
+def _literal_size(node):
+    """How many elements a literal argument has, or None if it is not one."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return len(node.value)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return len(node.elts)
+    return None
+
+
 def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
                spec=PYTHON, strict_targets=False):
     """Reject structurally bad tests BEFORE they get to judge code.
 
-    Returns (ok, reason). Catches the five failure modes seen in development:
+    Returns (ok, reason). Catches the six failure modes seen in development:
     doesn't parse, calls nothing under test, too few assertions (the floor is
-    caller-tunable via min_assertions), degenerate repetition, and asserting
-    on exact exception messages.
+    caller-tunable via min_assertions), degenerate repetition, asserting on
+    exact exception messages, and an expected COUNT the tester had to derive
+    by scanning a long literal of its own invention.
 
-    It deliberately cannot catch a plausible-but-wrong expected value -- that
-    is spec clarity's job, not this gate's. Said plainly rather than implied.
+    It still cannot catch a plausible-but-wrong expected value, and does not
+    try: mode 6 refuses the QUESTION rather than judging the answer. Knowing
+    that `count_vowels(s) == 10` is wrong needs an oracle this has no access
+    to; knowing that nobody counts thirty characters reliably does not.
     """
     if not tests.strip():
         return False, "empty test output"
@@ -751,6 +769,50 @@ def lint_tests(tests: str, targets=None, min_assertions=MIN_ASSERTIONS,
         if _MSG_ASSERT.search(raw.strip()):
             return False, (f"line {i}: asserts on exception message text; "
                            f"assert the exception TYPE instead")
+
+    # mode 6: an expected COUNT the tester derived by hand. Live 2026-08-09
+    # and 2026-08-21, python/count_vowels:
+    #
+    #     assert count_vowels('AEIOUbcdEfGhIjKlMnOpQrStUvWxYz') == 10
+    #
+    # Thirty characters, nine vowels -- and 10 is exactly what you get by
+    # counting the 'y' the spec says never to count. Four correct
+    # implementations were refused, twice, while the same spec passed on the
+    # first attempt in all five other languages. TEST_RULES already says
+    # "respect every word of the spec" and was ignored, which is this
+    # project's standing lesson: the prompt asked, so bound it instead.
+    #
+    # Only integers, and only over a literal the tester wrote itself: a
+    # string or list expectation is a transcription rather than a count, and
+    # an argument that is a call or a name was not scanned by eye.
+    if targets:
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Compare) and len(node.ops) == 1
+                    and isinstance(node.ops[0], ast.Eq)):
+                continue
+            want = node.comparators[0]
+            # `type(...) is int` deliberately: True is an int, and is not a
+            # count -- an is_palindrome assertion must stay legal.
+            if not (isinstance(want, ast.Constant)
+                    and type(want.value) is int):
+                continue
+            call = node.left
+            if not isinstance(call, ast.Call):
+                continue
+            name = (call.func.id if isinstance(call.func, ast.Name)
+                    else getattr(call.func, "attr", ""))
+            if name not in set(targets):
+                continue
+            for arg in call.args:
+                size = _literal_size(arg)
+                if size is not None and size > MAX_ORACLE_LITERAL:
+                    return False, (
+                        f"{name} is asserted to return {want.value} for an "
+                        f"input of {size} elements -- an expected count over "
+                        f"a literal that long is arrived at by hand, and that "
+                        f"is where wrong expectations come from. Use inputs "
+                        f"of at most {MAX_ORACLE_LITERAL} elements, and more "
+                        f"of them")
 
     return True, ""
 
