@@ -1,17 +1,22 @@
 # PureCoder — Build Status
 
-_Snapshot of what's built, tested, and what's next._
+The handoff: what is built, what was measured, what is known broken, what is
+next. Boundaries are grouped by area and stated as what is true now; the
+narrative of how each was found is in [docs/live-runs/](live-runs/).
 
 ## Done and tested
 
-624 tests, all green, none of them needing a GPU or a running server
-(`pytest -q`). CI runs the same suite on Python 3.10–3.12.
+655 tests, all green, none of them needing a GPU or a running server
+(`pytest -q`). CI runs the same suite on Python 3.10–3.12, and a `toolchains`
+job runs it inside an image carrying all seven toolchains with
+`PURECODER_REQUIRE_ALL_LANGUAGES=1`, where a skip is a failure: 565 passed / 0
+skipped, against 549 / 10 on a bare runner.
 
-`scripts/smoke.sh` is the live counterpart: six checks — both config
-artifacts, Python and OCaml end to end, the contract seam, and the refusal
-path — in about a minute against a running server. It asserts the printed
-verdict AND the exit code, because those were out of step until 2026-08-15.
-It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
+`scripts/smoke.sh` is the live counterpart: six checks — both config artifacts,
+Python and OCaml end to end, the contract seam, and the refusal path — in about
+a minute against a running server. It asserts the printed verdict AND the exit
+code, because those were out of step until 2026-08-15. It is not a benchmark;
+`scripts/bench/` is where scores come from.
 
 | Phase | Component | Status | How it was verified |
 |---|---|---|---|
@@ -46,499 +51,422 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
 | — | `cli.py` unified entry point | ✅ wired | argparse + subcommands route; `status` runs |
 | — | `status.py` live probe | ✅ tested | degrades gracefully with server down |
 | 12 | toolchain image + `account()` | ✅ tested, ✅ run | one image, 7 toolchains; CI runs the suite in it with nothing allowed to skip — 565 passed / 0 skipped, against 549 / 10 on a bare runner |
-
 | 12 | ten-task cross-language benchmark | ✅ built, ✅ run | 60 tasks over 6 languages, 2026-08-09; four of seven failures were the harness, not the model |
-| 12 | `benchlog.py` failure attribution | ✅ tested, ⚠️ wrong | 14 cases; misattributed 4 of 7 real failures to `writer` on its first live run |
-
+| 12 | `benchlog.py` failure attribution | ✅ tested, ✅ repaired | misattributed 4 of 7 real failures to `writer` on its first live run; re-classified over those same 60 transcripts, `writer` now holds exactly the 2 that did not compile |
+| 13 | `agents.py` role ledger | ✅ tested, ✅ run | the loop records what each role spent as it spends it; separated the two genuine refusals of the 2026-08-16 run by role count alone |
+| 13 | `scripts/bench/attribution.py` | ✅ built, ✅ run | 60 runs, 58 passes, median 1 attempt, 16 min; found SQL's 0/10 to be the task set and refuses it by name |
+| 13 | `scripts/demo.sh` | ✅ run | one function per runnable language; 6 of 7 passed and the seventh's refusal was the tester, which the ledger showed |
+| — | `purecoder serve` local HTTP API | ✅ tested | 14 cases over a real socket; same gates and refusals as the CLI; loopback-only asserted; a live generation driven through it |
+| — | `POST /code/stream` (SSE) | ✅ tested | events arrive per attempt, last one is the `/code` envelope; driven live through the browser |
+| — | the UI layer (`UI/app`) | ✅ built, ⬜ untested | three sections, each backed by an endpoint; typechecks and builds; a real run driven end to end in a browser. No component tests -- see UI/README.md |
 
 ## Key findings from the build
 
-1. **The writer is stronger than the tester.** Same model, same spec →
-   correct code, wrong tests, repeatedly. Test generation is the weak link
-   and the best target for specialization.
+1. **The writer is stronger than the tester.** Same model, same spec → correct
+   code, wrong tests, repeatedly. Test generation is the weak link and the best
+   target for specialization. Six separate measurements now point here.
 2. **Almost every failure was spec ambiguity or test quality**, never the
-   writer. That's where remaining effort belongs.
+   writer.
 3. **Lenient tools rubber-stamp garbage.** `make -n` passed 50-line `rm`
    spirals; semantic guards were required on top of the parse check.
-4. **Context is double-edged** on a small card — feeding full code forward
-   for coherence triggered degeneration. Minimal context per task is the rule.
-5. **Real hardware is 6 GB, not the assumed 12** — shaped every choice and
-   strengthens the case for the pruning/specialization track.
+4. **Context is double-edged** on a small card — feeding full code forward for
+   coherence triggered degeneration. Minimal context per task is the rule.
+5. **Real hardware is 6 GB, not the assumed 12.** It shaped every choice.
 6. **Mechanically-generated tests are not automatically trustworthy.** The
-   anchor generator turns contract examples into assertions with no model
-   involved — and still produced five separate false greens before it was
-   safe, none of which a passing suite revealed. All five came from embedding
-   model-authored *expressions* into generated code: an unparenthesized
-   expected value made `assert f(10,3) == 3, 1` assert only `== 3`; a `#`
-   truncated an assertion to a bare truthiness check; a walrus rebound an
-   exception name so the handler caught `BaseException`; `out: "f(1)"` emitted
-   a tautology. The rule that ended it was structural, not another patch:
-   **an anchor may embed data, never behaviour** — every value must be a
-   literal. Worth remembering that the contract's author is the same model the
-   anchors exist to check.
-7. **A live run finds what unit tests cannot.** Two defects survived 147
-   passing tests and six clean reviews: `contract.gbnf` did not parse in
-   llama.cpp at all (multi-line rules are rejected — every contract run
-   silently fell back), and the test designer can wrap its assertions in a
-   `def test_x():` that nothing ever calls, so `run_python` exits 0 and the
-   loop reports success on an implementation returning garbage. The second is
-   a false green in the project's central claim and pre-dates the contract
-   work entirely. Eight scaffold runs against a live server produced five more
-   defects no test had thought to look for: the writer copying the tests it
-   was shown into the implementation (they then ran twice), the gate's verdict
-   being discarded when it gave up, a missing import burning the whole retry
-   budget, a mid-loop constraint being dropped by the next prompt rebuild, and
-   generated code orphaning spawned processes past the timeout.
-8. **Constrain at the cheapest layer that can express it.** The `.env`
-   rambling comment was attacked three ways: a system prompt (ignored), then a
-   semantic validator (worked, but cost a model call per retry and still
-   failed three attempts in a row). Bounding the line length *in the grammar*
-   made it structurally impossible and free. Line length is shape, and shape
-   is the grammar's job — the validator should never have been the first
-   answer. It is kept, at a looser bound, for hand-written files and as
-   defence in depth.
+   anchor generator involves no model and still produced five false greens,
+   none of which a passing suite revealed. All five came from embedding
+   model-authored *expressions* into generated code: an unparenthesized value
+   made `assert f(10,3) == 3, 1` assert only `== 3`; a `#` truncated an
+   assertion to a truthiness check; a walrus rebound an exception name so the
+   handler caught `BaseException`; `out: "f(1)"` emitted a tautology. The rule
+   that ended it was structural: **an anchor may embed data, never behaviour**
+   — every value must be a literal.
+7. **A live run finds what unit tests cannot.** Every session has found defects
+   a fully green suite could not see. See the live-run table below.
+8. **Constrain at the cheapest layer that can express it.** The `.env` rambling
+   comment survived a system prompt and a semantic validator; bounding the line
+   length *in the grammar* made it structurally impossible and free. Shape is
+   the grammar's job.
+9. **The model was never the bottleneck.** Qwen3-Coder-30B-A3B at Q3_K_M runs
+   on this 6 GB card with `-ngl 99 --cpu-moe` — experts in system RAM, ~3B
+   activated per token — in 1864 MiB at 33.3 tok/s, less VRAM and more speed
+   than the 7B it replaces. But the 7B's Q5_K_M passes the same five OCaml
+   tasks once the harness is fixed, having scored 4, 3, 4, 3 on the broken one.
+   The 30B's case rests on halving the attempts, not on the score. Q4_K_M was
+   measured and rejected on capability (3 of 5).
 
-## Known boundaries (by design, documented)
+## Known boundaries
 
-- **Test-first proves the tests can fail, not that they are right.** `--tdd`
-  runs the designed suite against a stub -- a function that exists and returns
-  None -- and refuses it unless a check ran AND failed. That kills the whole
-  class of suite no static gate can see (`assert True` parses, names the
-  target, is not degenerate). What it cannot do is judge the EXPECTATION: a
-  live run produced `assert word_count(' ') == 1` against a correct
-  implementation, and a red suite full of wrong expectations is red for the
-  wrong reason. The confirmation step exists for exactly that gap -- it is the
-  one moment a person can read what will judge the code, before the code
-  exists -- and `-y` skips it, which is a choice with a cost.
-- **Test-first is Python only.** A stub needs a real signature in C++, Rust or
-  OCaml, which the contract does not supply; there the empty-implementation run
-  is a compile error, which is not evidence about assertions. Refused with the
-  reason rather than approximated.
+### Tests and gates
 
-- Test gate catches *structural* bad tests, not plausible-but-wrong values.
-- Assertion *reachability* is proven at runtime, not by the gate. The tests
-  are instrumented to count checks that actually execute, so a suite whose
-  asserts sit in a `def test_x():` nobody calls now fails with "no checks
-  ran". The static gate still cannot see it -- the proof is the run.
-- A wrong contract now fails *correct* code rather than silently passing wrong
-  code. The first live contract run produced `parse_ports('80,443') ->
-  [443, 80]` for a spec that said "sorted", and the anchor faithfully failed a
-  correct implementation. Noisy-wrong beats silent-wrong, but it is not free.
-- **Execution validation reaches seven languages, still only run-to-completion
-  code.** Python, C++, JavaScript, Rust, C#, SQL and OCaml all compile (where
-  needed), run real assertions, and prove a check executed. Go, Java and Swift
-  are declared and refuse until both a toolchain and a test idiom exist. Power
-  Query is refused permanently -- it runs only inside Excel and Power BI.
-- **SQL is validated, but its harness lives in two places.** SQL has no
-  assertion and no reliable way to end a script non-zero: SQLite's `RAISE`
-  works only inside a trigger and takes a *literal*, so a failing check cannot
-  name itself from inside SQL, and `SELECT 1/0` returns NULL rather than
-  failing. So a check is a ROW -- a boolean and a label inserted into a table
-  the preamble creates -- and the verdict is read back by the driver, which is
-  a stdlib `sqlite3` one-liner rather than a neutral interpreter. That is a real
-  asymmetry with the other five, where the tail carries the proof, and it is
-  defensible only because this driver is ours: the invariant a test now enforces
-  is that the *spec* proves a check ran, in the tail or in the runner. What SQL
-  gets in exchange is that every failing check is reported, not just the first.
-  There is no project layout -- a Makefile recipe would have to reproduce the
-  driver -- so `project --lang sql` refuses and `code` is unaffected.
-- **The sandbox has whatever this environment has, and now says which.** The
-  earlier text here claimed the sandbox had no third-party packages at all.
-  That was wrong, and a one-line probe disproves it: the executor runs
-  `sys.executable`, so it inherits the venv PureCoder itself runs in, where
-  `import numpy` succeeds and validates. What was true is that nothing
-  *declared* or *verified* anything -- the pipeline discovered a package's
-  absence by failing three attempts deep. `code --with numpy` now declares it,
-  the import is probed in the interpreter the executor will really use before a
-  single model call, and a package that is missing is refused with the exact
-  `pip install` line. The permission goes into the shared task text so the test
-  designer gets it too -- a writer allowed numpy and a tester that is not
-  produces assertions that cannot run -- and the stdlib-only nudge no longer
-  takes the permission back. What is deliberately NOT built: a per-run venv
-  that pip-installs on demand. It needs the network, CI cannot exercise it, and
-  a flaky install mid-run is a "generated but unchecked" tier by another name.
-  `--with` is python-only and refuses for any other language rather than being
-  silently ignored.
-- **Two live limits that are still real**, both confirmed repeatedly against a
-  live server on a "small web app that graphs random numbers" spec: a server
-  that calls `serve_forever()` never returns, so the timeout is the only
-  possible verdict; and successive binds hit `TIME_WAIT`, so even a stdlib
-  `http.server` answer fails to rebind on the next attempt. A missing import
-  triggers one stdlib-only retry and then stops, rather than burning the whole
-  budget. Function-shaped specs pass on the first attempt.
+- **Test-first proves a suite CAN fail, not that its expectations are right.**
+  `--tdd` runs the designed suite against a stub and refuses it unless a check
+  ran AND failed, which kills the class no static gate can see (`assert True`
+  parses, names the target, is not degenerate). It cannot judge the
+  EXPECTATION: a live run produced `assert word_count(' ') == 1` against
+  correct code. The confirmation step is the one moment a person reads what
+  will judge the code before the code exists, and `-y` skips it.
+- **Test-first is Python only.** A stub needs a real signature, which the
+  contract does not supply; elsewhere an empty implementation is a compile
+  error, which is not evidence about assertions. Refused, not approximated.
+- **The gate catches structural bad tests, not plausible-but-wrong values.**
+  That boundary has never been crossed and is where the next real gain is.
+- **Reachability is proven at runtime, not statically.** Tests are instrumented
+  to count checks that execute, so asserts sitting in a `def test_x():` nobody
+  calls now fail with "no checks ran". The static gate still cannot see it.
+- **A wrong contract fails correct code rather than passing wrong code.** The
+  first live contract run produced `parse_ports('80,443') -> [443, 80]` for a
+  spec saying "sorted", and the anchor faithfully failed a correct
+  implementation. Noisy-wrong beats silent-wrong, but it is not free.
+- **The project edits model-authored test code in exactly one place.**
+  `test_fix` rewrites `pc_check ((expr) "label")`, which applies a string to a
+  boolean and cannot compile under any reading — one possible intent, so the
+  rewrite is meaning-preserving by construction. Declared per language, tested
+  from both sides. Refusing was tried first and ended runs at attempts=0 with
+  the writer never reached. A malformation with two possible meanings does not
+  belong in this field.
+
+### Execution and languages
+
+- **Seven languages execute, and only run-to-completion code.** Python, C++,
+  JavaScript, Rust, C#, SQL and OCaml compile where needed, run real
+  assertions, and prove a check executed. Go, Java and Swift are declared and
+  refuse until both a toolchain and a test idiom exist. Power Query is refused
+  permanently — it runs only inside Excel and Power BI.
+- **SQL's harness lives in two places.** SQL has no assertion and no reliable
+  non-zero exit: SQLite's `RAISE` works only inside a trigger and takes a
+  literal, and `SELECT 1/0` returns NULL. So a check is a ROW, and the verdict
+  is read back by a stdlib `sqlite3` driver rather than a neutral interpreter.
+  That asymmetry is defensible only because the driver is ours; the invariant a
+  test enforces is that the *spec* proves a check ran, in the tail or in the
+  runner. In exchange SQL reports every failing check, not just the first.
+  `project --lang sql` refuses — a Makefile recipe would have to reproduce the
+  driver.
+- **The sandbox inherits this venv, and now says what it has.** The executor
+  runs `sys.executable`, so `import numpy` succeeds. What was missing was any
+  declaration: `code --with numpy` probes the import in the real interpreter
+  before a single model call and refuses with the exact `pip install` line. The
+  permission reaches the test designer too, since a writer allowed numpy and a
+  tester that is not produces assertions that cannot run. Deliberately NOT
+  built: a per-run venv that pip-installs on demand — it needs the network, CI
+  cannot exercise it, and a flaky install is a "generated but unchecked" tier
+  by another name. `--with` is Python-only and refuses elsewhere.
+- **Two live limits are still real**, on a "small web app that graphs random
+  numbers" spec: `serve_forever()` never returns, so the timeout is the only
+  verdict, and successive binds hit `TIME_WAIT`. A missing import triggers one
+  stdlib-only retry and then stops. Function-shaped specs pass first attempt.
+- **A toolchain that splits its streams the other way loses its diagnostics.**
+  `execute.py` ended a failed run with `stderr or stdout`, and the `or`
+  discarded stdout whenever stderr said anything — `dotnet` writes
+  `candidate.cs(11,1): error CS0106: ...` to stdout and a content-free
+  "compilation failed" to stderr, so the fix loop was asked to repair an error
+  it was never shown, and one live task spent four attempts doing exactly that.
+  Both streams now, stderr first, each trimmed SEPARATELY so a chatty stdout
+  cannot push a traceback out of the window. `_DIAGNOSTIC` knows MSBuild's
+  `path(12,34): error CS0106:` and OCaml's `File "x.ml", line 14, characters
+  6-12:` — the latter anchored on `characters N-M`, which Python never writes,
+  because `File "x", line N` also matches a traceback frame and turned one
+  traceback into thirty diagnostics.
+- **A harness collision is explained, not prevented.** When a failed attempt
+  redefines something the harness provides, the retry prompt names it — the
+  toolchain would only say "multiple definition of `main'" about a file the
+  writer has never seen. The check is textual, so it can miss, and it is only a
+  hint on an already-failed run.
+- **Drafted commands reach the machine two ways, unequally narrow.** Build and
+  run are argv and shell syntax is refused outright. A project recipe cannot be
+  argv (`g++ ... && ./main` needs `&&`), so it is a shell line with the shell's
+  other powers denied by name — pipes, redirection, `;`, substitution, a
+  backgrounding `&` — and `run`/`test` must name the entry file. The user
+  confirms both, and `make install` is never run. That is a closed door, not a
+  sandbox: isolation is still a temp dir and a process group.
+
+### Retrieval
+
+- **The gate was repaired twice, and the second repair never shipped.** First
+  the lexical score counted only tokens the corpus knew, so `cheapest flights
+  to Lisbon in March` scored a perfect 1.000 against OCaml docs because "march"
+  appears somewhere; weighting unseen tokens at the rarest known weight
+  separated the bands (real 1.10–1.34, unrelated 0.50–0.70) and the threshold
+  moved to 0.8. Then `retrieve_context` — the only retrieval `code`, `ask` and
+  `project` actually perform — kept the `min_score=0.3` it had inherited, so
+  every doc-grounded run in the project was gated at 0.3 anyway: "best pizza
+  toppings" injected 1311 characters of tutorial into the writer's prompt.
+  Retrieval no longer accepts a threshold argument at all, and a test asserts
+  it cannot grow one back. Re-measured over fifteen queries: ten real questions
+  score 1.043–1.400 and all retrieve, five unrelated score 0.498–0.736 and none
+  do. **Worth sitting with:** the gate was measured, repaired, documented and
+  celebrated, and the number that shipped was the old one two calls away.
+- **It changes `ask`.** An index that loads but answers nothing used to be
+  unreachable and now happens. `code` degrades to an ungrounded run, because
+  its harness proves the output either way; `ask` refuses, because there the
+  index is the command rather than an improvement.
+- **RAG only helps where the model is ignorant, and can actively hurt.**
+  Measured: `sum_list` in OCaml passed first attempt ungrounded and failed four
+  attempts with the docs index attached — retrieved tutorial text diluted the
+  prompt until the tester reverted to a malformation the counter-example had
+  been suppressing. That is why the constraint moved to `test_lint` and
+  `test_fix`, which hold regardless of prompt size.
+- **Retrieval runs twice; the second query is the error.** A retry is keyed on
+  what the TOOLCHAIN objected to — `Unbound value String.rev` names the gap
+  exactly where prose only describes the goal. Bounded at half the first
+  budget, excluding what was already injected. Its text reaches the prompt and
+  never `error`, so it cannot disturb the no-progress signal. **Not yet shown:
+  that the retrieved text helps.** The mechanism is proven, the value is not.
+- **Ranking is two signals sharing one gate.** Cosine plus an IDF-weighted
+  exact-name score bounded in `[0,1]`, so a chunk holding every rare token of
+  the query clears on the lexical signal alone at cosine zero — that is
+  `min_lexical`, the exact-symbol rescue, and it is only safe now that an
+  unrelated question can no longer score 1.0 lexical. Stopwords cannot do it,
+  since a token in every chunk weighs nothing. Measured over 7128 chunks of
+  this repo with real bge-small embeddings on six queries, the lexical signal changed
+  the ranking in four and *rescued* none — cosine already ranked a chunk
+  containing the symbol first. The guarantee is real; on this corpus it was not
+  yet needed. The weight (0.5) and the threshold (0.8) are calibrated on one
+  corpus, not tuned against a benchmark — there isn't one.
+- **Retrieval cost is the model call, not the search.** Over 7495 chunks:
+  lexical ~0.005 ms (inverted index), cosine ~3 ms (brute force), loading an
+  index ~220 ms. Embedding the query dominates. A real docs directory is the
+  OCaml case at 15 chunks, where the inverted index buys nothing measurable —
+  headroom for a large corpus, not a fix anyone was waiting on. Brute-force
+  cosine stays: an ANN index would trade exactness for milliseconds nobody
+  needs.
+- **Code is chunked by its own grammar, where one is installed.** tree-sitter
+  splits C++, Rust, OCaml, JavaScript, C#, Go, Java and SQL by definition, in
+  the shape the Python AST chunker already used. Two limits: node types are
+  matched by SUFFIX (`_definition`, `_item`, `_binding`) rather than a
+  per-language table, so an unusual grammar may drop a definition into the
+  preamble — degraded, not wrong; and a chunk's name comes from a bounded
+  breadth-first walk, so an identifier nested deeper than four levels yields a
+  chunk labelled by node type. Without the optional package, code degrades to
+  prose chunking.
+- **A capability and its wiring are two things.** `ingest` matched only
+  `.py/.md/.txt/.rst`, so the files the chunker exists for were never offered
+  to it — an OCaml docs directory of `.ml` samples was skipped whole. The
+  pattern is derived from the chunker's own extension table now.
+- **`ingest` cannot read the documentation most projects publish.** The web's
+  docs are HTML, skipped whole rather than stripped and indexed. The ocaml.org
+  tutorials only worked because they are markdown in their source repository.
+- **An index is refused rather than half-trusted.** Vectors and chunk metadata
+  are two files paired by row index, so a count mismatch used to inject
+  documentation under a filename it never came from — no exception, right-
+  looking score. `load` refuses on a count or shape mismatch, on a model other
+  than the one that built the index, and on an unreadable file; `search`
+  refuses a query of the wrong dimension. It cannot detect a merely STALE
+  index — docs edited since the last `ingest` are answered from the old text.
+- **Documentation names an API; it does not enumerate one.** Judging code
+  against the extracted symbol library produced 45 findings on this project's
+  own source, all of them correct code the docs had no reason to mention. What
+  it can do is answer *did you mean* once the toolchain has already rejected a
+  name, which needs no completeness — so `purecoder/symbols.py` deliberately
+  has no function that takes code. It would not have helped either recorded
+  OCaml failure. Its value is `ask` over a real library's docs, which is not
+  the case that motivated writing it.
+- **Retrieval reaches the code artifact of a project, and only that one.**
+  Inside a scaffold the documentation goes to the execution-validated module
+  alone. Folding the context into the description instead of passing it
+  separately sent it to the README prompt too — caught by a test, not review.
+
+### Bootstrap and learned languages
+
 - **A learned language is proven, not trusted.** Five mechanical probes plus a
   live round decide it, and a harness that cannot fail wrong code is refused.
   What the probes cannot see is *idiom*: a spec can pass every one and still
-  produce code no practitioner of that language would write.
-- The first live run of the bootstrap layer and its five defects, all now
-  fixed, are written up in
-  [docs/live-runs/2026-08-03-ocaml-bootstrap.md](live-runs/2026-08-03-ocaml-bootstrap.md).
-- The test-first mode and the model comparison are written up in
-  [docs/live-runs/2026-08-06-tdd-and-the-model-question.md](live-runs/2026-08-06-tdd-and-the-model-question.md),
-  including the run where a contract's own example (`parse_ports('80,443') ->
-  [443, 80]`, unsorted, for a spec that says sorted) was caught on screen
-  before any implementation existed.
-- **A second live run, over everything built since, found three more** --
-  [docs/live-runs/2026-08-04-five-steps.md](live-runs/2026-08-04-five-steps.md).
-  SQL's writer was never told the database starts empty (and saying so in
-  `writer_system` did not fix it -- the mechanical hint on the failed run did);
-  Python's tester, alone among the five, was never told to keep its assertions
-  out of a function nobody calls; and the tree-sitter chunker lost every
-  declaration in a real OCaml `.mli`, because `val` parses as
-  `value_specification` and the suffix list said `_specifier`. All three were
-  invisible to 450 passing tests and were found by pointing the pipeline at
-  real input. That run used Q5_K_M at 20/29 layers, where the older findings
-  above were made on Q4_K_M -- a mismatch at the time, and since resolved the
-  other way: Q5_K_M is now the documented model, because Q4 was measured and
-  rejected (finding 9).
-- **A third live run found eight, and they were failing correct code** --
-  [docs/live-runs/2026-08-07-the-harness-was-the-bottleneck.md](live-runs/2026-08-07-the-harness-was-the-bottleneck.md).
-  A capitalised `Let` at the head of a statement; a gate anchored so that
-  valid doubly-parenthesised OCaml was refused; a repair that mangled a check
-  written with no label; "these tests never call the target" unreachable
-  outside Python, so a suite testing `List.sort` instead of `insertion_sort`
-  was accepted; one target mention enough to pass that check; the writer
-  answering retrieved documentation instead of using it; the test designer
-  doing the same, which was the other half of it; and a `[docs]` hint that
-  printed its header and withheld the names. All nine were invisible to 536
-  passing tests, and every one was found by reading a failing run's transcript
-  rather than its verdict. The benchmark that found them is versioned now, at
-  [scripts/bench/](../scripts/bench/), transcripts and all -- an earlier
-  version discarded them and a batch of correct implementations was nearly
-  recorded as a capability result.
-- **A fourth live run found six, and the suites could not pass** --
-  [docs/live-runs/2026-08-09-the-tests-could-not-pass.md](live-runs/2026-08-09-the-tests-could-not-pass.md).
-  The first sixty tasks the cross-language benchmark ever ran scored 53/60, and
-  four of the seven failures were correct implementations judged by tests that
-  no implementation could satisfy: `unique([]) === []` is false in JavaScript
-  for every input, `==` on `List<int>` is reference equality in C#, and a
-  Python suite asserted `count_vowels(...) == 10` where the answer is 9 --
-  counting Y, against a spec that says "never counting y". Corrected, five of
-  six languages score 10/10. Three consequences are recorded there and only the
-  first is fixed: `test_fix` now repairs the container comparison in both
-  languages (control re-run: javascript 9->10, c# 8->9); `execute.py` returns
-  `stderr or stdout`, so every C# compile diagnostic is discarded and the fix
-  loop is told only "compilation failed"; and `benchlog.py`, written the day
-  before to prevent exactly this misreading, attributed all four harness
-  failures to `writer`. Its `unknown` bucket returned zero across sixty tasks,
-  which looked like validation and was not -- the error was inside a
-  *recognised* bucket.
-- **The cross-language benchmark saturates as a capability instrument.**
-  Corrected for the harness failures above, only OCaml discriminates, and only
-  because the model is weak in it. `roman` -- the intended hardest of the ten,
-  and the reason for a 3/4/3 difficulty ramp -- passed on the first attempt in
-  every other language. As a *pipeline* benchmark 53/60 is a real result; as a
-  way to compare two models or catch a regression it cannot see. Same shape as
-  `bench.py`'s recorded failure, for a different reason. Also measured: pinning
-  a task's edge cases in its spec text does not stop a tester contradicting
-  them, because a spec is a prompt and the rule about prompts applies to it.
-- **The bootstrap's own prompts were three of its four failure modes.** Six
-  `learn ocaml` runs against real stdlib `.mli` files produced: a model
-  explanation compiled as source (`unfence` strips fences, not prose); a
-  structural command check with no retry, where one bad sample ended the run;
-  a prompt demanding `PC_CHECK` when OCaml reserves capitalised identifiers for
-  constructors, so four redrafts failed an instruction that cannot be followed;
-  and the model copying a line of its own prompt into the fixture. Fixed, the
-  harness went from three of five probes -- failing identically across four
-  redrafts -- to five of five, then failed the live round on tester type
-  errors, which is the older documented boundary. Two later runs got three of
-  five again: **bootstrap on this model is possible and unreliable, where
-  before it was impossible.** Nothing registered in any of the six runs, which
-  is the gate's whole claim.
-- **`purecoder measure` has been run, and it could not measure what it exists
-  to measure.** Zero divergence in both arms across two full passes; nine of
-  ten arms ended in the loop refusing, eight of those blaming the test
-  designer. Spec-divergence only exists downstream of a passing run, so a
-  pipeline that fails closed on these specs gives the instrument nothing to
-  see. The first pass was also confounded by the tester-wrapping defect above
-  and was discarded rather than published. What the run does give is the first
-  quantitative form of finding 1: the tester is the bottleneck, in eight of ten
-  arms.
+  produce code no practitioner would write.
+- **Bootstrap on this model is possible and unreliable.** Six `learn ocaml`
+  runs against real stdlib `.mli` files failed four ways, three of them the
+  bootstrap's own prompts: a model explanation compiled as source (`unfence`
+  strips fences, not prose); a structural check with no retry, so one bad
+  sample ended the run; a prompt demanding `PC_CHECK` when OCaml reserves
+  capitals for constructors, so four redrafts failed an instruction that cannot
+  be followed; and the model copying its own prompt into the fixture. Fixed,
+  the harness went from three of five probes to five of five, then failed the
+  live round on tester type errors. Two later runs got three of five again.
+  Nothing registered in any of the six, which is the gate's whole claim.
 - **OCaml is wired, and it was written by hand.** It was the language the
-  bootstrap layer existed for, and six live `learn` runs never registered one:
-  the drafting model wrote `let PC_CHECK cond =` (OCaml reserves capitals for
-  constructors), explained its code in English inside the source, echoed the
-  prompt back, glued an extension onto `{src}`, and finally produced `end
-  else`. Every one of those is fixed where it belongs -- and the entry is still
-  hand-written, because the probes do not care who wrote a spec and a language
-  nobody can generate for is worth less than an hour of typing. It passes the
-  same five bootstrap probes a learned entry must, which a test asserts, and
-  `code --lang ocaml` validated on the first attempt live. Two consequences:
-  `learn ocaml` is now refused like `learn python` (a wired entry is reserved,
-  so `go`/`java`/`swift` carry the placeholder tests), and an OCaml failure is
-  an ordinary failure again rather than an expected limit. Harder algorithms
-  still fail on writer competence -- a live bubble sort produced an OCaml type
-  error three attempts running -- which is the boundary every language has.
-- **Retrieval reaches the code artifact of a project, and only that one.**
-  `code`, `ask` and `project` share one resolver, so an explicit `--store` or a
-  learned language's own index grounds all three. Inside a scaffold the
-  documentation goes to the execution-validated module alone: the Makefile's
-  targets come from `ProjectSpec`, the `.env` is derived from the code it is
-  shown, and the README is prose. Folding the context into the description
-  instead of passing it separately sent it to the README prompt too -- caught
-  by a test, not by review.
-- **A learned language is now scaffoldable, when its layout can be proven.**
-  `learn` drafts a `ProjectSpec` and probes it two-sided against a real `make`:
-  correct code must build and run, code that cannot parse must fail. If it does
-  not hold, the language is still registered without one -- `project` refuses
-  it, `code` and `ask` do not notice. What the probe proves is narrower than it
-  sounds: for a one-file project `make test` builds and runs the file rather
-  than running a suite, exactly as the hand-written C++ and JavaScript entries
-  do. `make install` is never run, so it is trusted rather than proven.
-  A learned language now gets a `writer_system`, but see the boundary below for
-  what that is and is not evidence of.
+  bootstrap existed for. The entry is hand-written because the probes do not
+  care who wrote a spec, and it passes the same five a learned entry must.
+  `learn ocaml` is refused like `learn python`, so `go`/`java`/`swift` carry
+  the placeholder tests, and an OCaml failure is an ordinary failure again.
+  Harder algorithms still fail on writer competence — a live bubble sort
+  produced a type error three attempts running.
+- **A learned language is scaffoldable when its layout can be proven.** `learn`
+  drafts a `ProjectSpec` and probes it two-sided against real `make`: correct
+  code must build and run, unparseable code must fail. If it does not hold the
+  language is registered without one — `project` refuses it, `code` and `ask`
+  do not notice. Narrower than it sounds: for a one-file project `make test`
+  builds and runs the file rather than running a suite. `make install` is never
+  run, so it is trusted rather than proven.
 - **The writer's demand is derived and exercised; nothing proves it was
-  needed.** A drafted entry now tells the writer that the file already defines
-  the check helper and either supplies the entry point or runs at top level, and
-  that it should add no wrapper. Both facts come from artifacts the probes
-  proved, and the live bubble-sort round exercises the demand end to end -- but
-  that round only shows the writer can work *with* it. There is no mechanical
-  two-sided probe of *necessity* here, and the obvious one does not work:
-  pasting the tail into the implementation slot to see whether duplication
-  breaks the build fails a top-level-statement language for the wrong reason
-  (two tails, so the counter check runs before the tests, so "no checks ran"),
-  which would manufacture a constraint for a language that needed none. The
-  hand-written entries stay asymmetric on purpose -- a built-in is empty because
-  a person judged it unnecessary; a drafted one is filled because nobody judged
-  anything. Two further limits. It is *narrower than C#'s hand-written demand*,
-  which also forbids `using` directives: that is a fact about C#, not about
-  `assemble()`, and a derived demand that banned imports outright would break a
-  language whose implementation legitimately needs one. And it applies to
-  languages learned from here on -- an entry already saved under
-  `$PURECODER_HOME` keeps the field empty, since filling it needs the fixture,
-  which is not stored. Re-running `learn` is the only way to backfill.
-- **A collision is explained after the fact, not prevented by a gate.** When a
-  failed attempt defines something the harness already provides, the retry
-  prompt names it -- the toolchain reports that as "multiple definition of
-  `main'" in a file the writer has never seen. The check is textual (it runs for
-  languages with no parser here), so it can miss, and it is deliberately only a
-  hint on an already-failed run: a false positive would cost a line of context
-  and point the model at code that is fine.
-- **Drafted commands reach the machine two ways, and they are not equally
-  narrow.** Build and run are argv, and shell syntax is refused outright. A
-  project recipe cannot be argv -- `g++ ... && ./main` needs `&&` -- so it is a
-  shell line with the shell's other powers denied by name (pipes, redirection,
-  `;`, command substitution, a backgrounding `&`), and `run`/`test` must name
-  the entry file. The denylist is calibrated against the five hand-written
-  layouts and a test keeps it there. The user confirms both before anything
-  runs, and `make install` is never run at all. That is a closed door, not a
-  sandbox — the executor's isolation is still a temp dir and a process group.
-- **Code is chunked by its own grammar now, where one is installed.** The
-  chunker was Python-and-markdown only, so a learned language's samples were
-  cut at paragraph boundaries -- worst exactly where this project cares most.
-  tree-sitter splits C++, Rust, OCaml, JavaScript, C#, Go, Java, SQL and the
-  rest by definition instead, with the same shape the Python AST chunker
-  already used: one chunk per definition, a large class split into members, the
-  comment above a definition kept with it, everything else in a preamble. Two
-  limits worth stating. The node types are matched by SUFFIX (`_definition`,
-  `_item`, `_binding`) rather than a per-language table, so an unusual grammar
-  may drop a definition into the preamble rather than naming it -- degraded, not
-  wrong. And the name on a chunk's label is found by a bounded breadth-first
-  walk, so a grammar that nests its identifier deeper than four levels yields a
-  chunk labelled by node type. The package is an optional extra; without it,
-  code degrades to prose chunking exactly as before.
-- **A capability and its wiring are two things.** `ingest` matched only
-  `.py/.md/.txt/.rst`, so the files the new chunker exists for were never
-  offered to it -- an OCaml docs directory of `.ml` samples was skipped whole.
-  The pattern is now derived from the chunker's own extension table, which is
-  the third time this session that a working feature was reachable by nothing.
-- **RAG only helps where the model is ignorant, and it can actively hurt.**
-  Measured: `sum_list` in OCaml passed on the first attempt ungrounded and
-  failed four attempts with the docs index attached -- the retrieved tutorial
-  text diluted the prompt until the tester reverted to a malformation the
-  prompt's counter-example had been suppressing. That is the bill for a gate
-  that never refuses, and it is why the constraint moved to `test_lint` and
-  `test_fix`, which hold regardless of how much context is in the prompt.
-- **The project now edits model-authored test code, in one narrow place.**
-  `test_fix` rewrites `pc_check ((expr) "label")` to the form that compiles.
-  The justification is that the construct applies a string to a boolean and
-  cannot compile under any reading, so it has exactly one possible intent and
-  the rewrite is meaning-preserving by construction. It is declared per
-  language, tested from both sides, and `test_lint` stays behind it for shapes
-  the repair does not match. Refusing was tried first and ended runs at
-  attempts=0 with the writer never reached. Nothing here infers intent -- a
-  malformation with two possible meanings does not belong in this field.
-- **The gate refuses again, and the reason it could not was a bug rather than
-  a threshold.** It was recorded here first as a boundary about embedding
-  floors -- that was wrong, and worth leaving on the record. The lexical score
-  is the share of a query's rare tokens a chunk holds, and tokens the corpus
-  had never seen were dropped from the denominator instead of counted against
-  the match, so a chunk matching ONE incidental token scored as well as one
-  matching every token: `cheapest flights to Lisbon in March` scored a perfect
-  1.000 against OCaml documentation because "march" appears somewhere. With
-  unseen tokens weighted at the rarest known weight, unrelated queries fall to
-  0.50-0.70 while real ones stay at 1.10-1.34 -- ranges that used to overlap,
-  which is exactly why raising the threshold had looked like corpus-fitting.
-  The default is now 0.8, set nearer the junk end because a too-tight gate
-  drops documentation silently. `min_lexical` preserves the exact-symbol
-  rescue at cosine zero, which is only safe now that an unrelated question can
-  no longer score 1.0 lexical. Live: 7 of 7 real questions retrieve, 0 of 5
-  unrelated ones do. The threshold itself remains a judgement calibrated on one
-  corpus and eleven queries; the separation it exploits is the measured part.
-- **`ingest` cannot read the documentation most projects publish.** It matches
-  prose and source extensions; the web's docs are HTML, which is skipped whole
-  rather than stripped and indexed. The ocaml.org tutorials used to test
-  retrieval are markdown in their source repository, which is the only reason
-  that test was possible.
-- **Ranking is two signals, and the gate is shared.** Cosine plus an
-  IDF-weighted exact-name score, the latter bounded in `[0,1]` absolutely so it
-  can share `min_score`. The consequence is deliberate: a chunk containing
-  every rare token of the query clears the gate on the lexical signal alone,
-  with a cosine of zero. A token in every chunk weighs nothing, so stopwords
-  cannot do it. The weight (0.5) and the threshold (0.3) are the two numbers
-  that decide this, and neither is tuned against a benchmark — there isn't one.
-- **Retrieval cost is the model call, not the search.** Over 7495 chunks --
-  this repo with `llama.cpp/` in it, which is a deliberately pathological
-  corpus, not a docs directory -- the lexical signal is ~0.005 ms (inverted
-  index), cosine ~3 ms (brute-force matmul), and loading an index ~220 ms. The
-  embedding of the query dominates all of it. Worth being plain about the
-  scale: a real docs directory is the OCaml case at 15 chunks, where the old
-  per-chunk walk cost microseconds and the inverted index buys nothing
-  measurable. It is headroom for a large corpus, not a fix for something
-  anyone was waiting on. Brute-force cosine stays for the same reason: an ANN
-  index would trade exactness and a dependency for milliseconds nobody needs.
-- **Documentation names an API; it does not enumerate one.** The symbol library
-  extracted from the docs cannot decide that a name is wrong — judging code
-  against it produced 45 findings on this project's own source, all of them
-  correct code the docs had no reason to mention. What it can do is answer *did
-  you mean* once the toolchain has already rejected a name, which needs no
-  completeness. That inversion is the whole design of `purecoder/symbols.py`,
-  and there is deliberately no function in it that takes code. It would not
-  have helped either recorded OCaml failure — both were `Syntax error` from the
-  tester's output, and the one name error was `Unbound value pc_tests`, a
-  harness name no documentation contains. Its value is `ask` over a real
-  library's docs, which is not the case that motivated writing it.
-- **Measured, and the result is weaker than the motivation.** Run over this
-  repo (7128 chunks, real bge-small embeddings) on six queries — five exact
-  symbols and one prose control — the lexical signal changed the ranking in
-  four, but it never *rescued* a query: cosine already put a chunk containing
-  the symbol first, and every query cleared the gate on cosine alone. So the
-  guarantee this buys ("the page defining the symbol cannot be ranked out by a
-  page merely about it") is real, but on this corpus it was not yet needed.
-  Related, and more interesting: bge-small's cosine floor is high enough that
-  `min_score=0.3` almost never fires. The gate is looser in practice than the
-  number suggests.
-- Chunker is Python-only (stdlib `ast`); other languages need tree-sitter.
-- **An index is refused rather than half-trusted.** The vectors and the chunk
-  metadata are two files, and `search` pairs them by row index, so a count
-  mismatch used to inject documentation under a filename it never came from —
-  no exception, right-looking score. `load` now refuses on a count or shape
-  mismatch, on a model other than the one that built the index, and on a file
-  it cannot read; `search` refuses a query of the wrong dimension. What it
-  cannot detect is an index that is merely *stale* — docs edited since the last
-  `ingest` are still answered from the old text.
-- **The contract layer has been measured, and the measurement could not see
-  what it exists to see.** `bench.py` holds five deliberately ambiguous specs,
-  each with a hidden hand-written oracle encoding the intended reading, and
-  runs every task through both arms (`--contract` on and off). Run twice
-  against a live server it returned ZERO divergence in both arms, because nine
-  of ten arms ended in the loop refusing -- spec-divergence can only occur
-  downstream of a passing run. The instrument is sound and the task set is
-  starved: that is a result about this model and these specs, not about
-  contracts, and the next step names the three ways out. Spec-divergence is defined mechanically as *the
-  loop reported success and the oracle disagreed*, with a separate bucket for
-  code the oracle cannot call at all (a `NameError` is not a misreading) and
-  another for tasks the loop never finished (a dead server must not read as a
-  clean run). What it deliberately does NOT measure is visibility -- whether a
-  reader would have caught a wrong contract printed above the code. That needs
-  a person, and the two available proxies are both worse than saying so:
-  evaluating the contract's model-authored example expressions is the mistake
-  that cost this project five false greens and a deleted subsystem, and string-
-  matching them makes `[80, 443]` and `[80,443]` disagree for no reason. One
-  further limit is in the report itself: a contract grounds the writer AND the
-  test designer, so a difference between arms cannot be attributed to either.
+  needed.** A drafted entry tells the writer what the harness already provides,
+  from artifacts the probes proved. There is no two-sided probe of NECESSITY,
+  and the obvious one does not work: pasting the tail into the implementation
+  slot fails a top-level-statement language for the wrong reason, manufacturing
+  a constraint for a language that needed none. Hand-written entries stay
+  asymmetric on purpose — a built-in is empty because a person judged it
+  unnecessary, a drafted one is filled because nobody judged anything. It is
+  narrower than C#'s hand-written demand, which also forbids `using` directives
+  — a fact about C#, not about `assemble()`. It applies only to languages
+  learned from here on; re-running `learn` is the only way to backfill.
+
+### Measurement
+
+- **The contract measurement is built, has been run twice, and is
+  inconclusive.** `bench.py` holds five deliberately ambiguous specs, each with
+  a hidden hand-written oracle, run through both arms. Zero divergence in both
+  arms, because nine of ten arms ended in the loop refusing — spec-divergence
+  only exists downstream of a passing run. The instrument is sound and the task
+  set is starved. Divergence is defined mechanically as *the loop reported
+  success and the oracle disagreed*, with separate buckets for code the oracle
+  cannot call (a `NameError` is not a misreading) and for runs that never
+  finished. It deliberately does NOT measure visibility — whether a reader
+  would have caught a wrong contract — because both proxies are worse than
+  saying so: evaluating model-authored example expressions is the mistake that
+  cost five false greens, and string-matching makes `[80, 443]` and `[80,443]`
+  disagree for no reason. A contract grounds both roles, so a difference
+  between arms cannot be attributed to either.
+- **`purecoder measure` gave the first quantitative form of finding 1.** Eight
+  of ten arms ended blaming the test designer.
+- **The cross-language benchmark saturates as a capability instrument.**
+  Corrected for harness failures, five of six languages score 10/10 and only
+  OCaml discriminates. `roman` — the intended hardest, and the reason for a
+  3/4/3 ramp — passed first attempt everywhere else. As a *pipeline* benchmark
+  53/60 is a real result; as a way to compare models or catch a regression it
+  cannot see. Also measured: pinning a task's edge cases in its spec text does
+  not stop a tester contradicting them, because a spec is a prompt.
+- **The classifier was repaired, and the fix had to be measured in both
+  directions.** `benchlog.py` requires two things before blaming the model: the
+  loop printed `suspecting the tests, redesigning them` AND a check actually
+  ran. Keying on the marker alone was tried first and was the original defect
+  with its sign flipped — it moved all seven failures out of `writer`,
+  including three OCaml runs whose code genuinely did not compile. Re-run over
+  the same sixty transcripts (2026-08-17, no server needed): 53 ok, and of the
+  seven failures `writer` holds exactly the two that did not compile. Zero of
+  the four harness failures remain in it. The bucket is `suspect-tests` rather
+  than `tester` on purpose — a flag meaning *open this transcript*, not a
+  verdict. One of the five flagged (`ocaml-unique`) was genuinely the model's:
+  flagged rather than mislabelled, which is the honest limit.
+- **Two runners disagree about whether OCaml may be measured ungrounded, and
+  it is unresolved.** `batch.sh` exits rather than measure OCaml without its
+  docs index, on the grounds that OCaml is the ignorant case retrieval exists
+  for and an ungrounded column cannot be told apart from a regression. That
+  guard predates the 30B, and `attribution.py` scored OCaml 9/10 ungrounded on
+  2026-08-16 — so either the guard is stale or that column is not comparable to
+  the grounded numbers elsewhere. Both tools are in the repo, both are used,
+  and they cannot both be right.
+- **The ledger is written from the inside, and that is why it is not a guess.**
+  `agents.py` records what each role spent as the run spends it. It separates
+  the two genuine refusals of the 2026-08-16 corpus run by role count alone —
+  OCaml's `is_palindrome` (writer 4, tester 1, a real type error) from Python's
+  `count_vowels` (writer 4, **tester 2**, a wrong expectation the no-progress
+  rule already suspected). Both report `stopped on: writer`. The classifier now
+  separates that pair too, but only the ledger can say *what a role spent*.
+  The first `scripts/demo.sh` run produced the same shape: six of seven
+  languages passed and SQL refused reporting `stopped on: writer`, with the
+  writer's output `SELECT COALESCE(SUM(n), 0) AS total FROM totals` — correct,
+  and exactly what the spec asked for. The tester's checks could not be
+  satisfied, and the ledger recorded `tester 2/writer 4`. A reader shown only
+  the stop would go and fix correct code, which is why every role is printed.
+- **Deliberately not built: per-role retry budgets.** An earlier `Agent`
+  declared one and did not enforce it, so the UI rendered "tester 2 of 3" while
+  the real cap was 4. A denominator the numerator can exceed is decoration that
+  reads like a guarantee. The cap the run actually had is recorded instead.
+
+### Model, grammars and serving
+
+- **A grammar that cannot end is a grammar that always truncates.** `env.gbnf`
+  had an unbounded `line*` root; bounded to 20. `makefile.gbnf` had the
+  identical defect and kept it for six more days, found by the first
+  `scripts/smoke.sh` run: `purecoder make` wrote a correct Makefile, then
+  `# Even more concise version:`, then another, each dying on `n_predict`. Two
+  things carry forward. The bound must be tight enough that a COMPLETE file
+  fits inside `n_predict` rather than merely being finite — at 24 items the
+  same prompt still rambled, and only 14 stopped it. And a bound alone would
+  not catch a restart that FITS, so `validate_makefile` gained the semantic
+  half: a target defined twice is the file starting over, which `make` accepts
+  with a warning and a zero exit.
 - **A client-side flag can rot without a single test noticing.** Truncation
   detection read `stopped_limit`, which current llama.cpp no longer sends (it
-  reports `stop_type: "limit"`), so every truncation retry in the project was
-  unreachable and a `.env` cut off mid-comment validated clean. Nothing in the
-  suite could see it: the fake model sets the flag itself, and the field only
-  exists in a live response. The lesson is narrower than "test more" -- an
-  adapter to someone else's API is exactly where a contract test against a
-  recorded real response earns its place, and there is still none.
-- **A grammar that cannot end is a grammar that always truncates.** `env.gbnf`
-  had an unbounded `line*` root, so a scaffold's `.env` hit `n_predict` on
-  every attempt once truncation was detectable again. Bounded to 20 lines. The
-  same fix as the rambling comment, for the same reason: the prompt asking for
-  brevity was ignored three times in a row.
-
-  **`makefile.gbnf` had the identical defect and kept it for six more days**,
-  found by the first run of `scripts/smoke.sh` on 2026-08-15: `root ::= item*`,
-  so `purecoder make` wrote a correct Makefile, then `# Even more concise
-  version:`, then another, on all three attempts, each dying on `n_predict`.
-  Two things are worth carrying forward. The bound has to be tight enough that
-  a COMPLETE file fits inside `n_predict` rather than merely finite — at 24
-  items the same prompt still rambled to the limit, three `clean:` targets
-  deep, and only 14 stopped it. And a bound alone would not have caught a
-  restart that *fits*, so `validate_makefile` gained the semantic half:
-  a target defined twice is the file starting over, which `make` accepts with a
-  warning and a zero exit. Fixed, the same spec passes on attempt 1.
+  reports `stop_type: "limit"`), so every truncation retry was unreachable and
+  a `.env` cut off mid-comment validated clean. The fake model sets the flag
+  itself and the field only exists in a live response. The lesson is narrower
+  than "test more": an adapter to someone else's API is where a contract test
+  against a recorded real response earns its place, and there is still none.
 - **A refused run exited 0.** `_print_result` printed `ok=False` and returned
-  `None`, and `main()` ends `return ... or 0`, so every failed `code`, `env`,
-  `make`, `ask` and `project` reported success to the shell. Only a refusal
-  *before* the loop (an unwired language, a dead server) exited non-zero, which
-  is why `test_python_m_purecoder_propagates_the_exit_code` passed throughout.
-  Nothing downstream noticed because both bench scripts grep the `ok=True`
-  verdict line out of the transcript instead — they were written around it.
-  `measure` had done the right thing since it was built. Found by writing a
-  smoke test that tried to assert on `$?`.
-- **A skip is now a claim, and CI has a job where none is allowed.** "A green
-  run on a machine without `ocamlc` proves less than it looks" was written in
-  CLAUDE.md for weeks and enforced by nothing. `account()` puts every
-  registered language in exactly one state -- runnable, unimplemented,
-  unvalidatable, or missing-toolchain **with the binary named** -- deriving
-  that name from the language's own `probe`/`build`/`run` argv, so it cannot
-  drift from the command that would actually fail. A `toolchains` CI job runs
-  the whole suite inside an image carrying all seven, with
-  `PURECODER_REQUIRE_ALL_LANGUAGES=1` turning the skip report into an
-  assertion: **565 passed, 0 skipped**, against 549 passed and 10 skipped on a
-  bare runner. The ad-hoc gate it replaces listed g++, node, rustc and ocamlc
-  and *not* dotnet -- so C# was the one language it could not have caught
-  leaving, which is the hole it existed to close. What this deliberately does
-  NOT do is make the container mandatory: outside that job a skip is reported,
-  not fatal, because a machine without Docker has to keep working. The image is
-  execution-only; generation still needs the GPU and stays on the host.
-- Two seams are outside the automated suite: the live `/completion` call and
-  the live embedding call. `/completion` has now been exercised by hand end to
-  end, including grammar-constrained contract derivation; the embedding call
-  has not. Neither is exercised by CI. A CI-able check does guard the class of
-  grammar bug that broke `contract.gbnf` (no rule may span lines).
+  `None`, and `main()` ends `return ... or 0`. Only a refusal *before* the loop
+  exited non-zero. Nothing downstream noticed because both bench scripts grep
+  the verdict line out of the transcript instead. Found by writing a smoke test
+  that tried to assert on `$?`.
+- **A skip is a claim, and CI has a job where none is allowed.** `account()`
+  puts every registered language in exactly one state — runnable,
+  unimplemented, unvalidatable, or missing-toolchain **with the binary named**
+  — deriving that name from the language's own argv so it cannot drift. The
+  ad-hoc gate it replaced listed g++, node, rustc and ocamlc and *not* dotnet,
+  so C# was the one language it could not have caught leaving. Outside the
+  container job a skip is reported, not fatal: a machine without Docker has to
+  keep working. The image is execution-only; generation stays on the host.
+- **`-hf` is the wrong start command once weights are on disk.** It resolves
+  against the HuggingFace cache alone, so a 14.7 GB GGUF in `~/models` is
+  invisible and gets downloaded again — fifty minutes of it before anyone
+  checked, with the file already present and the server nine seconds away from
+  `-m`. Nothing was broken, which is the point: a status line naming a repo can
+  cost an hour where one naming a path cannot. `status.py` looks in `~/models`
+  and the llama.cpp cache and prints `-m <path>` when it finds the documented
+  file. `scripts/smoke.sh` prints the same line.
+- **Only `/completion` accepts raw GBNF**, so `client.py` applies ChatML by
+  hand. GGUF chat-template metadata never reaches the sampler — re-downloading
+  weights to fix a template does nothing.
+
+### Untested seams
+
+- The live `/completion` call and the live embedding call. `/completion` has
+  been exercised by hand end to end, including grammar-constrained contract
+  derivation; the embedding call has not. Neither is in CI. A CI-able check
+  does guard the class of grammar bug that broke `contract.gbnf` (no rule may
+  span lines).
+- The UI has no component test harness: `tsc --noEmit` plus a build is the
+  whole check. See [UI/README.md](../UI/README.md).
+
+## Live runs
+
+Every session against a live server has found defects a fully green suite could
+not. The verdict is not the evidence — the transcript is.
+
+| Date | Found | Write-up |
+|---|---|---|
+| 2026-08-03 | 5 defects in the bootstrap layer, all fixed | [ocaml-bootstrap](live-runs/2026-08-03-ocaml-bootstrap.md) |
+| 2026-08-04 | 3: SQL's writer never told the database starts empty (`writer_system` did not fix it; the mechanical hint on the failed run did); Python's tester never told to keep assertions out of an uncalled function; the chunker lost every declaration in a real OCaml `.mli` because `val` parses as `value_specification` and the suffix list said `_specifier` | [five-steps](live-runs/2026-08-04-five-steps.md) |
+| 2026-08-06 | test-first mode and the model comparison, including a contract's own example (`parse_ports('80,443') -> [443, 80]`, for a spec saying sorted) caught on screen before any implementation existed | [tdd-and-the-model-question](live-runs/2026-08-06-tdd-and-the-model-question.md) |
+| 2026-08-07 | 8, all failing CORRECT code: a capitalised `Let`; a gate refusing valid doubly-parenthesised OCaml; a repair mangling an unlabelled check; "these tests never call the target" unreachable outside Python; one target mention enough to pass it; the writer answering retrieved docs instead of using them; the tester doing the same; a `[docs]` hint printing its header and withholding the names | [the-harness-was-the-bottleneck](live-runs/2026-08-07-the-harness-was-the-bottleneck.md) |
+| 2026-08-09 | 6, and the suites could not pass: `unique([]) === []` is false in JavaScript for every input, `==` on `List<int>` is reference equality in C#, and a Python suite asserted `count_vowels(...) == 10` where the answer is 9 | [the-tests-could-not-pass](live-runs/2026-08-09-the-tests-could-not-pass.md) |
+| 2026-08-15 | `makefile.gbnf`'s unbounded root, and a refused run exiting 0 | first `smoke.sh` run |
+| 2026-08-16 | SQL's 0/10 was the TASK SET: every corpus task asks for a function and SQLite has no user-defined functions, so no attempt could have passed. The runner refuses SQL against this corpus by name now. Fourth time a number here turned out to be about the harness or the task set rather than the model, and the first the ledger made visible without opening a log | `attribution.py` |
+| 2026-08-17 | the ledger's own output: a reason containing a newline broke the roles block into a row with no role attached. Same defect in the CLI and the UI, found by driving an SQL refusal | smoke 6/6, demo 6+1 |
 
 ## Next steps (priority order)
 
-1. **Give the fix loop C#'s diagnostics back.** `execute.py` ends a failed run
-   with `stderr.strip() or stdout.strip()`, and the `or` discards stdout
-   whenever stderr says anything. `dotnet run` splits its streams the opposite
-   way from Python: `file(line,col): error CS0106: ...` goes to stdout, and
-   stderr carries a content-free "compilation failed". So the writer is asked
-   to fix an error it is never shown, and a live task burned four attempts
-   doing exactly that. First because it is a few lines, because it silently
-   defeats the whole fix-loop-shows-its-output design for one language, and
-   because it is probably not C#-specific -- any toolchain that puts
-   diagnostics on stdout and a summary on stderr loses them here. Two ways:
-   merge both streams (general, changes behaviour for all seven languages, so
-   it needs its own control re-run) or declare the diagnostic stream per
-   language (data not heuristics, but only fixes what someone thinks to mark).
-2. **Teach `benchlog` that a redesigned suite is the tester's failure.** It
-   put four of seven real failures in `writer`, the one bucket documented as
-   accusing the model. The marker is already in the transcripts it reads: a run
-   that printed `suspecting the tests, redesigning them` and still failed is
-   not a writer failure. Until this is fixed, every number the cross-language
-   benchmark produces has to be read against its transcripts by hand, which is
-   the labour the classifier exists to remove.
-3. **Re-pitch the corpus, now that there is data.** Five of six languages score
-   10/10 corrected. The 3/4/3 ramp was judgement with nothing behind it and the
-   top of it is not a top: `roman` passed first try everywhere but OCaml. This
-   is worth doing only after the two above, because a harder corpus measured by
-   a classifier that blames the wrong component is a worse instrument, not a
-   better one.
-4. **Make the contract measurement conclusive.** The instrument is built and
+The first two entries here were the diagnostics loss and the classifier's
+misattribution. Both are done -- `c201f19` and `9e81587` -- and the entries
+above record what each was measured at. They are named here because a list that
+silently drops its top two items reads as if nothing moved.
+
+1. **Re-pitch the corpus, now that there is data.** Five of six languages score
+   10/10 corrected, and the 2026-08-16 attribution run put 50 of 58 passes on
+   the first attempt. The 3/4/3 difficulty ramp was judgement with nothing
+   behind it and the top of it is not a top: `roman` passed first try
+   everywhere but OCaml. The two prerequisites this was waiting on -- a
+   classifier that does not blame the wrong component, and a fix loop that is
+   shown the diagnostics -- are both in, so the reason to defer it is gone.
+   The design question is what a harder task should be *for*: the set is a
+   pipeline instrument, and a task nobody's writer can pass measures the model
+   instead, which is the confound this directory keeps rediscovering.
+2. **Make the contract measurement conclusive.** The instrument is built and
    has been RUN -- twice -- and it could not see what it exists to see: zero
    divergence in both arms, because nine of ten arms ended in the loop
    refusing. Spec-divergence only exists downstream of a passing run, so a
    model that fails closed on these specs starves the measurement. It needs a
    larger or easier task set, more repeats, or a stronger model, and the
    choice between those is a real decision rather than a chore.
-5. **The tester, which every measurement now points at.** Eight of ten
+3. **The tester, which every measurement now points at.** Eight of ten
    measured arms ended in "suspecting the tests". Two of today's three
    mechanical wins were tester-shaped (`test_lint`, `test_fix`), and test-first
    proves a suite CAN fail without judging whether its expectations are right.
@@ -552,78 +480,24 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
    The remaining known gap is narrower than it was: the gate can now tell that
    a suite is aimed at the target, in any language, but still not that its
    expectations are right.
-6. **HTML in `ingest`.** It matches prose and source extensions, and the web's
+4. **HTML in `ingest`.** It matches prose and source extensions, and the web's
    documentation is HTML -- skipped whole rather than stripped and indexed. The
    ocaml.org tutorials only worked because they are markdown in their source
    repository, which is not how most projects publish.
-7. **A per-run venv, if the declaration ever needs to install anything.**
+5. **A per-run venv, if the declaration ever needs to install anything.**
    `--with` covers what the environment already has; anything else is still a
    manual `pip install`. Doing it automatically means network access inside a
    run and a failure mode CI cannot exercise, which is why it was left out
    rather than half-built.
-8. **The branch stack is landed.** `main` carries the lot as of 2026-08-09
-   (PR #19, 113 commits). Nothing of the old chain is outstanding. New work is
-   a branch off `main` and a PR against it -- the stacked shape is not worth
-   rebuilding, and the reasons are recorded below.
-
-   What it cost, kept because the shape is cheap to recreate by accident.
-
-   The way it failed is the useful part. Every PR in the stack was first
-   merged **head into base** -- downward,
-   away from `main` -- so content flowed from `feat/14` back toward
-   `feat/03` instead of forward. Then `feat/03 -> main` (#18) fired at
-   15:08, four minutes *before* the cascade reached `feat/03` at 15:12, so
-   `main` got six commits and the other 11,000 lines stayed on the branches.
-   A stacked chain merged in the wrong direction does not fail loudly; it
-   fails by leaving `main` plausible and short.
-
-   **Read the direction, not the list.** GitHub's PR list is ordered by
-   number, and clicking down that list merges the stack top-first, which is
-   exactly backwards. The order that works is bottom-up by base: the PR
-   whose base is `main` goes first, and every merge retargets the next one.
-
-   Four things went wrong here and each is worth one line, because the
-   commits do not record any of them.
-
-   **The stale ref.** This entry used to say "Nothing is on `main`". That was
-   false from 2026-08-02, when PR #1 merged `feat/spec-contracts`. The stack
-   had been cut from `80f4776`, the commit *before* it, and the local
-   `origin/main` ref was never refetched -- so every ahead/behind count
-   answered from a cache and agreed with itself for five days. It surfaced
-   only when `chore/harden-ci` merged on 2026-08-07 and GitHub retargeted the
-   next PR onto `main`: a branch that adds nothing reported a conflict in 12
-   files, because `feat/01` and `feat/02` were a rewritten twin of work `main`
-   already held under different SHAs. `git diff origin/main
-   origin/feat/02-multi-language` was EMPTY, which is what settled it. Both
-   PRs are closed and `feat/03` upward was rebased onto `main` -- no
-   conflicts, every branch verified tree-identical to its pre-rebase tip
-   before anything was pushed. **`git fetch` before believing anything about
-   `main`.**
-
-   **A rebase collides with ignored files, not just tracked ones.** The
-   cascade stopped on `feat/13` looking like a conflict and was not one:
-   `CLAUDE.md` is on disk and gitignored since `f540c06`, and replaying the
-   commit that ADDS it cannot overwrite an untracked file. A dry run in a
-   fresh worktree could not reproduce it, because a fresh worktree has no such
-   file. Moved aside, rebased, restored.
-
-   **A stacked PR cannot be retargeted.** After the rebase, `feat/03`'s PR
-   pointed at the pre-rebase `feat/02` and reported a conflict that was a
-   pointer artifact rather than content. Changing the base is the entire fix
-   and GitHub refuses it over the API -- `Cannot change the base branch
-   because the pull request is part of a stack` (422). What worked was
-   closing it and opening a replacement against `main`, which is what #18 is;
-   whether the web UI would have allowed the base change was not tested.
-   Worth knowing before building another stack: the shape is cheap to create
-   and expensive to re-point.
-
-   **The verdict on stacked PRs, having now paid for it.** Fifteen branches
-   bought reviewability that was never used and cost a stale-ref conflict, a
-   rebase of twelve branches, a PR that could not be retargeted, and a merge
-   order that silently dropped 11,000 lines on the floor. The failure modes
-   are all in the *shape*, not in any commit. Next time: fewer, wider
-   branches, each merged to `main` before the next is cut.
-9. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
+6. **The branch stack is gone and is not coming back.** `main` carries the lot
+   as of 2026-08-09 (PR #19, 113 commits). New work is a branch off `main` and
+   one PR against it. Fifteen stacked branches bought reviewability nobody used
+   and cost a stale-ref conflict, a rebase of twelve branches, a PR GitHub
+   refused to retarget, and a merge order that silently dropped 11,000 lines.
+   The operative rules are in CLAUDE.md: `git fetch` before believing anything
+   about `main`, merge bottom-up by base, and a rebase collides with ignored
+   files too.
+7. **Specialization track** -- prune + vocab-trim Qwen2.5-Coder to reclaim
    context room on 6 GB (Flab-Pruner-style), the "make it custom" phase.
    **Planned, not built**, and the plan says why:
    [docs/superpowers/specs/2026-08-04-specialization-plan.md](superpowers/specs/2026-08-04-specialization-plan.md).
@@ -637,44 +511,3 @@ It is not a benchmark: `scripts/bench/batch.sh` is where scores come from.
    to reclaim was reclaimed for free by a mixture-of-experts model -- 1.9 GB of
    VRAM against the 7B's 4.7 -- so the scarcity that motivated pruning is no
    longer the binding one. Worth revisiting before any GPU hours are spent.
-
-Done since the last snapshot: the reachability false green (runtime check
-instrumentation), the `.env` guard (grammar bound plus a looser validator),
-test leakage into the implementation (`lint_implementation`), the discarded
-gate verdict, dependency thrash (one stdlib retry then stop), and sandbox
-process-group cleanup.
-
-Done in the retrieval pass after that: an index that could pair a chunk with
-another chunk's source is now refused rather than answered from; the gate can
-no longer inject a heading with no documentation under it; `ingest` prunes
-caches and shows what it will index before embedding anything; ranking gained
-an exact-name signal; the lexical index was inverted (400-500x on a large
-corpus); and a learned language keeps the docs it was learned from.
-
-Done in the bootstrap pass after that: a learned language now tells its writer
-what its harness already provides -- derived from the helper name and the shape
-of the drafted tail, never asked of the model -- and a failed attempt that
-collides with the harness anyway is told which name collided instead of being
-handed a linker error about a file it never saw.
-
-Done since, in one long live session: SQL wired (a check is a row, since SQL
-has no assertion); the contract measurement built and run; declared packages
-(`--with`) verified before any model call; tree-sitter chunking, and then the
-`ingest` pattern that had been skipping every file it exists for; OCaml wired
-BY HAND after six drafting attempts failed, and held to the same five probes a
-learned entry must pass; truncation detection repaired after llama.cpp renamed
-the field it read, which had made every truncation retry unreachable; the
-retrieval gate repaired -- it could not refuse because unknown query tokens
-were dropped from the lexical denominator, not because the threshold was wrong;
-the fix loop taught to show the writer its own previous output and the source a
-diagnostic points at; test-first mode; and the context window measured up from
-4k to 16k, with Q4_K_M weights tried and rejected on capability.
-
-Done in the session after that: nine harness defects that were failing correct
-code, and the model question settled. Qwen3-Coder-30B-A3B at Q3_K_M runs on
-this 6 GB card with `-ngl 99 --cpu-moe` -- experts in system RAM, ~3B activated
-per token -- in **1864 MiB at 33.3 tok/s**, which is less VRAM and more speed
-than the 7B it replaces. It passes all five OCaml tasks at one attempt each.
-But so does Q5_K_M on the fixed harness, having scored 4, 3, 4, 3 on the broken
-one: the model was never the bottleneck, and the 30B's case rests on halving
-the attempts, not on the score.

@@ -685,3 +685,126 @@ def test_declining_the_tests_stops_before_any_code_is_written():
     assert not res["ok"]
     assert "declined" in res["error"]
     assert pc.code_kwargs == [], "code was written after the tests were declined"
+
+
+# ---- retrieval's second pass, keyed on the failure -----------------------
+
+def test_documentation_is_retrieved_again_on_the_error():
+    """The first attempt is grounded in what the USER asked for; a retry is
+    grounded in what the TOOLCHAIN objected to. The second is the better query
+    of the two -- an unbound name states the gap exactly, where prose only
+    describes the goal."""
+    asked = []
+
+    def error_docs(error):
+        asked.append(error)
+        return "Documentation for that error:\n\n# doc: lists.md\nList.fold_left"
+
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_docs=error_docs)
+    assert res["ok"]
+    assert asked, "the failure was never used as a query"
+    assert "AssertionError" in asked[0], asked[0]
+    assert "List.fold_left" in pc.prompts[1]
+
+
+def test_a_passing_run_retrieves_only_once():
+    """The cost is paid where there is evidence it was needed. A run that
+    passes first time must not spend an embedding call proving it."""
+    asked = []
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        error_docs=lambda err: asked.append(err) or "docs")
+    assert res["ok"] and asked == []
+
+
+def test_retrieved_documentation_stays_out_of_the_verdict():
+    """Same rule the did-you-mean hint follows: the text reaches the prompt,
+    never `error`. The no-progress check reads the toolchain's last line, and
+    enriching it would make an unchanging failure look like a moving one."""
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=6, verbose=False,
+        error_docs=lambda err: f"docs for attempt {len(pc.prompts)}")
+    assert not res["ok"]
+    assert "identical failures" in res["error"]
+    assert "docs for attempt" not in res["error"]
+
+
+# ---- attribution, recorded rather than guessed ---------------------------
+
+def test_a_passing_run_records_who_did_the_work():
+    pc = FakeModel(code_outputs=[GOOD_CODE])
+    res = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False)
+    roles = {r["name"]: r for r in res["agents"]["roles"]}
+    assert res["agents"]["stopped_on"] == ""
+    assert roles["writer"]["attempts"] == 1 and roles["writer"]["accepted"]
+
+
+def test_the_two_failures_a_verdict_cannot_tell_apart_are_distinguishable():
+    """This is the whole point of the ledger.
+
+    Both runs below end `ok=False`, and the score is identical. One is the
+    model writing code that does not pass; the other is the harness refusing a
+    suite before any code was written. Reading the transcript was the only way
+    to tell them apart, which is why `benchlog.py` exists and why it got four
+    of seven wrong. The ledger states it.
+    """
+    # The writer spends every attempt and never passes.
+    pc = FakeModel(code_outputs=[BAD_CODE])
+    bad_code = generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, max_retries=2, verbose=False)
+
+    # The tester never clears the gate, so the writer is never reached.
+    pc2 = FakeModel(code_outputs=[GOOD_CODE], completions=["assert True\n"])
+    refused = generate_validated_python(
+        pc2, "add two numbers", max_retries=2, verbose=False)
+
+    assert not bad_code["ok"] and not refused["ok"]
+    assert bad_code["agents"]["stopped_on"] == "writer"
+    assert refused["agents"]["stopped_on"] == "tester"
+    # And the one that never reached the writer says so by omission.
+    assert "writer" not in {r["name"] for r in refused["agents"]["roles"]}
+
+
+def test_a_refusal_before_any_role_runs_blames_nobody():
+    """An unavailable language is refused before a single model call. There is
+    no role to attribute that to, and inventing one would be a lie the UI would
+    then display."""
+    from purecoder import languages
+
+    res = generate_validated_python(
+        None, "anything", spec=languages.get("go"), verbose=False)
+    assert not res["ok"]
+    assert res["agents"] == {"stopped_on": "", "roles": []}
+
+
+def test_every_event_names_the_role_that_produced_it():
+    seen = []
+    pc = FakeModel(code_outputs=[BAD_CODE, GOOD_CODE])
+    generate_validated_python(
+        pc, "add two numbers", tests=GOOD_TESTS, verbose=False,
+        on_event=seen.append)
+    assert seen, "the run narrated nothing"
+    assert all("agent" in e for e in seen)
+
+
+def test_the_role_on_an_event_comes_from_its_kind():
+    """One mapping, not fifteen call sites. A per-call argument is fifteen
+    chances for one line to claim the wrong role, and the compiler cannot see
+    a string that is merely wrong."""
+    from purecoder.execute import AGENT_FOR_KIND, reporter
+
+    seen = []
+    say = reporter(verbose=False, on_event=seen.append)
+    say("tests", "x")
+    say("attempt", "y", 1)
+    say("verdict", "z", 2)
+    assert [e["agent"] for e in seen] == ["tester", "writer", ""]
+    # The harness and the retriever are tools, and a tool must not appear as a
+    # role -- the veto is the one thing that cannot be an agent.
+    assert "verdict" not in AGENT_FOR_KIND and "docs" not in AGENT_FOR_KIND

@@ -174,7 +174,7 @@ def render_contract(contract):
     return "\n".join(lines)
 
 
-def derive_contract(pc, description, max_retries=3, verbose=True):
+def derive_contract(pc, description, max_retries=3, verbose=True, say=None):
     """Prose -> validated contract. Returns (contract, error); contract is
     None on failure so the caller can fall back rather than abort.
 
@@ -182,6 +182,13 @@ def derive_contract(pc, description, max_retries=3, verbose=True):
     counted as a validation failure: a truncated object is invalid JSON, so
     truncation is retried by the same path.
     """
+    # The loop's reporter when there is one, so contract derivation appears in
+    # the same transcript as everything else it is part of. Imported lazily:
+    # execute.py already imports this module, and a module-level import back
+    # would be a cycle.
+    if say is None:
+        from .execute import reporter
+        say = reporter(verbose)
     task, error = description, ""
 
     for attempt in range(1, max_retries + 1):
@@ -199,12 +206,11 @@ def derive_contract(pc, description, max_retries=3, verbose=True):
             ok, error = False, f"not valid JSON: {e}"
 
         if ok:
-            if verbose:
-                print(f"[contract] derived on attempt {attempt}")
+            say("contract", f"[contract] derived on attempt {attempt}", attempt)
             return obj, ""
 
-        if verbose:
-            print(f"[contract] attempt {attempt} rejected: {error} -> retrying")
+        say("contract", f"[contract] attempt {attempt} rejected: {error} "
+                        f"-> retrying", attempt)
         task = (f"{description}\n\n"
                 f"Your previous contract was rejected: {error}\n"
                 f"Output only the corrected JSON contract, nothing else.")

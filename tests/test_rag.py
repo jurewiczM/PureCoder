@@ -846,3 +846,62 @@ def test_a_failure_that_is_not_about_memory_still_raises(monkeypatch):
     _stub_sentence_transformers(monkeypatch, FakeST)
     with pytest.raises(RuntimeError, match="not found"):
         rag.Embedder(device="cuda")
+
+
+# ---- the gate, as the pipeline actually reaches it -----------------------
+
+def test_retrieval_does_not_carry_a_second_threshold():
+    """The defect this pair of functions existed to cause.
+
+    `search` was recalibrated to 0.8 after the lexical denominator was fixed,
+    and `retrieve_context` kept the 0.3 it had inherited from when the score
+    was cosine alone -- while being the only retrieval the pipeline performs.
+    So the repaired gate never ran in production. Measured on the 3017-chunk
+    OCaml index before this fix: "best pizza toppings" cleared 0.3 with three
+    chunks and injected 1311 characters of tutorial into the writer's prompt.
+
+    Two numbers for one decision is how that happens, so the test is about the
+    signature rather than about any threshold value: retrieval must not be
+    able to hold an opinion of its own.
+    """
+    import inspect
+
+    from purecoder.rag import retrieve, retrieve_context
+
+    for fn in (retrieve, retrieve_context):
+        assert "min_score" not in inspect.signature(fn).parameters, (
+            f"{fn.__name__} can override the gate again")
+
+
+def test_retrieval_refuses_what_the_gate_refuses(store):
+    """The gate's answer reaches the prompt, whatever the gate decides."""
+    from purecoder.rag import retrieve
+
+    assert store.search("delta") == []
+    assert retrieve(store, "delta") == ("", [])
+
+
+def test_retrieval_reports_which_chunks_it_used(store):
+    from purecoder.rag import retrieve
+
+    block, used = retrieve(store, "alpha")
+    assert used and all(chunk in block for chunk in used)
+
+
+def test_a_second_pass_does_not_repeat_the_first(store):
+    """The retry retrieves again on the error text. Re-injecting what the
+    model was already shown spends the context budget to say nothing new --
+    and on this card, context spent badly is what causes degeneration."""
+    from purecoder.rag import retrieve
+
+    first, used = retrieve(store, "alpha")
+    assert first
+    again, _ = retrieve(store, "alpha", exclude=used)
+    assert again == ""
+
+
+def test_a_second_pass_can_carry_its_own_header(store):
+    from purecoder.rag import retrieve
+
+    block, _ = retrieve(store, "alpha", header="Documentation for that error:")
+    assert block.startswith("Documentation for that error:")

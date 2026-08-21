@@ -421,6 +421,37 @@ network. There is no auth because there is no remote.
 polling, and a way for a caller to lose a result — a wrapper can make it
 asynchronous without this layer growing one.
 
+### 4.75 Roles and the ledger (`purecoder/agents.py`)
+
+Three roles are backed by a model — `contract`, `tester`, `writer` — each with
+its own system prompt, retry budget and acceptance check. They were always
+there; what was missing was a name, so nothing downstream could say which of
+them a failed run was about.
+
+`Ledger` records what each role spent AS THE RUN SPENDS IT, which is the whole
+point: `benchlog.py` guesses the same thing afterwards from transcript text and
+got four of seven wrong on its first live run. A guess made from the outside
+was never going to be reliable; a record written from the inside is not a
+guess. `blame()` returns where the run STOPPED, which is deliberately not the
+same as whose fault it was — when the tester writes a suite that cannot pass,
+the writer spends the attempts and is not at fault.
+
+**The gate is not an agent, and that distinction is the point.** `lint_tests`,
+`red_check` and the executor decide whether an agent's output is accepted, and
+none of them asks a model anything. Agents propose; tools dispose. Nothing here
+gives a role autonomy either — control flow stays in Python, where it can be
+read and tested. A role that chose its own next step would be this project's
+governing rule run backwards.
+
+### 4.8 Reading a transcript back (`purecoder/benchlog.py`)
+
+Classifies a finished benchmark transcript into one bucket — `ok`, `writer`,
+`suspect-tests`, `gate`, `contract`, `stuck`, `refused`, `server`, `timeout`,
+`unknown` — so a table of sixty runs can be scanned for the rows worth opening.
+It answers *which component said no*, not *what went wrong*, and `unknown`
+exists so that a failure whose marker is missing stays visible instead of being
+guessed into a bucket. Prefer the ledger where you have it.
+
 ### 5. Retrieval (`purecoder/rag.py`)
 Code-aware chunking (AST: functions/classes/methods as units) for `.py`,
 markdown chunking for docs, tree-sitter for every other language a grammar
@@ -526,8 +557,8 @@ Both are exercised by hand; neither is exercised by CI.
 
 ## Next
 
-- Wire RAG into the scaffolder (doc-grounded whole projects)
-- Give SQL an assertion form so it can join the registry
-- tree-sitter chunking for non-Python code
-- Model specialization: prune + vocab-trim to reclaim context on 6 GB
-- Semantic guard for `.env` (a single rambling comment is structurally valid)
+Priorities live in [STATUS.md](STATUS.md), which is the handoff. The list that
+stood here was stale in four of its five items — RAG reached the scaffolder,
+SQL joined the registry, tree-sitter chunking landed, and the `.env` guard
+shipped as a grammar bound plus a looser validator. Only model specialization
+is still open, and it is recorded there with the reason it has not started.
