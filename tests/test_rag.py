@@ -142,6 +142,60 @@ def test_html_without_main_keeps_the_body():
     assert "Only prose here." in text
 
 
+def test_a_list_of_links_is_a_table_of_contents_and_is_dropped():
+    """Found live: 65 real Node.js pages ingested 401 chunks that were the
+    per-page TOC flattened -- `filehandle.close() filehandle.read(...)` and
+    nothing else. Published on every page, so it would be the nearest
+    neighbour of every question about that module."""
+    page = ("<h1>File system</h1>"
+            "<div class=\"toc\"><ul>"
+            "<li><a href=\"#a\">filehandle.close()</a></li>"
+            "<li><a href=\"#b\">filehandle.read()</a></li>"
+            "<li><a href=\"#c\">filehandle.write()</a></li>"
+            "<li><a href=\"#d\">filehandle.chmod()</a></li>"
+            "</ul></div>"
+            "<p>Reads a file asynchronously.</p>")
+    text = rag.html_to_text(page)
+    assert "Reads a file asynchronously." in text
+    assert "filehandle.close()" not in text
+
+
+def test_a_list_of_prose_survives():
+    """The rule must key on what a table of contents IS, not on how long a
+    list is -- documentation is full of bulleted prose."""
+    page = ("<ul>"
+            "<li>Tail recursive, so it is safe on long lists.</li>"
+            "<li>Order preserving, unlike the hashtable version.</li>"
+            "<li>Raises Invalid_argument when the lengths differ.</li>"
+            "</ul>")
+    text = rag.html_to_text(page)
+    assert "Tail recursive" in text
+    assert "Invalid_argument" in text
+
+
+def test_a_short_list_of_links_survives():
+    """Two links is a sentence with references in it, not a contents page."""
+    page = ("<ul><li><a href=\"/a\">See also: streams</a></li>"
+            "<li><a href=\"/b\">See also: buffers</a></li></ul>")
+    text = rag.html_to_text(page)
+    assert "streams" in text
+
+
+def test_a_list_of_links_around_prose_survives():
+    """A list whose items are mostly text keeps its links -- the ratio is
+    over characters, not over whether an anchor appears at all."""
+    page = ("<ul>"
+            "<li>Use <a href=\"/fs\">fs</a> to read a file from disk, which "
+            "blocks unless you use the promise form.</li>"
+            "<li>Use <a href=\"/net\">net</a> for sockets, which never "
+            "blocks and is always asynchronous.</li>"
+            "<li>Use <a href=\"/vm\">vm</a> to evaluate code in a separate "
+            "context with its own globals.</li>"
+            "</ul>")
+    text = rag.html_to_text(page)
+    assert "read a file from disk" in text
+
+
 def test_the_ingest_pattern_admits_html():
     """It matched prose and source extensions, and the web publishes HTML --
     so ocaml.org only worked because its tutorials are markdown in the source

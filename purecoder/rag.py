@@ -378,10 +378,18 @@ class _HtmlText(HTMLParser):
     claim false.
     """
 
+    #: A list this many items long, whose text is almost entirely inside
+    #: links, is a table of contents rather than prose. Both halves are
+    #: required: a two-item list of links is a sentence with references in it,
+    #: and a long list of prose bullets is documentation.
+    LINK_LIST_ITEMS = 3
+    LINK_LIST_RATIO = 0.8
+
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.out, self._skip, self._heading = [], 0, None
         self._pre, self._main, self._in_main = 0, False, 0
+        self._lists, self._anchor = [], 0
 
     # -- structure
     def handle_starttag(self, tag, attrs):
@@ -396,6 +404,14 @@ class _HtmlText(HTMLParser):
             if not self._main:
                 self.out.clear()
             self._main, self._in_main = True, self._in_main + 1
+        if tag in ("ul", "ol"):
+            # Buffered, because whether to keep it is only knowable at </ul>.
+            self._lists.append({"start": len(self.out), "items": 0,
+                                "link": 0, "text": 0})
+        elif tag == "li" and self._lists:
+            self._lists[-1]["items"] += 1
+        elif tag == "a" and self._lists:
+            self._anchor += 1
         if tag == "pre":
             self._pre += 1
             self.out.append("\n\n```\n")
@@ -413,6 +429,21 @@ class _HtmlText(HTMLParser):
             return
         if tag in _HTML_MAIN and self._in_main:
             self._in_main -= 1
+        if tag == "a" and self._anchor:
+            self._anchor -= 1
+        if tag in ("ul", "ol") and self._lists:
+            done = self._lists.pop()
+            ratio = done["link"] / done["text"] if done["text"] else 0.0
+            if (done["items"] >= self.LINK_LIST_ITEMS
+                    and ratio >= self.LINK_LIST_RATIO):
+                # A table of contents. Node publishes one on every page, so
+                # indexing it means the same list of method names is the
+                # nearest neighbour of every question about that module.
+                del self.out[done["start"]:]
+            elif self._lists:
+                # A nested list that survives counts toward its parent.
+                self._lists[-1]["link"] += done["link"]
+                self._lists[-1]["text"] += done["text"]
         if tag == "pre" and self._pre:
             self._pre -= 1
             self.out.append("\n```\n\n")
@@ -431,6 +462,10 @@ class _HtmlText(HTMLParser):
         # A heading split across tags (<h2>Lists<code>List.map</code></h2>)
         # must stay on one line or chunk_markdown stops seeing a heading.
         text = re.sub(r"\s+", " ", data)
+        if self._lists and (stripped := len(text.strip())):
+            self._lists[-1]["text"] += stripped
+            if self._anchor:
+                self._lists[-1]["link"] += stripped
         if text.strip() or (self.out and not self.out[-1].endswith(" ")):
             self.out.append(text)
 
