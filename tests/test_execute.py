@@ -702,6 +702,37 @@ def test_a_correct_check_is_left_exactly_alone():
     assert repair_tests(get("ocaml"), good) == good
 
 
+def test_javascript_repairs_container_equality_from_either_side():
+    """`===` between an array and a literal is reference equality: false for
+    every input, and the gate has no notion of an assertion that cannot hold.
+    The repair that landed on 2026-08-09 anchored on a right-hand literal
+    only, so three sibling forms still reached the writer -- `!==` worst of
+    all, because it can never FAIL and JavaScript cannot be red-checked."""
+    js = get("javascript")
+    assert repair_tests(js, "PC_CHECK([] === unique([]), 'empty');") == (
+        "PC_CHECK(JSON.stringify([]) === JSON.stringify(unique([])), 'empty');")
+    assert repair_tests(js, "PC_CHECK(unique([]) == [], 'empty');") == (
+        "PC_CHECK(JSON.stringify(unique([])) == JSON.stringify([]), 'empty');")
+    assert repair_tests(js, "PC_CHECK(unique(x) !== [1], 'dup');") == (
+        "PC_CHECK(JSON.stringify(unique(x)) !== JSON.stringify([1]), 'dup');")
+    # the form the original repair already covered stays covered
+    assert repair_tests(js, "PC_CHECK(unique([]) === [], 'empty');") == (
+        "PC_CHECK(JSON.stringify(unique([])) === JSON.stringify([]), 'empty');")
+
+
+def test_javascript_leaves_comparisons_that_are_not_containers_alone():
+    """A wider pattern is only safe if it still refuses to fire on scalars,
+    on a subscript, on a receiver, and on a check already written correctly."""
+    js = get("javascript")
+    for src in ("PC_CHECK(add(1, 2) === 3, 'add');",
+                "PC_CHECK(typeof s === 'string', 'type');",
+                "PC_CHECK(a.length === 2, 'len');",
+                "PC_CHECK(arr[0] === 1, 'first');",
+                "PC_CHECK([1,2].includes(x), 'in');",
+                "PC_CHECK(JSON.stringify(a) === JSON.stringify(b), 'deep');"):
+        assert repair_tests(js, src) == src, src
+
+
 def test_a_language_with_no_repair_declared_is_untouched():
     cpp = 'void pc_tests(){ PC_CHECK((add(1, 2)) == 3); }'
     assert repair_tests(get("c++"), cpp) == cpp

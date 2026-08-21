@@ -10,7 +10,7 @@ import shutil
 import pytest
 
 from purecoder import languages as L
-from purecoder.execute import lint_tests, run_candidate
+from purecoder.execute import lint_tests, repair_tests, run_candidate
 from purecoder.languages import PYTHON, LanguageSpec
 from purecoder.scaffold import scaffold_project
 
@@ -299,6 +299,20 @@ def test_a_compile_error_is_reported_not_swallowed():
                             "void pc_tests(){ PC_CHECK(1==1); }", timeout=60)
     assert not ok
     assert "error" in err.lower()
+
+
+def test_a_repaired_javascript_suite_actually_runs():
+    """The repair is only worth anything if node accepts what it writes."""
+    spec = _skip_unless("javascript")
+    tests = repair_tests(spec, "PC_CHECK([] === unique([]), 'empty');\n"
+                               "PC_CHECK(unique([1,1,2]) === [1,2], 'dedupe');\n")
+    ok, err = run_candidate(
+        spec,
+        "function unique(a){ const s = new Set(); const o = [];\n"
+        "  for (const v of a) if (!s.has(v)) { s.add(v); o.push(v); }\n"
+        "  return o; }\n",
+        tests, timeout=60, require_checks=1)
+    assert ok, err
 
 
 def test_a_runaway_is_killed_by_the_timeout():
