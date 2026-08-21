@@ -133,6 +133,52 @@ type-system friction and be read as capability.
 
 ---
 
+## The harness corpus
+
+```bash
+CORPUS=scripts/bench/harness-tasks.tsv scripts/bench/batch.sh python probe
+```
+
+Six tasks in `harness-tasks.tsv`, run by the same `batch.sh` with the same
+casing and the same transcripts. It exists because the ten-task set saturates:
+corrected for harness defects, five of six languages score 10/10, and an
+instrument that returns full marks everywhere cannot compare two models or
+catch a regression.
+
+**These are not harder algorithms.** Every one is a few lines in every language
+the registry runs. The difficulty is in what the *suite* has to say, which is
+where the defects have actually been:
+
+| task | the shape it asks the assertion machinery for |
+| --- | --- |
+| `word_count` | a container of pairs, with the ordering fixed by the spec |
+| `min_max` | two values out of one call |
+| `mean` | a float, which must not be asserted with `==` |
+| `parse_ints` | a container built out of a string |
+| `safe_divide` | failure that is not a value |
+| `initials` | the control -- if this fails the run is not about the rest |
+
+The reason to believe that is where the defects are: `unique` is the only row
+in `tasks.tsv` whose expected value is a container, and it alone found three
+defects in three languages -- JavaScript comparing arrays by reference, C#
+comparing `List<int>` by reference, and a C++ `PC_CHECK` macro that could not
+take an argument containing a comma. All three refused correct code four times
+over, and all three were recorded against the writer.
+
+This corpus is a second instrument, not more rows in the first one. `tasks.tsv`
+is the control for every number in `docs/live-runs` and appending to it would
+silently change what each historical column means.
+
+### Reading a failure here
+
+The same rule as everywhere else in this directory, and it matters more here:
+**a failure is a claim about the harness until the transcript says otherwise.**
+These tasks were picked so the writer is not the interesting suspect. A
+`min_max` run that ends `writer attempts=4` on code that plainly returns both
+values is the instrument working, not the model failing.
+
+---
+
 ## The five-task OCaml benchmark
 
 The index is built from ocaml.org's own docs. This exact recipe reproduced a
