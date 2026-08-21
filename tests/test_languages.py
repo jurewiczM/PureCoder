@@ -301,6 +301,28 @@ def test_a_compile_error_is_reported_not_swallowed():
     assert "error" in err.lower()
 
 
+def test_a_braced_initialiser_is_not_read_as_macro_arguments():
+    """The preprocessor counts commas before C++ ever sees the line, so
+    `PC_CHECK(unique({1,2,3}) == std::vector<int>{1,2,3})` reaches a
+    one-parameter macro as five arguments and no implementation can pass the
+    suite. Measured 2026-08-21 on c++/unique: four attempts, a correct
+    unordered_set dedupe, recorded against the writer."""
+    spec = _skip_unless("c++")
+    code = ("std::vector<int> unique(const std::vector<int>& in) {\n"
+            "    std::vector<int> out;\n"
+            "    for (int v : in)\n"
+            "        if (std::find(out.begin(), out.end(), v) == out.end())\n"
+            "            out.push_back(v);\n"
+            "    return out;\n"
+            "}\n")
+    tests = ("void pc_tests(){\n"
+             "    PC_CHECK(unique({1,2,2,3}) == std::vector<int>{1,2,3});\n"
+             "    PC_CHECK(unique({}) == std::vector<int>{});\n"
+             "}\n")
+    ok, err = run_candidate(spec, code, tests, timeout=60, require_checks=1)
+    assert ok, err
+
+
 def test_a_runaway_is_killed_by_the_timeout():
     spec = _skip_unless("c++")
     ok, err = run_candidate(spec, "void spin(){ while(true){} }",

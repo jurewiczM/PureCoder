@@ -282,9 +282,16 @@ register(LanguageSpec(
         "#include <set>\n"
         "#include <algorithm>\n"
         "static int pc_checks = 0;\n"
-        "#define PC_CHECK(x) do { \\\n"
-        "    if (!(x)) { std::fprintf(stderr, \"CHECK FAILED: %s (line %d)\\n\", \\\n"
-        "                             #x, __LINE__); std::exit(1); } \\\n"
+        # Variadic, and not a style choice: a one-parameter macro counts commas
+        # before it sees C++. `PC_CHECK(unique({1,2,3}) == std::vector<int>{1,2,3})`
+        # is five preprocessor arguments, and the run dies with `macro
+        # "PC_CHECK" passed 5 arguments, but takes just 1` -- no implementation
+        # can pass such a suite. Measured 2026-08-21 on c++/unique, four
+        # attempts, on a correct unordered_set dedupe blamed on the writer.
+        # __VA_ARGS__ puts the commas back before the compiler reads them.
+        "#define PC_CHECK(...) do { \\\n"
+        "    if (!(__VA_ARGS__)) { std::fprintf(stderr, \"CHECK FAILED: %s (line %d)\\n\", \\\n"
+        "                             #__VA_ARGS__, __LINE__); std::exit(1); } \\\n"
         "    pc_checks++; \\\n"
         "} while (0)\n"
     ),
