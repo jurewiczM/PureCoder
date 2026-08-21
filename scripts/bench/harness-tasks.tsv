@@ -1,0 +1,42 @@
+# The harness corpus.  name <TAB> spec
+#
+# `{fn}` is substituted by batch.sh with the task name cased to the target
+# language's convention, exactly as in tasks.tsv.
+#
+# These are not harder algorithms. Every one of them is a few lines in every
+# language the registry runs, and that is the point: the ten-task set
+# saturates because its difficulty is in the implementation, so five of six
+# languages score 10/10 and the instrument cannot discriminate. Difficulty
+# here is in what the SUITE has to say, not in what the writer has to do.
+#
+# The one task in tasks.tsv whose expected value is a container -- `unique` --
+# found three separate defects in three languages: JavaScript comparing arrays
+# by reference, C# comparing List<int> by reference, and a C++ PC_CHECK macro
+# that could not take an argument containing a comma. Each refused correct
+# code four times. Every row below is chosen to reach a shape the assertion
+# machinery has never been asked for.
+#
+# Every spec states its own edge cases and fixes any ordering, because an
+# underspecified spec does not make a harder task -- it makes the tester
+# invent an expectation, and then nothing downstream can say which side was
+# wrong.
+
+# a container of pairs: map/dict equality, and ordering that must not be
+# left to the tester
+word_count	a function {fn} that takes a string of words separated by single spaces and returns each distinct word together with the number of times it occurs, ordered alphabetically by word; the empty string returns nothing; the word 'a a b' gives a twice and b once
+
+# two values from one call: tuples, out-parameters, records, pairs
+min_max	a function {fn} that takes a list of integers that is never empty and returns both the smallest and the largest value, smallest first; a list of one element returns that element as both
+
+# a float: an assertion that must not use exact equality
+mean	a function {fn} that takes a list of integers and returns their arithmetic mean as a floating point number; the empty list returns 0.0; the mean of 1 and 2 is 1.5
+
+# a container out of a string: the shape that broke three languages
+parse_ints	a function {fn} that takes a string of integers separated by commas and returns them in order as a list of integers; the empty string returns an empty list; the string '7' returns a list holding only 7
+
+# failure that is not a value: exceptions, error returns, options
+safe_divide	a function {fn} that divides its first integer argument by its second using integer division and signals an error rather than returning a number when the second is zero; 7 divided by 2 is 3
+
+# the control: if this fails, the run is about the harness or the server and
+# not about any of the rows above
+initials	a function {fn} that takes a string of words separated by single spaces and returns the first character of each word in upper case joined together with no separator; the empty string returns the empty string

@@ -10,6 +10,7 @@
 #   TASKS="sum_list roman" scripts/bench/batch.sh c++ smoke
 #
 # Environment:
+#   CORPUS        which task file to run     (default scripts/bench/tasks.tsv)
 #   BENCH         where transcripts go       (default ~/models/bench)
 #   TASKS         space-separated subset      (default: all ten)
 #   STORE         a RAG index to ground with  (default: ungrounded, see below)
@@ -21,7 +22,10 @@ TARGET=${1:?usage: batch.sh <language> [tag]}
 TAG=${2:-run}
 BENCH=${BENCH:-$HOME/models/bench}
 cd "$(dirname "$0")/../.."
-CORPUS=scripts/bench/tasks.tsv
+# The ten-task set is the control for every number in docs/live-runs, so it is
+# the default and it does not change. A second corpus is a second instrument:
+# `CORPUS=scripts/bench/harness-tasks.tsv batch.sh python probe`.
+CORPUS=${CORPUS:-scripts/bench/tasks.tsv}
 
 # Refuse a language this machine cannot run, before spending ten tasks
 # discovering it. Every task would land in `refused` with the same reason, and
