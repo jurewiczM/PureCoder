@@ -78,6 +78,153 @@ class Thing:
 '''
 
 
+# ---- html ---------------------------------------------------------------
+
+PAGE = """<!doctype html><html><head><title>List</title>
+<style>.sidebar{color:red}</style><script>track("pageview");</script></head>
+<body><nav><a href="/">Home</a><a href="/docs">Docs</a></nav>
+<main>
+<h1>List</h1><p>The <code>List</code> module handles finite lists.</p>
+<h2>List.map</h2><p>Applies a function to every element.</p>
+<pre><code>List.map (fun x -> x + 1) [1; 2; 3]</code></pre>
+</main><footer>Copyright 2026</footer></body></html>"""
+
+
+def test_html_keeps_the_prose_and_drops_the_machinery():
+    """A docs page is mostly not documentation. The same sidebar on four
+    hundred pages retrieves four hundred times."""
+    text = rag.html_to_text(PAGE)
+    assert "handles finite lists" in text
+    for junk in ("track(", "pageview", ".sidebar{", "Copyright 2026", "Home"):
+        assert junk not in text, junk
+    assert "<" not in text and ">" not in text.replace("x -> x", "")
+
+
+def test_html_headings_become_the_only_structure_the_chunker_reads():
+    """chunk_markdown sections on `#` lines and nothing else, so a page
+    flattened to one paragraph is one chunk however long it is."""
+    text = rag.html_to_text(PAGE)
+    assert "# List" in text
+    assert "## List.map" in text
+    chunks = [c for c, _ in rag.chunk_file("list.html", PAGE)]
+    assert len(chunks) == 2
+    assert chunks[0].startswith("# List")
+    assert chunks[1].startswith("## List.map")
+
+
+def test_html_keeps_code_examples_intact():
+    """The example is the part a model needs verbatim."""
+    text = rag.html_to_text(PAGE)
+    assert "List.map (fun x -> x + 1) [1; 2; 3]" in text
+
+
+def test_a_heading_split_across_tags_stays_one_heading():
+    """<h2>The <code>List</code> module</h2> is three data callbacks. A
+    newline between them and chunk_markdown no longer sees a heading."""
+    text = rag.html_to_text(
+        "<h2>The <code>List</code> module</h2><p>Body.</p>")
+    assert "## The List module" in text
+
+
+def test_malformed_html_yields_what_parsed_rather_than_raising():
+    """Half a page of real documentation beats an exception that skips the
+    file whole -- the web's documentation is not well-formed."""
+    text = rag.html_to_text("<p>Unclosed <b>bold and a stray < bracket")
+    assert "Unclosed" in text
+    assert "bold" in text
+
+
+def test_html_without_main_keeps_the_body():
+    """Most pages do not use <main>; dropping everything outside it would
+    index nothing."""
+    text = rag.html_to_text(
+        "<body><h1>Title</h1><p>Only prose here.</p></body>")
+    assert "Only prose here." in text
+
+
+def test_a_list_of_links_is_a_table_of_contents_and_is_dropped():
+    """Found live: 65 real Node.js pages ingested 401 chunks that were the
+    per-page TOC flattened -- `filehandle.close() filehandle.read(...)` and
+    nothing else. Published on every page, so it would be the nearest
+    neighbour of every question about that module."""
+    page = ("<h1>File system</h1>"
+            "<div class=\"toc\"><ul>"
+            "<li><a href=\"#a\">filehandle.close()</a></li>"
+            "<li><a href=\"#b\">filehandle.read()</a></li>"
+            "<li><a href=\"#c\">filehandle.write()</a></li>"
+            "<li><a href=\"#d\">filehandle.chmod()</a></li>"
+            "</ul></div>"
+            "<p>Reads a file asynchronously.</p>")
+    text = rag.html_to_text(page)
+    assert "Reads a file asynchronously." in text
+    assert "filehandle.close()" not in text
+
+
+def test_a_list_of_prose_survives():
+    """The rule must key on what a table of contents IS, not on how long a
+    list is -- documentation is full of bulleted prose."""
+    page = ("<ul>"
+            "<li>Tail recursive, so it is safe on long lists.</li>"
+            "<li>Order preserving, unlike the hashtable version.</li>"
+            "<li>Raises Invalid_argument when the lengths differ.</li>"
+            "</ul>")
+    text = rag.html_to_text(page)
+    assert "Tail recursive" in text
+    assert "Invalid_argument" in text
+
+
+def test_a_short_list_of_links_survives():
+    """Two links is a sentence with references in it, not a contents page."""
+    page = ("<ul><li><a href=\"/a\">See also: streams</a></li>"
+            "<li><a href=\"/b\">See also: buffers</a></li></ul>")
+    text = rag.html_to_text(page)
+    assert "streams" in text
+
+
+def test_a_list_of_links_around_prose_survives():
+    """A list whose items are mostly text keeps its links -- the ratio is
+    over characters, not over whether an anchor appears at all."""
+    page = ("<ul>"
+            "<li>Use <a href=\"/fs\">fs</a> to read a file from disk, which "
+            "blocks unless you use the promise form.</li>"
+            "<li>Use <a href=\"/net\">net</a> for sockets, which never "
+            "blocks and is always asynchronous.</li>"
+            "<li>Use <a href=\"/vm\">vm</a> to evaluate code in a separate "
+            "context with its own globals.</li>"
+            "</ul>")
+    text = rag.html_to_text(page)
+    assert "read a file from disk" in text
+
+
+def test_the_ingest_pattern_admits_html():
+    """It matched prose and source extensions, and the web publishes HTML --
+    so ocaml.org only worked because its tutorials are markdown in the source
+    repository, which is not how most projects publish."""
+    import re as _re
+    rx = _re.compile(rag.INGEST_PATTERN)
+    for name in ("guide.html", "guide.htm", "guide.xhtml"):
+        assert rx.match(name), name
+    assert not rx.match("logo.png")
+
+
+def test_html_files_reach_the_plan(tmp_path):
+    (tmp_path / "guide.html").write_text(PAGE)
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n")
+    plan = rag.plan_ingest(str(tmp_path))
+    assert {os.path.basename(s) for s in plan.sources} == {"guide.html"}
+    assert any("finite lists" in c for c in plan.chunks)
+    assert not any("track(" in c for c in plan.chunks)
+
+
+def test_markdown_and_python_are_routed_exactly_as_before():
+    """The routing change must be invisible to every extension it does not
+    name."""
+    md = "# Title\n\nBody text.\n"
+    assert rag.chunk_file("d.md", md) == rag.chunk_markdown(md, "d.md")
+    py = "def f():\n    return 1\n"
+    assert rag.chunk_file("m.py", py) == rag.chunk_python(py, "m.py")
+
+
 def test_python_chunks_on_function_and_class_boundaries():
     chunks = chunk_python(SOURCE, "mod.py")
     labels = [c.splitlines()[0] for c, _ in chunks]
