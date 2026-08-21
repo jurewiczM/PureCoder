@@ -78,6 +78,79 @@ class Thing:
 '''
 
 
+# ---- html ---------------------------------------------------------------
+
+PAGE = """<!doctype html><html><head><title>List</title>
+<style>.sidebar{color:red}</style><script>track("pageview");</script></head>
+<body><nav><a href="/">Home</a><a href="/docs">Docs</a></nav>
+<main>
+<h1>List</h1><p>The <code>List</code> module handles finite lists.</p>
+<h2>List.map</h2><p>Applies a function to every element.</p>
+<pre><code>List.map (fun x -> x + 1) [1; 2; 3]</code></pre>
+</main><footer>Copyright 2026</footer></body></html>"""
+
+
+def test_html_keeps_the_prose_and_drops_the_machinery():
+    """A docs page is mostly not documentation. The same sidebar on four
+    hundred pages retrieves four hundred times."""
+    text = rag.html_to_text(PAGE)
+    assert "handles finite lists" in text
+    for junk in ("track(", "pageview", ".sidebar{", "Copyright 2026", "Home"):
+        assert junk not in text, junk
+    assert "<" not in text and ">" not in text.replace("x -> x", "")
+
+
+def test_html_headings_become_the_only_structure_the_chunker_reads():
+    """chunk_markdown sections on `#` lines and nothing else, so a page
+    flattened to one paragraph is one chunk however long it is."""
+    text = rag.html_to_text(PAGE)
+    assert "# List" in text
+    assert "## List.map" in text
+    chunks = [c for c, _ in rag.chunk_file("list.html", PAGE)]
+    assert len(chunks) == 2
+    assert chunks[0].startswith("# List")
+    assert chunks[1].startswith("## List.map")
+
+
+def test_html_keeps_code_examples_intact():
+    """The example is the part a model needs verbatim."""
+    text = rag.html_to_text(PAGE)
+    assert "List.map (fun x -> x + 1) [1; 2; 3]" in text
+
+
+def test_a_heading_split_across_tags_stays_one_heading():
+    """<h2>The <code>List</code> module</h2> is three data callbacks. A
+    newline between them and chunk_markdown no longer sees a heading."""
+    text = rag.html_to_text(
+        "<h2>The <code>List</code> module</h2><p>Body.</p>")
+    assert "## The List module" in text
+
+
+def test_malformed_html_yields_what_parsed_rather_than_raising():
+    """Half a page of real documentation beats an exception that skips the
+    file whole -- the web's documentation is not well-formed."""
+    text = rag.html_to_text("<p>Unclosed <b>bold and a stray < bracket")
+    assert "Unclosed" in text
+    assert "bold" in text
+
+
+def test_html_without_main_keeps_the_body():
+    """Most pages do not use <main>; dropping everything outside it would
+    index nothing."""
+    text = rag.html_to_text(
+        "<body><h1>Title</h1><p>Only prose here.</p></body>")
+    assert "Only prose here." in text
+
+
+def test_markdown_and_python_are_routed_exactly_as_before():
+    """The routing change must be invisible to every extension it does not
+    name."""
+    md = "# Title\n\nBody text.\n"
+    assert rag.chunk_file("d.md", md) == rag.chunk_markdown(md, "d.md")
+    py = "def f():\n    return 1\n"
+    assert rag.chunk_file("m.py", py) == rag.chunk_python(py, "m.py")
+
+
 def test_python_chunks_on_function_and_class_boundaries():
     chunks = chunk_python(SOURCE, "mod.py")
     labels = [c.splitlines()[0] for c, _ in chunks]

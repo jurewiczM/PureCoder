@@ -29,6 +29,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass
+from html.parser import HTMLParser
 
 import numpy as np
 
@@ -348,6 +349,111 @@ def chunk_code(source, filename, lang, max_chars=1200):
     return chunks
 
 
+# ---- HTML ---------------------------------------------------------------
+
+#: Dropped whole, contents included. Navigation, boilerplate and machinery are
+#: not documentation, and they are the majority of bytes on a docs page: the
+#: same sidebar on four hundred pages retrieves four hundred times.
+_HTML_DISCARD = frozenset(
+    ("script", "style", "noscript", "nav", "header", "footer", "aside",
+     "form", "svg", "template", "button"))
+
+#: Where the prose is, when the page says so. The first one present wins.
+_HTML_MAIN = ("main", "article")
+
+_HTML_BLOCK = frozenset(
+    ("p", "div", "section", "li", "tr", "blockquote", "figcaption",
+     "dt", "dd", "br", "hr", "table", "ul", "ol", "dl"))
+
+
+class _HtmlText(HTMLParser):
+    """HTML to something `chunk_markdown` can section.
+
+    Headings become `#` lines because that is the only structure the chunker
+    keys on -- a page flattened to one paragraph is one chunk however long it
+    is, which is the failure this conversion exists to avoid.
+
+    stdlib, deliberately. The project's only runtime dependencies are requests
+    and numpy, and adding BeautifulSoup to read a docs page would make that
+    claim false.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self._skip, self._heading = [], 0, None
+        self._pre, self._main, self._in_main = 0, False, 0
+
+    # -- structure
+    def handle_starttag(self, tag, attrs):
+        if tag in _HTML_DISCARD:
+            self._skip += 1
+            return
+        if self._skip:
+            return
+        if tag in _HTML_MAIN:
+            # Everything before <main> was preamble. Keeping both would index
+            # the banner twice.
+            if not self._main:
+                self.out.clear()
+            self._main, self._in_main = True, self._in_main + 1
+        if tag == "pre":
+            self._pre += 1
+            self.out.append("\n\n```\n")
+        elif re.fullmatch(r"h[1-6]", tag):
+            self._heading = int(tag[1])
+            self.out.append("\n\n" + "#" * self._heading + " ")
+        elif tag in _HTML_BLOCK:
+            self.out.append("\n\n")
+
+    def handle_endtag(self, tag):
+        if tag in _HTML_DISCARD:
+            self._skip = max(0, self._skip - 1)
+            return
+        if self._skip:
+            return
+        if tag in _HTML_MAIN and self._in_main:
+            self._in_main -= 1
+        if tag == "pre" and self._pre:
+            self._pre -= 1
+            self.out.append("\n```\n\n")
+        elif re.fullmatch(r"h[1-6]", tag):
+            self._heading = None
+            self.out.append("\n\n")
+        elif tag in _HTML_BLOCK:
+            self.out.append("\n\n")
+
+    def handle_data(self, data):
+        if self._skip:
+            return
+        if self._pre:
+            self.out.append(data)
+            return
+        # A heading split across tags (<h2>Lists<code>List.map</code></h2>)
+        # must stay on one line or chunk_markdown stops seeing a heading.
+        text = re.sub(r"\s+", " ", data)
+        if text.strip() or (self.out and not self.out[-1].endswith(" ")):
+            self.out.append(text)
+
+    def text(self):
+        joined = "".join(self.out)
+        joined = re.sub(r"[ \t]+", " ", joined)
+        joined = re.sub(r" ?\n ?", "\n", joined)
+        return re.sub(r"\n{3,}", "\n\n", joined).strip()
+
+
+def html_to_text(source):
+    """Strip a docs page to headed prose. Malformed input yields what parsed.
+
+    HTMLParser does not raise on unclosed tags or stray `<`, which is the
+    behaviour wanted here: half a page of real documentation beats an
+    exception that skips the file whole.
+    """
+    parser = _HtmlText()
+    parser.feed(source)
+    parser.close()
+    return parser.text()
+
+
 def chunk_file(path, source, max_chars_code=1200, max_chars_docs=800):
     """Route by extension: .py -> the AST chunker, a known grammar ->
     tree-sitter, everything else -> markdown."""
@@ -357,6 +463,12 @@ def chunk_file(path, source, max_chars_code=1200, max_chars_docs=800):
     if ext in CODE_LANGUAGES:
         return chunk_code(source, path, CODE_LANGUAGES[ext],
                           max_chars=max_chars_code)
+    if ext in (".html", ".htm", ".xhtml"):
+        # Stripped first, then chunked as the prose it is. Indexed raw, a page
+        # is mostly markup: the embedder sees tag soup and the model is handed
+        # a <div> when it asked how to fold a list.
+        return chunk_markdown(html_to_text(source), path,
+                              max_chars=max_chars_docs)
     return chunk_markdown(source, path, max_chars=max_chars_docs)
 
 
