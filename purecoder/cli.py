@@ -99,6 +99,14 @@ def resolve_contract(args, default):
 
 
 def _print_result(res, show_tests=False):
+    """Print a loop's verdict and return the exit code that matches it.
+
+    `ok=False` printed on stdout while the process exits 0 is a refusal no
+    caller can see: this project's whole claim is that unvalidated output is
+    not emitted, and a shell reading `$?` was being told the opposite. The two
+    bench scripts grep the verdict line instead, which is why it survived --
+    they were written around it. `measure` already did this for divergence.
+    """
     contract = res.get("contract")
     if contract:
         from .contract import render_contract
@@ -112,6 +120,7 @@ def _print_result(res, show_tests=False):
         print("\n[tests used]\n" + res["tests"])
     if not ok and res.get("error"):
         print(f"error: {res['error']}")
+    return 0 if ok else 1
 
 
 def open_docs(path, device, required=False):
@@ -223,7 +232,7 @@ def cmd_code(pc, args):
         extra = {"tdd": True,
                  "confirm_tests": None if getattr(args, "yes", False)
                  else confirm_tests}
-    _print_result(generate_validated_python(
+    return _print_result(generate_validated_python(
         pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=True if tdd else resolve_contract(args, default=False),
         error_hint=hint,
@@ -235,13 +244,13 @@ def cmd_code(pc, args):
 
 
 def cmd_env(pc, args):
-    _print_result(generate_validated(pc, "env", args.spec,
-                                     max_retries=args.retries))
+    return _print_result(generate_validated(pc, "env", args.spec,
+                                            max_retries=args.retries))
 
 
 def cmd_make(pc, args):
-    _print_result(generate_validated(pc, "makefile", args.spec,
-                                     max_retries=args.retries))
+    return _print_result(generate_validated(pc, "makefile", args.spec,
+                                            max_retries=args.retries))
 
 
 def cmd_project(pc, args):
@@ -258,6 +267,7 @@ def cmd_project(pc, args):
                          use_contract=resolve_contract(args, default=True),
                          docs=context, error_hint=hint)
     print(f"\nscaffold {'complete' if r['ok'] else 'incomplete'} -> {r['outdir']}/")
+    return 0 if r["ok"] else 1
 
 
 def review_plan(plan_for, exclude, interactive=True):
@@ -342,7 +352,7 @@ def cmd_ask(pc, args):
                                    **_docs_opts(args))
     if context is None:
         return 1
-    _print_result(generate_validated_python(
+    return _print_result(generate_validated_python(
         pc, args.spec, context=context, max_retries=args.retries, spec=spec,
         use_contract=resolve_contract(args, default=False),
         error_hint=hint),

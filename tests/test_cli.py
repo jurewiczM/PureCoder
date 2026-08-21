@@ -548,3 +548,66 @@ def test_anything_but_yes_declines_the_tests(capsys):
     from purecoder import cli
 
     assert cli.confirm_tests("assert x", "boom", ask=lambda _: "n") is False
+
+
+def test_a_refused_run_exits_non_zero():
+    """`ok=False` printed while the process exits 0 is a refusal no caller can
+    see. Found live 2026-08-15 on three failed Makefile attempts; the bench
+    scripts grep the verdict line instead, which is why nothing caught it."""
+    from purecoder import cli
+
+    assert cli._print_result({"ok": True, "text": "x", "attempts": 1}) == 0
+    assert cli._print_result({"ok": False, "text": "x", "attempts": 3,
+                              "error": "output was cut off"}) == 1
+
+
+def test_make_reports_a_failed_run_through_its_exit_code(monkeypatch):
+    from purecoder import cli
+
+    monkeypatch.setattr(cli, "generate_validated",
+                        lambda *a, **kw: {"ok": False, "text": "junk",
+                                          "attempts": 3, "error": "cut off"})
+
+    class Args:
+        spec = "a Makefile for a python project"
+        retries = 3
+
+    assert cli.cmd_make(None, Args()) == 1
+
+
+def test_every_generating_command_returns_its_verdict():
+    """A guard against the next command that prints ok=False and exits 0."""
+    import inspect
+
+    from purecoder import cli
+
+    for name in ("cmd_code", "cmd_env", "cmd_make", "cmd_ask"):
+        src = inspect.getsource(getattr(cli, name))
+        assert "return _print_result(" in src, f"{name} discards the verdict"
+    assert "r[\"ok\"]" in inspect.getsource(cli.cmd_project)
+
+
+def test_the_smoke_script_calls_a_cli_that_exists():
+    """scripts/smoke.sh only runs against a live server, so CI never executes
+    it and nothing else would notice it drifting from the CLI. Both bench
+    scripts were written around the exit code being broken, which is how that
+    survived unnoticed -- a script is not a check unless something checks it."""
+    import inspect
+    import re
+    import subprocess
+    from pathlib import Path
+
+    from purecoder import cli
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "smoke.sh"
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0, \
+        "smoke.sh does not parse"
+
+    src = script.read_text()
+    cli_src = inspect.getsource(cli)
+    for flag in sorted(set(re.findall(r"(?<![\w-])--[a-z][a-z-]+", src))):
+        assert f'"{flag}"' in cli_src, f"smoke.sh passes {flag}, which the CLI does not define"
+
+    # The subcommands it drives, each of which must still be routed.
+    for name in ("code", "env", "make", "status"):
+        assert f'"{name}": cmd_' in cli_src, f"{name} is no longer routed"

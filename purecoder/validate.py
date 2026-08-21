@@ -1,13 +1,14 @@
 """
 purecoder/validate.py
 
-Phase 3: real-tool validators + the write -> validate -> fix loop.
+Real-tool validators for the config artifacts, plus the write -> validate ->
+fix loop they share.
 
 Each validator returns (ok: bool, error: str). The loop generates an
 artifact, runs its validator, and on failure feeds the error back into a
 regeneration call, up to max_retries.
 
-Design boundary made concrete: grammars (Phase 2) guarantee SHAPE. `make -n`
+Design boundary made concrete: grammars guarantee SHAPE. `make -n`
 confirms a Makefile PARSES. But `make` is lenient -- it will happily parse
 degenerate junk (50 identical rm lines, malformed dot-targets). So the
 Makefile validator adds semantic sanity guards on top of the parse check.
@@ -88,6 +89,24 @@ def validate_python(text: str):
         return False, f"SyntaxError: {e.msg} at line {e.lineno}"
 
 
+def _targets(lines):
+    """Yield (line number, target name) for every rule head in a Makefile.
+
+    A rule head is a non-recipe line whose colon is not part of `:=`, so
+    `CC := gcc` is an assignment and `install test:` declares two targets.
+    Double-colon rules are skipped: repeating one is how they are meant to be
+    written, which is exactly what the duplicate guard would misread.
+    """
+    for i, line in enumerate(lines, 1):
+        if line.startswith("\t") or not line.strip() or line.lstrip().startswith("#"):
+            continue
+        head, sep, rest = line.partition(":")
+        if not sep or rest.startswith("=") or rest.startswith(":"):
+            continue
+        for target in head.split():
+            yield i, target
+
+
 def validate_makefile(text: str):
     """Parse check (make -n) PLUS semantic guards make itself won't catch."""
     lines = text.splitlines()
@@ -102,15 +121,24 @@ def validate_makefile(text: str):
                            f"{count} times -- likely a generation spiral")
 
     # guard 2: malformed dot-targets, e.g. '.rm: -f foo.txt'
-    for i, line in enumerate(lines, 1):
-        if line.startswith("\t"):
-            continue                            # recipe line, not a target
-        if line.startswith(".") and ":" in line:
-            target = line.split(":", 1)[0].strip()
-            if target not in MAKE_SPECIAL_TARGETS:
-                return False, f"line {i}: suspicious dot-target {target!r}"
+    for i, target in _targets(lines):
+        if target.startswith(".") and target not in MAKE_SPECIAL_TARGETS:
+            return False, f"line {i}: suspicious dot-target {target!r}"
 
-    # guard 3: the parse check -- make -n dry-runs the default target,
+    # guard 3: the same target defined twice -- the model finished the file and
+    # started it again ("# Even more concise version:"), which make accepts with
+    # a warning and a zero exit. Special targets are exempt: .PHONY legitimately
+    # appears more than once in hand-written makefiles.
+    declared = Counter(t for _, t in _targets(lines)
+                       if t not in MAKE_SPECIAL_TARGETS)
+    if declared:
+        target, count = declared.most_common(1)[0]
+        if count > 1:
+            return False, (f"target {target!r} is defined {count} times -- the "
+                           f"file restarts instead of continuing; output one "
+                           f"Makefile")
+
+    # guard 4: the parse check -- make -n dry-runs the default target,
     # never executing recipes, so it's safe even with rm/clean targets.
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "Makefile")
