@@ -10,7 +10,7 @@ import shutil
 import pytest
 
 from purecoder import languages as L
-from purecoder.execute import lint_tests, run_candidate
+from purecoder.execute import lint_tests, repair_tests, run_candidate
 from purecoder.languages import PYTHON, LanguageSpec
 from purecoder.scaffold import scaffold_project
 
@@ -299,6 +299,26 @@ def test_a_compile_error_is_reported_not_swallowed():
                             "void pc_tests(){ PC_CHECK(1==1); }", timeout=60)
     assert not ok
     assert "error" in err.lower()
+
+
+def test_a_repaired_csharp_suite_actually_runs():
+    """SequenceEqual is written fully qualified because writer_system forbids
+    using directives -- so the repair is only correct if dotnet accepts it."""
+    spec = _skip_unless("c#")
+    tests = repair_tests(
+        spec, 'PC_CHECK(new List<int>() == Unique(new List<int>()), "empty");\n'
+              'PC_CHECK(Unique(new List<int>{1,1,2}) == new List<int>{1,2},'
+              ' "dedupe");\n')
+    ok, err = run_candidate(
+        spec,
+        "List<int> Unique(List<int> input) {\n"
+        "    var seen = new HashSet<int>();\n"
+        "    var result = new List<int>();\n"
+        "    foreach (int v in input) if (seen.Add(v)) result.Add(v);\n"
+        "    return result;\n"
+        "}\n",
+        tests, timeout=180, require_checks=1)
+    assert ok, err
 
 
 def test_a_runaway_is_killed_by_the_timeout():
