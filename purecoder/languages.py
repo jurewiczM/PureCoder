@@ -371,8 +371,17 @@ register(LanguageSpec(
     # Anchored on that literal, so `=== 3` and `typeof x === 'string'` -- both
     # correct as written -- are untouched, and a suite that already obeyed the
     # prompt has no `=== [` to match and survives unchanged.
-    test_fix=((r"(?m)PC_CHECK\(\s*(.+?)\s*===\s*(\[.*?\])\s*,\s*(['\"])",
-               r"PC_CHECK(JSON.stringify(\1) === JSON.stringify(\2), \3"),),
+    # Either operand may be the literal, and the operator is echoed rather
+    # than normalised. `[] === unique([])` is the same unsatisfiable check
+    # mirrored; `unique(x) !== [1]` is worse, because it can never FAIL and
+    # JavaScript cannot be red-checked -- `stub_for` is Python-only. On two
+    # strings `==` and `!=` are value comparisons already, so echoing is safe.
+    test_fix=((r"(?m)PC_CHECK\(\s*(.+?)\s*(!==|!=|===|==)\s*(\[.*?\])"
+               r"\s*,\s*(['\"])",
+               r"PC_CHECK(JSON.stringify(\1) \2 JSON.stringify(\3), \4"),
+              (r"(?m)PC_CHECK\(\s*(\[.*?\])\s*(!==|!=|===|==)\s*(.+?)"
+               r"\s*,\s*(['\"])",
+               r"PC_CHECK(JSON.stringify(\1) \2 JSON.stringify(\3), \4"),),
     project=ProjectSpec(
         entry="main.js",
         install="npm install",
