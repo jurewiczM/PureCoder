@@ -324,6 +324,27 @@ register(LanguageSpec(
                     "    return 0;\n"
                     "}\n"),
     ),
+    # A braced list is not an expression in C++: `unique({1,2,3}) == {1,2,3}`
+    # is `expected primary-expression before '{' token` and no implementation
+    # can pass a suite containing one. Measured 2026-08-21 on c++/unique,
+    # which reached this only once the PC_CHECK macro stopped rejecting the
+    # comma first -- one defect was hiding the other.
+    #
+    # decltype rather than a guessed type. The element type is not knowable
+    # from the line, and `std::vector<int>` would be wrong for a function
+    # returning strings; `decltype(f(x)){...}` is right for whatever f
+    # returns, including the empty-braces case that has no elements to guess
+    # from. Verified under g++ for int vectors, string vectors and `{}`.
+    #
+    # The call is matched lazily and anchored on the operator, which is what
+    # makes it balance: on `f(g(x)) == {1}` the shortest match that still
+    # leaves `== {` ahead of it is the whole of `f(g(x))`.
+    test_fix=((r"(?m)PC_CHECK\(\s*([A-Za-z_]\w*\(.*?\))\s*(==|!=)\s*"
+               r"(\{[^{}]*\})",
+               r"PC_CHECK(\1 \2 decltype(\1)\3"),
+              (r"(?m)PC_CHECK\(\s*(\{[^{}]*\})\s*(==|!=)\s*"
+               r"([A-Za-z_]\w*\(.*?\))",
+               r"PC_CHECK(decltype(\3)\1 \2 \3"),),
     check_call="PC_CHECK",
     aliases=("cpp", "cxx"),
 ))
