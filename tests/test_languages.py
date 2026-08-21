@@ -331,6 +331,23 @@ def test_a_repaired_javascript_suite_actually_runs():
         "  for (const v of a) if (!s.has(v)) { s.add(v); o.push(v); }\n"
         "  return o; }\n",
         tests, timeout=60, require_checks=1)
+def test_a_repaired_csharp_suite_actually_runs():
+    """SequenceEqual is written fully qualified because writer_system forbids
+    using directives -- so the repair is only correct if dotnet accepts it."""
+    spec = _skip_unless("c#")
+    tests = repair_tests(
+        spec, 'PC_CHECK(new List<int>() == Unique(new List<int>()), "empty");\n'
+              'PC_CHECK(Unique(new List<int>{1,1,2}) == new List<int>{1,2},'
+              ' "dedupe");\n')
+    ok, err = run_candidate(
+        spec,
+        "List<int> Unique(List<int> input) {\n"
+        "    var seen = new HashSet<int>();\n"
+        "    var result = new List<int>();\n"
+        "    foreach (int v in input) if (seen.Add(v)) result.Add(v);\n"
+        "    return result;\n"
+        "}\n",
+        tests, timeout=180, require_checks=1)
     assert ok, err
 
 

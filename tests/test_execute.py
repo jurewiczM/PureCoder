@@ -731,6 +731,31 @@ def test_javascript_leaves_comparisons_that_are_not_containers_alone():
                 "PC_CHECK([1,2].includes(x), 'in');",
                 "PC_CHECK(JSON.stringify(a) === JSON.stringify(b), 'deep');"):
         assert repair_tests(js, src) == src, src
+def test_csharp_repairs_container_equality_from_either_side():
+    """`==` on List<int> is reference equality, and a literal constructed
+    inline is a new reference by definition -- so the check is false whatever
+    the code does. Measured 2026-08-09 on Unique and InsertionSort: four
+    attempts each, correct implementations, recorded against the writer. The
+    repair that landed anchored on a right-hand literal only."""
+    cs = get("c#")
+    want = ('PC_CHECK(System.Linq.Enumerable.SequenceEqual('
+            'Unique(x), new List<int>()), "empty");')
+    assert repair_tests(
+        cs, 'PC_CHECK(Unique(x) == new List<int>(), "empty");') == want
+    assert repair_tests(
+        cs, 'PC_CHECK(new List<int>() == Unique(x), "empty");') == (
+        'PC_CHECK(System.Linq.Enumerable.SequenceEqual('
+        'new List<int>(), Unique(x)), "empty");')
+
+
+def test_csharp_leaves_scalar_comparisons_alone():
+    """SequenceEqual on an int is a compile error, so the repair firing on a
+    scalar would turn a passing task into a failing one."""
+    cs = get("c#")
+    for src in ('PC_CHECK(SumList(x) == 0, "zero");',
+                'PC_CHECK(Gcd(48, 18) == 6, "gcd");',
+                'PC_CHECK(Roman(4) == "IV", "four");'):
+        assert repair_tests(cs, src) == src, src
 
 
 def test_a_language_with_no_repair_declared_is_untouched():
