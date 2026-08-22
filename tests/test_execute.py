@@ -703,8 +703,35 @@ def test_a_correct_check_is_left_exactly_alone():
 
 
 def test_a_language_with_no_repair_declared_is_untouched():
-    cpp = 'void pc_tests(){ PC_CHECK((add(1, 2)) == 3); }'
-    assert repair_tests(get("c++"), cpp) == cpp
+    """Rust, since c++ now declares one."""
+    rs = 'fn pc_tests(){ pc_check!(add(1, 2) == 3, "add"); }'
+    assert repair_tests(get("rust"), rs) == rs
+
+
+def test_cpp_types_a_braced_list_that_cannot_stand_alone():
+    """A braced list is not an expression in C++: `unique({1,2}) == {1,2}` is
+    `expected primary-expression before '{' token`, and no implementation can
+    pass a suite holding one. Live 2026-08-21 on c++/unique -- reached only
+    after the macro stopped rejecting the comma first, one defect hiding
+    another."""
+    cpp = get("c++")
+    assert repair_tests(
+        cpp, "PC_CHECK(unique({1,2,2,3}) == {1,2,3});") == (
+        "PC_CHECK(unique({1,2,2,3}) == decltype(unique({1,2,2,3})){1,2,3});")
+    # the empty case has no elements to guess a type from, which is why this
+    # uses decltype rather than naming std::vector<int>
+    assert repair_tests(cpp, "PC_CHECK(unique({}) == {});") == (
+        "PC_CHECK(unique({}) == decltype(unique({})){});")
+    assert repair_tests(cpp, "PC_CHECK({1,2} == unique({1,1,2}));") == (
+        "PC_CHECK(decltype(unique({1,1,2})){1,2} == unique({1,1,2}));")
+
+
+def test_cpp_leaves_expressions_that_already_compile_alone():
+    cpp = get("c++")
+    for src in ("PC_CHECK(add(1, 2) == 3);",
+                "PC_CHECK(unique({1,2}) == std::vector<int>{1,2});",
+                "PC_CHECK(size(v) == 0);"):
+        assert repair_tests(cpp, src) == src, src
 
 
 def test_a_csharp_style_diagnostic_is_understood():

@@ -282,9 +282,16 @@ register(LanguageSpec(
         "#include <set>\n"
         "#include <algorithm>\n"
         "static int pc_checks = 0;\n"
-        "#define PC_CHECK(x) do { \\\n"
-        "    if (!(x)) { std::fprintf(stderr, \"CHECK FAILED: %s (line %d)\\n\", \\\n"
-        "                             #x, __LINE__); std::exit(1); } \\\n"
+        # Variadic, and not a style choice: a one-parameter macro counts commas
+        # before it sees C++. `PC_CHECK(unique({1,2,3}) == std::vector<int>{1,2,3})`
+        # is five preprocessor arguments, and the run dies with `macro
+        # "PC_CHECK" passed 5 arguments, but takes just 1` -- no implementation
+        # can pass such a suite. Measured 2026-08-21 on c++/unique, four
+        # attempts, on a correct unordered_set dedupe blamed on the writer.
+        # __VA_ARGS__ puts the commas back before the compiler reads them.
+        "#define PC_CHECK(...) do { \\\n"
+        "    if (!(__VA_ARGS__)) { std::fprintf(stderr, \"CHECK FAILED: %s (line %d)\\n\", \\\n"
+        "                             #__VA_ARGS__, __LINE__); std::exit(1); } \\\n"
         "    pc_checks++; \\\n"
         "} while (0)\n"
     ),
@@ -317,6 +324,27 @@ register(LanguageSpec(
                     "    return 0;\n"
                     "}\n"),
     ),
+    # A braced list is not an expression in C++: `unique({1,2,3}) == {1,2,3}`
+    # is `expected primary-expression before '{' token` and no implementation
+    # can pass a suite containing one. Measured 2026-08-21 on c++/unique,
+    # which reached this only once the PC_CHECK macro stopped rejecting the
+    # comma first -- one defect was hiding the other.
+    #
+    # decltype rather than a guessed type. The element type is not knowable
+    # from the line, and `std::vector<int>` would be wrong for a function
+    # returning strings; `decltype(f(x)){...}` is right for whatever f
+    # returns, including the empty-braces case that has no elements to guess
+    # from. Verified under g++ for int vectors, string vectors and `{}`.
+    #
+    # The call is matched lazily and anchored on the operator, which is what
+    # makes it balance: on `f(g(x)) == {1}` the shortest match that still
+    # leaves `== {` ahead of it is the whole of `f(g(x))`.
+    test_fix=((r"(?m)PC_CHECK\(\s*([A-Za-z_]\w*\(.*?\))\s*(==|!=)\s*"
+               r"(\{[^{}]*\})",
+               r"PC_CHECK(\1 \2 decltype(\1)\3"),
+              (r"(?m)PC_CHECK\(\s*(\{[^{}]*\})\s*(==|!=)\s*"
+               r"([A-Za-z_]\w*\(.*?\))",
+               r"PC_CHECK(decltype(\3)\1 \2 \3"),),
     check_call="PC_CHECK",
     aliases=("cpp", "cxx"),
 ))
