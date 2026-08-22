@@ -36,6 +36,7 @@ dashboardTest/
 
 # local agent notes, not part of the repo
 CLAUDE.md
+.pr/
 .superpowers/
 
 # the UI's installed deps and build output
