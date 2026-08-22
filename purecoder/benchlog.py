@@ -49,6 +49,16 @@ _CHECKS_RAN = ("CHECK FAILED", "AssertionError",
 # (bucket, marker) in priority order. Matched as substrings of the error text
 # because the loop interpolates a reason after most of them.
 _BUCKETS = (
+    # Whose lines the toolchain named, stated by execute.py because only it
+    # has the assembled file. Ahead of everything else that could match a
+    # build failure: a suite that cannot compile is the tester's failure no
+    # matter how the diagnostic is worded, and reading it as the writer's is
+    # what put two C++ harness defects on a correct implementation on
+    # 2026-08-21.
+    ("tester-build", "[origin] every line this diagnostic names is in the "
+                     "TESTS"),
+    ("harness-build", "[origin] every line this diagnostic names is in the "
+                      "HARNESS"),
     ("gate", "test design failed the quality gate"),
     ("gate", "the tests you supplied fail the quality"),
     ("contract", "test-first needs a contract"),
@@ -78,8 +88,11 @@ def classify(transcript: str) -> Verdict:
     """A benchmark transcript -> (verdict, attempts, reason).
 
     `ok` the run succeeded. `writer` the loop spent its retries and the last
-    word was a toolchain diagnostic -- the only bucket that says anything about
-    the model. `suspect-tests` the loop suspected the suite, redesigned it, and
+    word was a toolchain diagnostic that pointed at the implementation -- the
+    only bucket that says anything about the model. `tester-build` and
+    `harness-build` are the same exhaustion where every line the diagnostic
+    named lay outside the implementation, so the build failed on code the
+    writer did not write. `suspect-tests` the loop suspected the suite, redesigned it, and
     still failed a check that RAN: an implementation and an expectation
     disagreed and this cannot say which is wrong. `gate`, `contract`, `stuck`,
     `refused` the harness stopped it. `server` and `timeout` are

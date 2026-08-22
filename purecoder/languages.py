@@ -92,12 +92,36 @@ class LanguageSpec:
 
     # ---- assembly -------------------------------------------------------
 
+    def _parts(self, code: str, tests: str):
+        """(origin, text) for each non-empty part, in assembled order."""
+        named = (("harness", self.preamble), ("implementation", code.rstrip()),
+                 ("tests", tests.rstrip()), ("harness", self.epilogue))
+        return [(origin, text) for origin, text in named if text.strip()]
+
     def assemble(self, code: str, tests: str) -> str:
         """One source file: harness, implementation, tests, then the tail that
         fails the run if no check executed."""
-        parts = [p for p in (self.preamble, code.rstrip(), tests.rstrip(),
-                             self.epilogue) if p.strip()]
-        return "\n\n".join(parts) + "\n"
+        return "\n\n".join(text for _, text in self._parts(code, tests)) + "\n"
+
+    def regions(self, code: str, tests: str):
+        """[(origin, first_line, last_line)] over the assembled file, 1-based.
+
+        A compiler diagnostic names a line in that file and nothing downstream
+        knew whose line it was, so a suite that could not compile was recorded
+        against the writer -- twice on 2026-08-21, on correct implementations.
+        Derived from the same parts `assemble` joins, so the two cannot drift.
+        """
+        out, joined = [], ""
+        for origin, text in self._parts(code, tests):
+            prefix = joined + ("\n\n" if joined else "")
+            # Counted off the assembled text rather than from a fixed gap
+            # between parts: preamble and epilogue keep whatever trailing
+            # newlines they were written with, while code and tests are
+            # rstripped, so the separation is not the same everywhere.
+            start = prefix.count("\n") + 1
+            joined = prefix + text
+            out.append((origin, start, joined.rstrip("\n").count("\n") + 1))
+        return out
 
     # ---- availability ---------------------------------------------------
 
