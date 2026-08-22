@@ -333,6 +333,12 @@ code, because those were out of step until 2026-08-15. It is not a benchmark;
   53/60 is a real result; as a way to compare models or catch a regression it
   cannot see. Also measured: pinning a task's edge cases in its spec text does
   not stop a tester contradicting them, because a spec is a prompt.
+- **It also has run-to-run noise of at least ±1 per column.** Two passes on
+  2026-08-21 moved OCaml 7/10 → 6/10 with nothing in that language touched
+  between them. A single pair of runs therefore cannot show the absence of a
+  regression, whatever the totals do — repeats are the only way to make a
+  one-point claim from this instrument
+  ([noise-and-the-oracle](live-runs/2026-08-21-noise-and-the-oracle.md)).
 - **The classifier was repaired, and the fix had to be measured in both
   directions.** `benchlog.py` requires two things before blaming the model: the
   loop printed `suspecting the tests, redesigning them` AND a check actually
@@ -441,6 +447,7 @@ not. The verdict is not the evidence — the transcript is.
 | 2026-08-15 | `makefile.gbnf`'s unbounded root, and a refused run exiting 0 | first `smoke.sh` run |
 | 2026-08-16 | SQL's 0/10 was the TASK SET: every corpus task asks for a function and SQLite has no user-defined functions, so no attempt could have passed. The runner refuses SQL against this corpus by name now. Fourth time a number here turned out to be about the harness or the task set rather than the model, and the first the ledger made visible without opening a log | `attribution.py` |
 | 2026-08-17 | the ledger's own output: a reason containing a newline broke the roles block into a row with no role attached. Same defect in the CLI and the UI, found by driving an SQL refusal | smoke 6/6, demo 6+1 |
+| 2026-08-21 | 4 harness defects, all failing CORRECT code: a C++ `PC_CHECK` macro that could not take an argument containing a comma, and a braced list that is not an expression (both in one compile of `unique`); the JavaScript and C# container repairs anchored on one operand order only. One attempted fix WITHDRAWN for refusing a valid suite. The instrument moved OCaml a point with nothing in that language touched, so it carries at least ±1 per column | [noise-and-the-oracle](live-runs/2026-08-21-noise-and-the-oracle.md) |
 
 ## Next steps (priority order)
 
