@@ -363,6 +363,52 @@ _LINE_REF = re.compile(
 _MAX_QUOTED_REGIONS = 3
 
 
+#: Emitted into the failure text when every line a diagnostic names lies
+#: outside the implementation. `benchlog.py` keys on these; they are prose so
+#: that a human reading the transcript learns the same thing.
+ORIGIN_TESTS = ("[origin] every line this diagnostic names is in the TESTS, "
+                "not the implementation")
+ORIGIN_HARNESS = ("[origin] every line this diagnostic names is in the "
+                  "HARNESS, not the implementation")
+
+
+def diagnostic_origin(spec, code: str, tests: str, error: str):
+    """Whose lines the diagnostic is pointing at -> origin, or "" if unknown.
+
+    A build failure was recorded against the writer whatever caused it, and
+    on 2026-08-21 that put two defects of the C++ test harness -- a PC_CHECK
+    macro that could not take a comma, and a braced list that is not an
+    expression -- on a correct unordered_set dedupe, four attempts each.
+
+    Conservative in one direction on purpose: if ANY named line falls in the
+    implementation the answer is the implementation, however many others do
+    not. Moving blame off the model requires that nothing points at its code.
+    """
+    found = [int(n) for match in _LINE_REF.findall(error) for n in match if n]
+    if not found:
+        return ""
+    regions = spec.regions(code, tests)
+    origins = set()
+    for number in found:
+        for origin, lo, hi in regions:
+            if lo <= number <= hi:
+                origins.add(origin)
+                break
+    if not origins or "implementation" in origins:
+        return "implementation" if "implementation" in origins else ""
+    return "tests" if "tests" in origins else "harness"
+
+
+def origin_note(spec, code: str, tests: str, error: str) -> str:
+    """The line to append to a failure, or "" when the writer is implicated."""
+    origin = diagnostic_origin(spec, code, tests, error)
+    if origin == "tests":
+        return "\n" + ORIGIN_TESTS
+    if origin == "harness":
+        return "\n" + ORIGIN_HARNESS
+    return ""
+
+
 def quoted_source(spec, code: str, tests: str, error: str, context: int = 2):
     """The source the diagnostic is pointing at. -> a block to append, or "".
 
@@ -1303,5 +1349,10 @@ def generate_validated_python(pc, description, tests=None, max_retries=3,
                 f"{hint}\n\n"
                 f"Output only the corrected implementation, nothing else.")
 
+    # Say whose lines the toolchain was complaining about before the verdict
+    # is written down. Nothing downstream can recover it: a transcript keeps
+    # the diagnostic and the implementation, never the assembled file.
     return _verdict(False, code=code, tests=designed, contract=contract,
-                    attempts=max_retries, error=error, ledger=ledger)
+                    attempts=max_retries,
+                    error=error + origin_note(spec, code, designed, error),
+                    ledger=ledger)

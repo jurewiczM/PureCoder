@@ -10,11 +10,15 @@ from purecoder.execute import (
     available_packages,
     defined_names,
     defines_target,
+    diagnostic_origin,
     harness_collision,
+    ORIGIN_HARNESS,
+    ORIGIN_TESTS,
     lint_implementation,
     lint_tests,
     missing_dependency,
     missing_relation,
+    origin_note,
     public_names,
     quoted_source,
     red_check,
@@ -700,6 +704,101 @@ def test_only_the_leading_keyword_is_lowered():
 def test_a_correct_check_is_left_exactly_alone():
     good = 'let () = pc_check (sum_list [1] = 1) "one"\n'
     assert repair_tests(get("ocaml"), good) == good
+
+
+# ---- whose lines the diagnostic named ------------------------------------
+
+_CPP_CODE = ("std::vector<int> unique(const std::vector<int>& in) {\n"
+             "    return in;\n"
+             "}")
+_CPP_TESTS = ("void pc_tests(){\n"
+              "    PC_CHECK(unique({1,2}) == {1,2});\n"
+              "}")
+
+
+def test_regions_cover_the_assembled_file_exactly():
+    """If these drift from `assemble`, every attribution below is wrong."""
+    cpp = get("c++")
+    height = len(cpp.assemble(_CPP_CODE, _CPP_TESTS).rstrip("\n").split("\n"))
+    regions = cpp.regions(_CPP_CODE, _CPP_TESTS)
+    assert regions[0][1] == 1
+    assert regions[-1][2] == height
+    for (_, _, hi), (_, lo, _) in zip(regions, regions[1:]):
+        assert lo > hi, "regions must not overlap"
+    # and every boundary lands on real content, not on a separator blank line
+    lines = cpp.assemble(_CPP_CODE, _CPP_TESTS).split("\n")
+    for _, lo, hi in regions:
+        assert lines[lo - 1].strip(), f"line {lo} is blank"
+        assert lines[hi - 1].strip(), f"line {hi} is blank"
+
+
+def test_a_diagnostic_inside_the_suite_is_not_the_writers():
+    """Live 2026-08-21: `macro "PC_CHECK" passed 5 arguments` and `expected
+    primary-expression before '{'` both name lines in the generated SUITE, and
+    both were recorded against a correct unordered_set dedupe, four attempts
+    each."""
+    cpp = get("c++")
+    lo = cpp.regions(_CPP_CODE, _CPP_TESTS)[2][1]      # first line of tests
+    error = f'candidate.cpp:{lo + 1}:59: error: macro "PC_CHECK" passed 5 arguments'
+    assert diagnostic_origin(cpp, _CPP_CODE, _CPP_TESTS, error) == "tests"
+    assert ORIGIN_TESTS in origin_note(cpp, _CPP_CODE, _CPP_TESTS, error)
+
+
+def test_a_diagnostic_inside_the_implementation_stays_the_writers():
+    cpp = get("c++")
+    lo = cpp.regions(_CPP_CODE, _CPP_TESTS)[1][1]      # first line of code
+    error = f"candidate.cpp:{lo + 1}:9: error: 'in' was not declared"
+    assert diagnostic_origin(cpp, _CPP_CODE, _CPP_TESTS, error) == "implementation"
+    assert origin_note(cpp, _CPP_CODE, _CPP_TESTS, error) == ""
+
+
+def test_one_line_in_the_implementation_is_enough_to_keep_the_blame():
+    """Conservative in one direction on purpose. A compile emits many
+    diagnostics and moving blame off the model requires that NOTHING points at
+    its code -- otherwise a suite defect would launder a real bug."""
+    cpp = get("c++")
+    regions = cpp.regions(_CPP_CODE, _CPP_TESTS)
+    in_tests, in_code = regions[2][1] + 1, regions[1][1] + 1
+    error = (f"candidate.cpp:{in_tests}:59: error: macro \"PC_CHECK\" passed 5\n"
+             f"candidate.cpp:{in_code}:9: error: 'in' was not declared")
+    assert diagnostic_origin(cpp, _CPP_CODE, _CPP_TESTS, error) == "implementation"
+    assert origin_note(cpp, _CPP_CODE, _CPP_TESTS, error) == ""
+
+
+def test_a_diagnostic_in_the_preamble_is_the_harness():
+    cpp = get("c++")
+    error = "candidate.cpp:3:11: error: expected primary-expression"
+    assert diagnostic_origin(cpp, _CPP_CODE, _CPP_TESTS, error) == "harness"
+    assert ORIGIN_HARNESS in origin_note(cpp, _CPP_CODE, _CPP_TESTS, error)
+
+
+def test_an_error_naming_no_line_attributes_nothing():
+    """`CHECK FAILED: empty list` has no line reference, and guessing from
+    silence is what the `unknown` bucket exists to refuse."""
+    cpp = get("c++")
+    assert diagnostic_origin(cpp, _CPP_CODE, _CPP_TESTS,
+                             "CHECK FAILED: empty list") == ""
+    assert origin_note(cpp, _CPP_CODE, _CPP_TESTS, "CHECK FAILED: x") == ""
+
+
+def test_the_ocaml_case_that_really_was_the_writers():
+    """The negative control, from the same run: ocaml/is_palindrome failed at
+    `line 14, characters 6-12` on `return false`, which is candidate code --
+    OCaml has no `return`. This must stay with the writer."""
+    ml = get("ocaml")
+    code = ("let is_palindrome s =\n"
+            "  let len = String.length s in\n"
+            "  for i = 0 to (len / 2) do\n"
+            "    if s.[i] <> s.[len - 1 - i] then\n"
+            "      return false\n"
+            "  done;\n"
+            "  true")
+    tests = 'let () = pc_check (is_palindrome "" = true) "empty"'
+    origin, lo, hi = ml.regions(code, tests)[1]
+    assert origin == "implementation"
+    error = f'File "/tmp/x/candidate.ml", line {lo + 4}, characters 6-12:'
+    assert lo + 4 <= hi
+    assert diagnostic_origin(ml, code, tests, error) == "implementation"
 
 
 def test_a_language_with_no_repair_declared_is_untouched():
